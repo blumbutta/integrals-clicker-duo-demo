@@ -250,7 +250,8 @@ window.TrainingView = (() => {
     if (!scoreGain.hidden) {
       avoid.push(scoreGain.getBoundingClientRect());
       const balance=document.getElementById('balance');
-      if (balance) avoid.push(balance.getBoundingClientRect());
+      const digits=balance && clippedRect(balance,bounds)?.visible;
+      if (digits?.width) avoid.push(digits);
     }
     const obstacles=avoid.map(r=>box(r.left-gap,r.top-gap,r.right+gap,r.bottom+gap));
     let winner;
