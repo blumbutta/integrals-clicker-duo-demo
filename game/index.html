@@ -89,7 +89,10 @@
     try {
       original = window.localStorage;
       const probe = saveKey + ".write-probe";
-      original.setItem(probe, "1"); original.removeItem(probe);
+      original.setItem(probe, "1");
+      const readable = original.getItem(probe) === "1";
+      original.removeItem(probe);
+      if (!readable) throw new Error("Storage unavailable");
       return original;
     } catch (_) {}
     // Browsers can expose a read-only localStorage. Keep its existing values
