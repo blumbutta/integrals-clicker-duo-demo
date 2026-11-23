@@ -115,6 +115,14 @@ window.BlackHoleArt = (() => {
         const frame=Math.floor((t%4)*24),w=corona.naturalWidth/12,h=corona.naturalHeight/8;
         ctx.drawImage(corona,(frame%12)*w,Math.floor(frame/12)*h,w,h,0,0,1,1);
       }
+      if(world && ctx.canvas.width>ctx.canvas.height){
+        // In a wide close-up the enlarged orbital strokes extend far outside
+        // the phone framing. Let the textured, animated corona carry the motion.
+        const matrix=ctx.getTransform();
+        const span=Math.hypot(matrix.a,matrix.b)/ctx.canvas.height;
+        const fade=Math.max(0,Math.min(1,(span-.6)/.7));
+        ctx.globalAlpha*=1-fade*fade*(3-2*fade);
+      }
       const lines=(compact?streams.slice(0,3):streams).map(s=>trail(s,t));
       if(!compact&&!world)drawGas(ctx,lines,Math.round(width),Math.round(height));
       ctx.lineCap='round';
@@ -2038,6 +2046,7 @@ window.WorldCollapse = (() => {
   // plaza and the ignition point must stay at the same heights after rotation.
   const shotHeight=W*1280/592;
   const clamp=(v,lo=0,hi=1)=>Math.max(lo,Math.min(hi,v));
+  const bankFeather=100;
   const west=[[0,35],[6,24],[16,45],[21,34],[29,54],[43,51],[50,40],[56,57],[70,53],[76,49],[81,54],[89,42],[95,46],[111,33],[116,28],[126,51],[132,45],[143,64],[157,61],[173,73],[182,71],[193,75],[207,87],[218,89],[229,87],[240,93],[252,90],[261,101],[271,107],[279,104],[287,110],[295,108],[308,116],[321,117],[333,124],[344,120],[356,125],[360,121],[374,127],[390,129],[406,132],[427,132],[435,135],[450,132],[468,139],[485,140],[496,144],[501,128],[508,141],[516,130],[521,138],[530,112],[536,132],[542,124],[549,107],[557,134],[561,125],[570,144],[577,127],[584,144],[591,132],[597,115],[605,119],[614,130],[620,122],[635,113],[647,118],[658,121],[667,126],[678,124],[692,111],[699,113],[705,121],[715,120],[726,131],[736,129],[743,124],[751,130],[758,132],[772,129],[785,122],[795,119],[804,124],[816,122],[830,113],[840,119],[848,116],[858,123],[866,122],[878,133],[888,130],[896,139],[906,139]];
   const armillary=[[911,136],[918,128],[924,125],[939,122],[948,117],[951,126],[959,134],[963,140]];
   const trees=[[915,141],[926,140],[934,146],[945,138],[953,141],[963,137]];
@@ -2152,9 +2161,9 @@ window.WorldCollapse = (() => {
       sharp.addColorStop(p,'rgba(0,0,0,'+a+')');
     }
     let gradient=null,gradientWidth=0,gradientHeight=0;
-    function draw(ctx,view,image,x,y,width,height){
+    function draw(ctx,view,image,x,y,width,height,opacity=1){
       const margin=-view.left;
-      if(margin<1)return;
+      if(margin<1 || opacity<=0)return;
       const units=image.width/width,region=depth*units;
       s.clearRect(0,0,sw*2,sh);
       s.drawImage(image,-x*units,0,region,image.height,0,0,sw,sh);
@@ -2164,7 +2173,7 @@ window.WorldCollapse = (() => {
       s.globalCompositeOperation='destination-over';s.drawImage(soft,0,0,sw*2,sh);s.globalCompositeOperation='source-over';
       const pieces=12;
       for(const sign of [-1,1]){
-        ctx.save();ctx.translate(sign<0?0:W,0);ctx.scale(sign,1);
+        ctx.save();ctx.globalAlpha*=opacity;ctx.translate(sign<0?0:W,0);ctx.scale(sign,1);
         let dest=0,src=0;
         for(let i=1;i<=pieces;i++){
           const end=margin*(i/pieces)**1.55;
@@ -2226,6 +2235,7 @@ window.WorldCollapse = (() => {
     uniform sampler2D art;
     uniform vec4 bounds;
     uniform float power,horizon;
+    uniform vec2 bankEdge;
     void main(){
       vec2 source=bounds.xy+coord*bounds.zw,focus=vec2(869.55,-238.34),ray=source-focus;
       float fraction=clamp(max(max(-ray.x/focus.x,ray.x/(1122.-focus.x)),ray.y/(1402.-focus.y)),0.,1.);
@@ -2235,7 +2245,8 @@ window.WorldCollapse = (() => {
       float rim=horizon*(.983+.003*sin(angle*11.)+.002*sin(angle*27.+.65));
       float feather=max(.8,horizon*.007);
       float remaining=smoothstep(rim-feather,rim+feather,length(ray)*stretch);
-      gl_FragColor=texture2D(art,coord)*remaining;
+      float bank=smoothstep(0.,max(1.,bankEdge.x),min(source.x,1122.-source.x));
+      gl_FragColor=texture2D(art,coord)*(remaining*mix(1.,bank,bankEdge.y));
     }`;
   function makeMesh(gl,columns,rows,bounds,image){
     const vertices=[],indices=[];
@@ -2279,19 +2290,19 @@ window.WorldCollapse = (() => {
       if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));
       gl.useProgram(program);gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
       const position=gl.getAttribLocation(program,'uv'),uniform=name=>gl.getUniformLocation(program,name);
-      const camera=uniform('camera'),bounds=uniform('bounds'),horizon=uniform('horizon'),power=uniform('power');
+      const camera=uniform('camera'),bounds=uniform('bounds'),horizon=uniform('horizon'),power=uniform('power'),bank=uniform('bankEdge');
       gl.enableVertexAttribArray(position);
       meshes.push(makeMesh(gl,56,70,[0,0,W,H],land));
       const b=people.hubBounds;
       meshes.push(makeMesh(gl,24,16,[b.x,b.y,b.width,b.height],people.hubTexture));
-      function draw(ctx,view,p,radius){
+      function draw(ctx,view,p,radius,bankFade){
         if(gl.isContextLost())return false;
         const resized=surface.width!==view.width||surface.height!==view.height;
         if(surface.width!==view.width)surface.width=view.width;
         if(surface.height!==view.height)surface.height=view.height;
         gl.viewport(0,0,view.width,view.height);gl.clear(gl.COLOR_BUFFER_BIT);
         gl.uniform4f(camera,view.left,view.top,view.scale/view.width,view.scale/view.height);
-        gl.uniform1f(power,p);gl.uniform1f(horizon,radius);
+        gl.uniform1f(power,p);gl.uniform1f(horizon,radius);gl.uniform2f(bank,bankFeather,bankFade);
         for(const m of meshes){
           gl.uniform4fv(bounds,m.bounds);gl.bindTexture(gl.TEXTURE_2D,m.texture);
           gl.bindBuffer(gl.ARRAY_BUFFER,m.uv);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
@@ -2299,7 +2310,7 @@ window.WorldCollapse = (() => {
         }
         if(gl.isContextLost())return false;
         if(resized&&(gl.drawingBufferWidth!==view.width || gl.drawingBufferHeight!==view.height || gl.getError()!==gl.NO_ERROR))return false;
-        wings.draw(ctx,view,surface,view.left,view.top,view.width/view.scale,view.height/view.scale);
+        wings.draw(ctx,view,surface,view.left,view.top,view.width/view.scale,view.height/view.scale,1-bankFade);
         ctx.save();
         try{ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(surface,0,0);}
         finally{ctx.restore();}
@@ -2318,6 +2329,11 @@ window.WorldCollapse = (() => {
     const surface=bitmap(width,height),context=surface.getContext('2d'),frame=context.createImageData(width,height);
     const count=width*height,tableSize=16384,rayIndex=new Uint16Array(count),distance=new Float32Array(count);
     const dx=new Float32Array(width),dy=new Float32Array(height),inverse=new Float32Array(tableSize+1);
+    const bankAlpha=new Float32Array(W);
+    for(let x=0;x<W;x++){
+      const u=clamp(Math.min(x+.5,W-x-.5)/bankFeather);
+      bankAlpha[x]=u*u*(3-2*u);
+    }
     for(let x=0;x<width;x++)dx[x]=(x+.5)*scale-fx;
     for(let y=0;y<height;y++)dy[y]=(y+.5)*(H-fy)/height;
     for(let y=0,i=0;y<height;y++)for(let x=0;x<width;x++,i++){
@@ -2325,7 +2341,7 @@ window.WorldCollapse = (() => {
       rayIndex[i]=Math.round(tableSize*clamp(Math.max(-xx/fx,xx/(W-fx),yy/(H-fy))));
       distance[i]=Math.hypot(xx,yy)/(.983+.003*Math.sin(11*theta)+.002*Math.sin(27*theta+.65));
     }
-    function draw(ctx,view,p,radius){
+    function draw(ctx,view,p,radius,bankFade){
       // For input s, the observed radial coordinate is s*(.001+.999*s^p).
       let at=0;
       for(let j=1;j<=tableSize;j++){
@@ -2338,8 +2354,9 @@ window.WorldCollapse = (() => {
         if(d<radius-feather || sx<0 || sx>=W || sy<0 || sy>=H){pixels[i]=0;continue;}
         pixels[i]=source[(sy|0)*W+(sx|0)];
         if(d<radius+feather){const u=clamp((d-radius+feather)/(2*feather));frame.data[4*i+3]*=u*u*(3-2*u);}
+        if(bankFade)frame.data[4*i+3]*=1-bankFade*(1-bankAlpha[sx|0]);
       }
-      context.putImageData(frame,0,0);wings.draw(ctx,view,surface,0,fy,W,H-fy);
+      context.putImageData(frame,0,0);wings.draw(ctx,view,surface,0,fy,W,H-fy,1-bankFade);
       ctx.drawImage(surface,0,fy,W,H-fy);
     }
     return {draw};
@@ -2379,31 +2396,36 @@ window.WorldCollapse = (() => {
         backdrop.width=bw;backdrop.height=bh;
         worldTransform(backdropContext,view);paintSky(backdropContext,view,sky);
       }
+      const slide=clamp((t-infall)/(blackout-infall)/.91);
+      const step=Math.round(slide*240)/240,p=12*step*step*(3-2*step);
+      // The wide shot extends the original banks. Withdraw those extensions
+      // together with the empty sky behind them as the city is consumed.
+      const bankProgress=view.width>view.height&&!reduced?clamp((p-3)/4):0;
+      const bankFade=bankProgress*bankProgress*(3-2*bankProgress);
       ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(backdrop,0,0);
+      if(bankFade){ctx.globalAlpha=bankFade;ctx.fillStyle='#000';ctx.fillRect(0,0,bw,bh);ctx.globalAlpha=1;}
       worldTransform(ctx,view);
       if(t>=ignition){paintHole(ctx,t,scale,reduced);WorldCollapseLight.impact(ctx,t,reduced);}
       if(t<infall){
         wings.draw(ctx,view,land,0,0,W,H);
         ctx.drawImage(land,0,0);people.drawHub(ctx,t,reduced);
       }else{
-        const slide=clamp((t-infall)/(blackout-infall)/.91);
         if(reduced){
           ctx.save();ctx.globalAlpha=1-slide;
           wings.draw(ctx,view,land,0,0,W,H);
           ctx.drawImage(land,0,0);
           const b=people.hubBounds;ctx.drawImage(people.hubTexture,b.x,b.y,b.width,b.height);ctx.restore();
         }else{
-          const step=Math.round(slide*240)/240,p=12*step*step*(3-2*step);
           let drawn=false;
           if(gpu){
-            try{drawn=gpu.draw(ctx,view,p,8*scale);}
+            try{drawn=gpu.draw(ctx,view,p,8*scale,bankFade);}
             catch(error){console.warn('World terrain switched to Canvas 2D',error);}
           }
           if(!drawn){
             if(gpu){gpu.release();gpu=null;}
             if(!software)software=makeSoftware(land,people,wings);
             const start=performance.now();
-            software.draw(ctx,view,p,8*scale);
+            software.draw(ctx,view,p,8*scale,bankFade);
             if(slowFrames>=0 && performance.now()-start>40 && ++slowFrames>=2){
               software=makeSoftware(land,people,wings,360);slowFrames=-1;
             }
