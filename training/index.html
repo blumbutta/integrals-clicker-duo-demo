@@ -38,7 +38,9 @@
     const stage = document.querySelector('main');
     const dimensions = {portrait:[1200,1920], landscape:[1920,1200]};
     const token = () => Array.from(crypto.getRandomValues(new Uint32Array(3)), n => n.toString(16).padStart(8,'0')).join('');
-    let run = history.state?.trainingRun;
+    // Changes to initial rewards require a fresh lesson, including on reload.
+    const tutorialVersion = 2;
+    let run = history.state?.tutorialVersion === tutorialVersion ? history.state.trainingRun : null;
     if (!/^[a-f0-9]{24}$/.test(run || '')) run = token();
     function fit() {
       const shape = dimensions[size.value];
@@ -49,11 +51,11 @@
       frame.style.setProperty('--scale',Math.min(stage.clientWidth / shape[0],stage.clientHeight / shape[1]));
     }
     function remember() {
-      try { history.replaceState({trainingRun:run,orientation:size.value},''); } catch (_) {}
+      try { history.replaceState({trainingRun:run,orientation:size.value,tutorialVersion},''); } catch (_) {}
     }
     function play() {
       remember();
-      frame.src = 'entry.html?v=d3056ebb52ce&run='+run;
+      frame.src = 'entry.html?v=25052c1a4626&run='+run;
     }
     const requested = location.hash.slice(1) || history.state?.orientation;
     size.value = dimensions[requested] ? requested : 'auto';

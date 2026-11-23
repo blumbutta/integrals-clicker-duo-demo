@@ -103,7 +103,7 @@ window.TrainingView = (() => {
     /* The game replaces shop cards and map controls. Re-resolve an anchor that has
        been removed, without recalculating geometry on every animated score tick. */
     treeWatch = new MutationObserver(() => {
-      if (spec && (!focusedAnchor || !focusedAnchor.isConnected)) schedule();
+      if (spec?.target && (!focusedAnchor || !focusedAnchor.isConnected)) schedule();
     });
   }
   function schedule() {
@@ -219,10 +219,12 @@ window.TrainingView = (() => {
     spec={...options,id,paused:options.paused??!options.live};
     const changed=!old || old.id!==id;
     if (changed) scrolledAnchor=null;
-    root.dataset.step=id || '';
-    root.dataset.paused=String(spec.paused);
-    document.body.toggleAttribute('data-training-instruction',spec.paused);
-    root.dataset.compact=String(!!spec.compact);
+    if (changed) root.dataset.step=id || '';
+    if (!old || old.paused!==spec.paused) {
+      root.dataset.paused=String(spec.paused);
+      document.body.toggleAttribute('data-training-instruction',spec.paused);
+    }
+    if (!old || !!old.compact!==!!spec.compact) root.dataset.compact=String(!!spec.compact);
     text(mode,spec.paused?'На паузе':'Игра идёт');
     const step=spec.step??spec.progress?.current, count=spec.count??spec.progress?.total;
     text(progress,step && count ? step+' / '+count : '');
@@ -237,8 +239,10 @@ window.TrainingView = (() => {
       const station=document.getElementById('station');
       if (station) treeWatch.observe(station,{subtree:true,childList:true});
     }
-    if (changed) layout();
-    schedule();
+    if (changed) {
+      layout();
+      schedule();
+    } else if (focusedAnchor!==currentTarget() || focusedAnchor?.id==='balance') schedule();
   }
   function hide() {
     spec=null;

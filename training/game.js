@@ -6207,6 +6207,17 @@ return {init,render,unmount,visual,paintDisk,back:()=>closeGalleryPreview?.()||f
   }
   const paidAs = model.converted || {};
   let checkedOld=false,settling=false;
+  let trainingRewardsHeld = !game.progress("trainingHonorsReleased");
+  function releaseTrainingRewards() {
+    if (trainingRewardsHeld) {
+      // Persist the transition first. After interruption, the stock collector can
+      // retry any outstanding earned-but-unclaimed receipts exactly once.
+      if (!game.updateProgress("trainingHonorsReleased", true)) return false;
+      trainingRewardsHeld = false;
+      checkedOld = false;
+    }
+    return collect();
+  }
   function fingerprint(s){
     return [s.clicks,s.totalEarned,s.runEarned,s.cps,s.totalHelpers,s.researchCount,s.runWins,s.totalPurchased,s.prestigeLevel,s.cosmicAscensions,s.challengeWins].join("|");
   }
@@ -6220,6 +6231,19 @@ return {init,render,unmount,visual,paintDisk,back:()=>closeGalleryPreview?.()||f
     const signature=fingerprint(s);
     if(checkedOld && previousSignature===signature)return true;
     const eligible=(it,s)=>reached(it.requiredEra,s) && metric(it,s)>=it.threshold;
+    if (trainingRewardsHeld) {
+      // Remember eligibility at the moment it was reached without changing the
+      // counters used to demonstrate a manual tap, passive income and purchases.
+      const additions = catalogue.items.filter(it => !unlocked.has(it.id) && eligible(it,s));
+      if (additions.length) {
+        const earned = [...unlocked, ...additions.map(it => it.id)];
+        if (!game.commitHonors(() => ({earned, claimed:[...received], converted:{...paidAs}}))) return false;
+        additions.forEach(it => unlocked.add(it.id));
+      }
+      checkedOld=true;
+      previousSignature=signature;
+      return true;
+    }
     const pending=!checkedOld && catalogue.items.some(it=>unlocked.has(it.id)&&!received.has(it.id));
     if(!pending && !catalogue.items.some(it=>!unlocked.has(it.id) && eligible(it,s))){
       checkedOld=true;previousSignature=signature;return true;
@@ -6427,7 +6451,7 @@ return {init,render,unmount,visual,paintDisk,back:()=>closeGalleryPreview?.()||f
     if(selectedHonor){selectedHonor=null;render(lastContainer,{focus:true});return true;}
     return dismissOverlay();
   }
-  window.Honors={open,render,close,back,collect,earned(id){if(!unlocked.has(id))collect();return unlocked.has(id);},
+  window.Honors={open,render,close,back,collect,releaseTrainingRewards,earned(id){if(!unlocked.has(id))collect();return unlocked.has(id);},
     earnedCount(){collect();return unlocked.size;},unmount(){stopObserving();lastContainer=null;selectedHonor=null;focusAfter=null;chapterScroll=0;dismissOverlay();},
     refresh(s=game.snapshot()){
       if(window.App?.scrolling||Date.now()-lastRefresh<1500||!lastContainer?.isConnected)return;

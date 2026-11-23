@@ -56,6 +56,7 @@
     App.sync();
   }
   function finish() {
+    window.Honors.releaseTrainingRewards();
     lesson.phase = "done";
     save();
     clearInterval(interval);
@@ -229,12 +230,18 @@
         explain("team", ".pg-research .pg-head h2", "Командные улучшения", "Когда помощников станет больше, откроются командные улучшения. Они увеличивают доход всей лаборатории.", "Дальше", () => go("honors"));
         return;
       case "honors":
-        if (App.sheet === "honors") return go("honorsSeen");
+        if (App.sheet === "honors") {
+          const before = Economy.hud().balance;
+          window.Honors.releaseTrainingRewards();
+          return go("honorsSeen", {honorReward: Math.max(0, Economy.hud().balance - before)});
+        }
         show("honors", "#honors-btn", "Твои достижения", "Нажми на медаль в верхней панели.");
         return;
       case "honorsSeen":
         if (App.sheet !== "honors") return go("gallery");
-        show("honors-close", "#close-sheet", "Награды приходят сами", "Здесь видны твои успехи. Достижения также открывают оформления. Закрой список и попробуй выбрать фон.");
+        show("honors-close", "#close-sheet", "Награды приходят сами",
+          (lesson.honorReward > 0 ? "За первые достижения тебе начислено " + number(lesson.honorReward) + " ∫. " : "Здесь видны твои достижения. ") +
+          "Достижения также открывают оформления. Закрой список, чтобы выбрать фон.");
         return;
       case "gallery": {
         if (navigate("appearance", "Выбери свой фон", "Открой «Оформления» в нижнем меню.")) return;
