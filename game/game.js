@@ -2023,6 +2023,9 @@ window.WorldCollapse = (() => {
   'use strict';
   const W=1122,H=1402,fx=.775*W,fy=-.17*H;
   const ignition=2.33,infall=3.63,blackout=11.35;
+  // The 592 × 1280 iPhone recording establishes the shot: both banks, the
+  // plaza and the ignition point must stay at the same heights after rotation.
+  const shotHeight=W*1280/592;
   const clamp=(v,lo=0,hi=1)=>Math.max(lo,Math.min(hi,v));
   const west=[[0,35],[6,24],[16,45],[21,34],[29,54],[43,51],[50,40],[56,57],[70,53],[76,49],[81,54],[89,42],[95,46],[111,33],[116,28],[126,51],[132,45],[143,64],[157,61],[173,73],[182,71],[193,75],[207,87],[218,89],[229,87],[240,93],[252,90],[261,101],[271,107],[279,104],[287,110],[295,108],[308,116],[321,117],[333,124],[344,120],[356,125],[360,121],[374,127],[390,129],[406,132],[427,132],[435,135],[450,132],[468,139],[485,140],[496,144],[501,128],[508,141],[516,130],[521,138],[530,112],[536,132],[542,124],[549,107],[557,134],[561,125],[570,144],[577,127],[584,144],[591,132],[597,115],[605,119],[614,130],[620,122],[635,113],[647,118],[658,121],[667,126],[678,124],[692,111],[699,113],[705,121],[715,120],[726,131],[736,129],[743,124],[751,130],[758,132],[772,129],[785,122],[795,119],[804,124],[816,122],[830,113],[840,119],[848,116],[858,123],[866,122],[878,133],[888,130],[896,139],[906,139]];
   const armillary=[[911,136],[918,128],[924,125],[939,122],[948,117],[951,126],[959,134],[963,140]];
@@ -2068,9 +2071,13 @@ window.WorldCollapse = (() => {
     return {artwork,panorama,side,above,below,width,height,top:160-height*.73};
   }
   function camera(width,height){
-    const worldHeight=Math.max(H*1.3,height*W/width),scale=height/worldHeight;
+    const worldHeight=Math.max(shotHeight,height*W/width),scale=height/worldHeight;
     const left=(W-width/scale)/2,top=H-worldHeight;
-    const distance=Math.hypot(Math.abs(fx-W/2)+width/(scale*2),Math.abs(fy-(top+worldHeight/2))+worldHeight/2);
+    // The absorption radius follows the original city frame. Measuring it
+    // against the extra side scenery makes the hole swallow the city earlier.
+    const verticalReach=Math.max(fy-top,H-fy);
+    const bankReach=Math.max(fx,W-fx);
+    const distance=Math.hypot(bankReach,verticalReach);
     return {left,top,scale,width,height,distance};
   }
   function worldTransform(ctx,view){
@@ -2081,7 +2088,8 @@ window.WorldCollapse = (() => {
     ctx.fillStyle=sky.above;ctx.fillRect(view.left,view.top,width,height);
     if(bottom<H){ctx.fillStyle=sky.below;ctx.fillRect(view.left,bottom,width,H-bottom);}
     ctx.drawImage(sky.side,view.left,top,width,sky.height);
-    if(view.width>view.height){
+    const extend=view.left<(W-sky.width)/2;
+    if(extend){
       const left=(W-sky.width)/2,right=left+sky.width;
       // Outside the phone camera, carry the actual clouds and stars into the
       // side sky. The original illustration still occupies its native bounds.
@@ -2093,7 +2101,7 @@ window.WorldCollapse = (() => {
         ctx.restore();
       }
     }
-    ctx.drawImage(view.width>view.height?sky.panorama:sky.artwork,(W-sky.width)/2,top,sky.width,sky.height);
+    ctx.drawImage(extend?sky.panorama:sky.artwork,(W-sky.width)/2,top,sky.width,sky.height);
   }
   // The phone viewport ends at the city's banks. A wide Duo shows the
   // outskirts too: extend only each nearest bank, softly, from this frame of
@@ -2101,39 +2109,41 @@ window.WorldCollapse = (() => {
   function makeWings(){
     const sw=104,sh=320,depth=182;
     const strip=bitmap(sw*2,sh),s=strip.getContext('2d');
-    const softer=[[64,156],[32,64],[18,30],[10,16],[6,10],[4,6]].map(([w,h])=>bitmap(w,h));
-    const levels=[strip,...softer];
+    const soft=bitmap(26,40),low=soft.getContext('2d');
+    // Keep fine detail at the bank, then continuously defocus it outward.
+    // Switching discrete textures halfway across a wing leaves visible seams.
+    const sharp=s.createLinearGradient(0,0,sw*2,0);
+    for(const [p,a] of [[0,1],[.055,1],[.20,.64],[.40,.08],[.5,0],[.60,.08],[.80,.64],[.945,1],[1,1]]){
+      sharp.addColorStop(p,'rgba(0,0,0,'+a+')');
+    }
     let gradient=null,gradientWidth=0,gradientHeight=0;
     function draw(ctx,view,image,x,y,width,height){
-      if(view.width<=view.height)return;
       const margin=-view.left;
       if(margin<1)return;
       const units=image.width/width,region=depth*units;
       s.clearRect(0,0,sw*2,sh);
       s.drawImage(image,-x*units,0,region,image.height,0,0,sw,sh);
       s.drawImage(image,(W-depth-x)*units,0,region,image.height,sw,0,sw,sh);
-      for(let j=1;j<levels.length;j++){
-        const level=levels[j],low=level.getContext('2d');low.clearRect(0,0,level.width,level.height);
-        low.drawImage(levels[j-1],0,0,level.width,level.height);
-      }
-      const pieces=7;
+      low.clearRect(0,0,soft.width,soft.height);low.drawImage(strip,0,0,soft.width,soft.height);
+      s.globalCompositeOperation='destination-in';s.fillStyle=sharp;s.fillRect(0,0,sw*2,sh);
+      s.globalCompositeOperation='destination-over';s.drawImage(soft,0,0,sw*2,sh);s.globalCompositeOperation='source-over';
+      const pieces=12;
       for(const sign of [-1,1]){
         ctx.save();ctx.translate(sign<0?0:W,0);ctx.scale(sign,1);
         let dest=0,src=0;
         for(let i=1;i<=pieces;i++){
           const end=margin*(i/pieces)**1.55;
           const next=sw*(1-Math.exp(-end/depth));
-          const level=levels[i-1],mip=level.width/(sw*2);
           ctx.save();
           if(sign>0){ctx.translate(end+dest,0);ctx.scale(-1,1);}
-          ctx.drawImage(level,(sign<0?src:sw*2-next)*mip,0,(next-src)*mip,level.height,dest,y,end-dest+.5/view.scale,height);
+          ctx.drawImage(strip,sign<0?src:sw*2-next,0,next-src,sh,dest,y,end-dest+.5/view.scale,height);
           ctx.restore();dest=end;src=next;
         }
         ctx.restore();
       }
     }
     function shade(ctx,view){
-      if(view.width<=view.height||view.left>=0)return;
+      if(view.left>=0)return;
       const width=view.width,bank=-view.left*view.scale/width;
       if(!gradient||gradientWidth!==width||gradientHeight!==view.height){
         gradient=ctx.createLinearGradient(0,0,width,0);gradientWidth=width;gradientHeight=view.height;
@@ -2155,7 +2165,8 @@ window.WorldCollapse = (() => {
     ctx.save();ctx.translate(fx,fy);ctx.scale(scale,scale);
     ctx.fillStyle='#000';ctx.beginPath();ctx.arc(0,0,45,0,Math.PI*2);ctx.fill();
     ctx.translate(-x*345,-y*230);
-    BlackHoleArt.paint(ctx,345,230,time-ignition,{world:true,reducedMotion:reduced});
+    // SpriteKit runs both accretion actions from the start, even when hidden.
+    BlackHoleArt.paint(ctx,345,230,Math.floor(time*24)/24,{world:true,reducedMotion:reduced});
     ctx.restore();
   }
   const vertexSource=`
@@ -2381,6 +2392,12 @@ window.WorldRebirth=(()=>{
   let run=null,paused=false,away=false;
   const hidden=()=>document.hidden||paused||away;
 
+  // SpriteKit keeps long titles on one line within 86% of the screen.
+  function fitTitle(r){
+    const width=r.title.offsetWidth;
+    if(width)r.title.style.setProperty('--title-fit',Math.min(1,r.host.clientWidth*.86/width));
+  }
+
   function finish(){
     const {host,scene,frame}=run;
     cancelAnimationFrame(frame);scene?.destroy();host.remove();run=null;
@@ -2397,6 +2414,8 @@ window.WorldRebirth=(()=>{
     r.title.textContent={epoch:'Создан новый мир',universe:'Родилась новая вселенная',failed:'Переход не сохранён'}[r.result];
     r.detail.textContent=r.result==='epoch'?'ЭПОХА '+epochs[current]:
       r.result==='universe'?'КОСМИЧЕСКАЯ НАГРАДА ПОЛУЧЕНА':'Ваш прежний мир сохранён';
+    fitTitle(r);
+    document.fonts?.ready.then(()=>{if(run===r)fitTitle(r);});
     if(r.result==='failed')DuoAudio.stopWorldTransition();else DuoAudio.play('world-birth');
   }
   function revealWorld(r){
@@ -2417,8 +2436,9 @@ window.WorldRebirth=(()=>{
     if(t>=infall && !r.infall){r.infall=true;DuoAudio.play('world-infall');}
     if(t>=birth && !r.result)commit(r);
     if(t<end){
-      if(t-r.painted>=1/30 || r.resized){
-        r.scene.render(t);r.painted=t;r.resized=false;
+      const filmFrame=Math.floor(t*30+1e-6);
+      if(filmFrame!==r.painted || r.resized){
+        r.scene.render(t);r.painted=filmFrame;r.resized=false;
       }
       const age=t-birth;
       r.caption.style.opacity=String(Math.max(0,Math.min(1,age/.58,(2.59-age)/.46)));
@@ -2466,7 +2486,11 @@ window.WorldRebirth=(()=>{
   window.addEventListener('duoresume',()=>{paused=false;wake();});
   window.addEventListener('pagehide',()=>{away=true;wake();});
   window.addEventListener('pageshow',()=>{away=false;wake();});
-  window.addEventListener('resize',()=>{if(run)run.resized=true;});
+  window.addEventListener('resize',()=>{
+    if(!run)return;
+    run.resized=true;
+    if(run.result)fitTitle(run);
+  });
   return Object.freeze({start,get active(){return !!run;},get covering(){return !!run&&!run.revealing;}});
 })();
 
@@ -3051,7 +3075,15 @@ window.DuoResidents = (() => {
     const perSecond=after.cps-before.cps;
     const production=Number.isFinite(perSecond)&&perSecond>0;
     const gain=production?perSecond:after.clickPower-before.clickPower;
-    if(!Number.isFinite(gain)||gain<=0)return;
+    let label;
+    if(Number.isFinite(gain)&&gain>0){
+      label="+"+(gain<.01?smallGain.format(gain):rate(gain))+(production?" ∫/с":" ∫/клик");
+    }else if(button.dataset.pageAction==="study"){
+      // A click-share upgrade can be studied before any resource produces income.
+      const research=Economy.snapshot().research.find(item=>item.id===button.dataset.key);
+      if(research)label=effect(research);
+    }
+    if(!label)return;
     const bounds=pane.getBoundingClientRect(),source=button.getBoundingClientRect();
     const x=event.detail>0?event.clientX:source.left+source.width/2;
     const y=event.detail>0?event.clientY:source.top+source.height/2;
@@ -3059,7 +3091,7 @@ window.DuoResidents = (() => {
     if(layer.childElementCount>=10)layer.firstElementChild.remove();
     const number=document.createElement("span");
     number.className="fx-tap-value pg-purchase-gain";
-    number.textContent="+"+(gain<.01?smallGain.format(gain):rate(gain))+(production?" ∫/с":" ∫/клик");
+    number.textContent=label;
     number.style.setProperty("--gain-x",(x-bounds.left)+"px");
     number.style.setProperty("--gain-y",(y-bounds.top)+"px");
     layer.append(number);
@@ -3105,19 +3137,13 @@ window.DuoResidents = (() => {
     }else if(action==="buy" || action==="buy-one" || action==="study"){
       const selectedResource=action==="buy" && Economy.snapshot().resources.find(r=>r.id===key);
       const order=selectedResource && quantity!==0 ? Math.min(quantity,selectedResource.maximumCount-selectedResource.owned) : quantity;
-      const before=action==="study"?null:Economy.hud();
+      const before=Economy.hud();
       const success=action==="study"?Economy.study(key):Economy.buy(key,action==="buy-one"?1:order);
       if(success) {
-        if(before)purchaseGain(before,Economy.hud(),button,e);
+        purchaseGain(before,Economy.hud(),button,e);
         window.dispatchEvent(new Event("duocounterview"));
         window.DuoAudio?.play("purchase");
         if(selected)close();
-        if(action==="study"){
-          const message=pane.querySelector(".pg-feedback");
-          message.textContent="Улучшение изучено";
-          message.classList.add("pg-visible");clearTimeout(message._timer);
-          message._timer=setTimeout(()=>message.classList.remove("pg-visible"),1300);
-        }
       }
     }else{
       openDetail(action,key);
@@ -3137,7 +3163,7 @@ window.DuoResidents = (() => {
     container.innerHTML='<section class="pg-pane pg-'+name+'"><div class="pg-head'+(name==="world"?'':' pg-catalog-head')+'"><h2>'+title+'</h2>'+
       (name==="world"?'<button class="pg-citizens" data-page-action="residents">'+icon("team")+'Жители</button>':'<span class="pg-balance"></span>')+'</div><div class="pg-list"></div>'+
       (name==="resources"?'<div class="pg-quantity"><strong>Размер покупки</strong><div>'+[1,50,100,0].map(n=>'<button '+idAttr("quantity",n)+' aria-pressed="'+(n===quantity)+'">'+(n?"×"+n:"MAX")+'</button>').join("")+'</div></div>':'')+
-      (name==="resources"?'<div class="pg-purchase-gains" aria-live="polite" aria-relevant="additions"></div>':'<div class="pg-feedback" role="status"></div>')+
+      (name!=="world"?'<div class="pg-purchase-gains" aria-live="polite" aria-relevant="additions"></div>':'')+
       '<div class="pg-overlay" hidden></div></section>';
     pane=container.firstElementChild;list=pane.querySelector(".pg-list");details=pane.querySelector(".pg-overlay");balance=pane.querySelector(".pg-balance");
     pane.addEventListener("click",handle);refresh();
@@ -6416,9 +6442,10 @@ window.Guide = (() => {
     });
   }
   const retryAt=it=>Number(state.cooldowns[it.id])||0;
+  const unlocked=it=>game.owned(it.resource)>0;
   function availability(it,now,until=retryAt(it)){
     if(state.active?.definition===it.id)return "active";
-    if(!game.owned(it.resource))return "locked";
+    if(!unlocked(it))return "locked";
     if(until>now)return "cooldown";
     return state.active?"busy":"ready";
   }
@@ -6490,6 +6517,18 @@ window.Guide = (() => {
     return Math.floor(t/60)+":"+String(t%60).padStart(2,"0");
   }
   const visible=()=>host && host.isConnected && host.querySelector(".qc-wrap");
+  function showRetryTime(label,it,now=Date.now()){
+    const until=retryAt(it),waiting=until>now;
+    const listing=label.closest(".qc-listing");
+    const text=waiting?"Новая попытка через "+prettyTime(until-now):listing?"✧ Доступно":"Начать задание";
+    if(label.textContent!==text)label.textContent=text;
+    if(listing){
+      listing.classList.toggle("ready",!waiting);
+      label.classList.toggle("qc-good",!waiting);
+    }else label.disabled=waiting;
+    if(waiting)label.dataset.retryQuest=it.id;
+    else delete label.dataset.retryQuest;
+  }
   function draw(){
     if(!host)return;
     const previous=host.querySelector(".qc-wrap");
@@ -6580,9 +6619,12 @@ window.Guide = (() => {
         el("p","qc-muted","Три верных ответа приносят весь приз. Если ошибиться, выйти или не успеть ответить, спишется половина приза."),
         el("small","qc-muted","Уровень "+it.level+" · новая попытка через "+it.minutes+" мин после завершения."),stakePanel(stake(it)));
       sc.append(prep);
-      const go=action(ready?"Начать задание":"Новая попытка через "+prettyTime(state.cooldowns[it.id]-Date.now()),()=>{if(start(it.id))selected=null;});go.disabled=!ready;footer(go);
+      const go=action("Начать задание",()=>{if(start(it.id))selected=null;});
+      go.disabled=!ready;
+      if(!ready && unlocked(it))showRetryTime(go,it);
+      footer(go);
     }else{
-      const list=definitions.filter(it=>(!district||it.district===district) && game.owned(it.resource)>0);
+      const list=definitions.filter(it=>(!district||it.district===district) && unlocked(it));
       sc.append(el("h3","qc-intro","Выберите испытание"),el("p","qc-lead","В каждом испытании три вопроса. На ответ даётся одна минута."));
       if(!list.length){
         const it=definitions.find(it=>!district || it.district===district);
@@ -6592,11 +6634,11 @@ window.Guide = (() => {
       const catalog=el("div","qc-catalog");
       if(list.length)sc.append(catalog);
       list.forEach(it=>{
-        const ready=available(it),b=action("",()=>{selected=it.id;},"qc-listing"+(ready?" ready":""));
+        const b=action("",()=>{selected=it.id;},"qc-listing");
         b.dataset.quest=it.id;
-        const body=el("span","qc-list-copy");body.append(el("strong",null,it.title),el("span",null,it.subtitle),
-          el("small",null,"Уровень "+it.level+" · отдых "+it.minutes+" мин"),el("small",ready?"qc-good":"",ready?"✧ Доступно":"Новая попытка через "+prettyTime(state.cooldowns[it.id]-Date.now())));
-        b.append(hero(it),body,el("b","qc-chevron","›"));catalog.append(b);
+        const body=el("span","qc-list-copy"),statusLabel=el("small");body.append(el("strong",null,it.title),el("span",null,it.subtitle),
+          el("small",null,"Уровень "+it.level+" · отдых "+it.minutes+" мин"),statusLabel);
+        b.append(hero(it),body,el("b","qc-chevron","›"));showRetryTime(statusLabel,it);catalog.append(b);
       });
       const tally=el("div","qc-counts");tally.append(el("span",null,"Победы: "+format(state.wins)),el("span",null,"Попытки: "+format(state.wins+state.losses)));sc.append(tally);
     }
@@ -6637,12 +6679,20 @@ window.Guide = (() => {
     const head=overlay.querySelector(".hc-standalone-head");
     head.prepend(el("h2","qc-external-title","Задания"));render(d.body,id);
   }
-  function timeTick(){const finished=settleTimeout();if(!visible())return;if(finished)draw();else if(state.active && !state.active.review){const n=host.querySelector(".qc-clock");if(n){const left=state.active.deadline-Date.now();n.textContent=prettyTime(left);n.classList.toggle("qc-clock-low",left<=10000);}}}
+  function timeTick(){
+    const now=Date.now(),finished=settleTimeout(now);
+    if(!visible())return;
+    if(finished){draw();return;}
+    if(state.active && !state.active.review){
+      const n=host.querySelector(".qc-clock");
+      if(n){const left=state.active.deadline-now;n.textContent=prettyTime(left);n.classList.toggle("qc-clock-low",left<=10000);}
+    }else for(const label of host.querySelectorAll("[data-retry-quest]"))showRetryTime(label,byID.get(label.dataset.retryQuest),now);
+  }
   function restartTimer(){clearInterval(timer);timer=null;if(!document.hidden){timeTick();timer=setInterval(timeTick,500);}}
   document.addEventListener("visibilitychange",restartTimer);
   window.addEventListener("duoresume",restartTimer);window.addEventListener("duopause",()=>{clearInterval(timer);timer=null;});
   window.Quests={open,close,back,render,start,choose,confirm,advance,settleTimeout,availableCount,status,
-    wins:()=>state.wins, refresh:timeTick, unmount:close,active:()=>state.active,available:id=>byID.has(id)&&available(byID.get(id)),definitions,
+    wins:()=>state.wins, refresh:timeTick, unmount:close,active:()=>state.active,hasUnlocked:()=>definitions.some(unlocked),available:id=>byID.has(id)&&available(byID.get(id)),definitions,
     refreshProgress(){state=loadProgress();}};
   restartTimer();
 })();
@@ -7360,8 +7410,9 @@ window.HonorNotices=(()=>{
     if(daily.hidden===dailyVisible)daily.hidden=!dailyVisible;
     const pending=dailyVisible&&window.ExtraModel?.load?.().receipt;
     label(daily.lastElementChild,pending?'Ваш подарок готов':'Подарок дня · крутить колесо');
-    label(byId('event-title'),questActive?'Испытание идёт':questCount?'Есть новые задания':'Мир ждёт открытий');
-    label(byId('event-subtitle'),questActive?'Вернуться к решению':questCount?'Доступно: '+questCount+' · выбрать задание':'Помощники открывают районы и задания');
+    const coolingDown=!questActive && !questCount && Quests.hasUnlocked();
+    label(byId('event-title'),questActive?'Испытание идёт':questCount?'Есть новые задания':coolingDown?'Задания на перерыве':'Мир ждёт открытий');
+    label(byId('event-subtitle'),questActive?'Вернуться к решению':questCount?'Доступно: '+questCount+' · выбрать задание':coolingDown?'Посмотреть время до следующей попытки':'Помощники открывают районы и задания');
     icon(eventButton.firstElementChild,questActive?'pencil':'bolt');
     eventButton.classList.toggle('has-task',Boolean(questActive||questCount));
     badge('research',s.affordableResearchCount);
@@ -7492,7 +7543,10 @@ window.HonorNotices=(()=>{
   byId('tabs').addEventListener('click',e=>{const b=e.target.closest('[data-route]');if(b)route(b.dataset.route);});
   document.querySelectorAll('[data-sheet]').forEach(b=>b.addEventListener('click',()=>openSheet(b.dataset.sheet,null,b)));
   byId('close-sheet').addEventListener('click',()=>sheet==='honors'?closeSheet():window.duoBack());
-  eventButton.addEventListener('click',()=>questCount||questActive?openSheet('challenges'):route('world'));
+  eventButton.addEventListener('click',()=>{
+    if(Quests.active() || Quests.hasUnlocked())openSheet('challenges');
+    else route('world');
+  });
   document.addEventListener('keydown',e=>{
     if(e.key==='Escape'&&window.duoBack()){e.preventDefault();return;}
     if(e.key!=='Tab'||!sheet)return;
