@@ -4,6 +4,7 @@
   const training = window.DuoTraining;
   if (!training) return;
   const storageKey = "integrals-clicker-duo-tutorial-v1";
+  const completedKey = "trainingGuideComplete";
   const firstStep = "firstTap";
   const steps = [
     firstStep, "score", "firstFunds", "bit", "passiveIntro", "passiveWatch",
@@ -16,9 +17,10 @@
       const saved = JSON.parse(localStorage.getItem(storageKey));
       if (saved && steps.includes(saved.phase)) return saved;
     } catch (_) {}
-    return {phase: firstStep, upgradeTaught: false, questDone: false};
+    return null;
   }
-  const lesson = loadLesson();
+  const savedLesson = loadLesson();
+  const lesson = savedLesson || {phase: firstStep, upgradeTaught: false, questDone: false};
   training.currentStep = () => lesson.phase;
   const el = selector => document.querySelector(selector);
   const tab = name => '#tabs [data-route="' + name + '"]';
@@ -55,8 +57,9 @@
     Quests.setTrainingPaused(value);
     App.sync();
   }
-  function finish() {
+  function leaveTraining() {
     window.Honors.releaseTrainingRewards();
+    if (!Economy.progress(completedKey)) Economy.updateProgress(completedKey, true);
     lesson.phase = "done";
     save();
     clearInterval(interval);
@@ -65,10 +68,16 @@
     stopTime(false);
     document.body.classList.remove("duo-training-active");
   }
+  function finish() {
+    if (lesson.phase === "complete") leaveTraining();
+  }
+  function hasPrestige(s = Economy.snapshot()) {
+    return s.prestigeLevel > 0 || s.highestPrestige > 0 || s.cosmicAscensions > 0;
+  }
   function show(id, target, title, text, options = {}) {
     const frozen = options.paused !== false;
     stopTime(frozen);
-    window.TrainingView.show({id, target, title, text, paused: frozen, onSkip: finish, ...options});
+    window.TrainingView.show({id, target, title, text, paused: frozen, ...options});
   }
   function explain(id, target, title, text, actionLabel, onAction) {
     show(id, target, title, text, {lockTarget: true, actionLabel, onAction});
@@ -80,10 +89,7 @@
   }
   function screenHome(title, text) { return navigate("home", title, text); }
   function highlightSchool(title, text) {
-    show(lesson.phase + "-building", schoolOnMap, title, text, {
-      // The map captures the pointer at its surface when a building is tapped.
-      allowed: [schoolInList, ".wm-surface"]
-    });
+    show(lesson.phase + "-building", schoolOnMap, title, text);
   }
   function earnedUpgrade() {
     if (lesson.upgradeTaught || Economy.hud().balance < 100) return null;
@@ -98,6 +104,7 @@
 
   function render() {
     if (!ready || document.hidden) return;
+    if (hasPrestige()) return leaveTraining();
     // A gift becomes available on the next calendar day, including after a
     // refresh of a practice tab. Keep it available for free play afterwards.
     if (App.sheet === "daily") App.closeSheet();
@@ -251,7 +258,7 @@
         if (!choices.length) {
           explain("no-theme", ".ap-tabs", "Новые оформления", "Другие фоны откроются вместе с достижениями.", "На главную", () => go("home"));
         } else {
-          show("choose-theme", choices[0], "Какой фон тебе нравится?", "Нажми на доступную плитку, чтобы посмотреть оформление крупнее.", {allowed: choices});
+          show("choose-theme", choices[0], "Попробуем новый фон", "Нажми на выделенную плитку, чтобы посмотреть оформление крупнее.");
         }
         return;
       }
@@ -290,13 +297,22 @@
     }
   }
   function boot() {
-    if (ready || lesson.phase === "done" || !window.App || !window.TrainingView) return;
+    if (ready || !window.App || !window.TrainingView) return;
     ready = true;
+    // The receipt belongs to this game across all its prestige resets.
+    const game = Economy.snapshot();
+    const existingGame = !savedLesson && (game.clicks > 0 || game.totalEarned > 0 || game.totalPurchased > 0 || game.researchCount > 0);
+    if (lesson.phase === "done" || Economy.progress(completedKey) || hasPrestige(game) || existingGame) {
+      leaveTraining();
+      return;
+    }
+    // A refresh immediately after the first tap must resume an unfinished lesson.
+    if (!savedLesson) save();
     document.body.classList.add("duo-training-active");
     const live = ["earn","firstFunds","passiveWatch","quiz"].includes(lesson.phase);
     stopTime(!live);
     restoreScreen();
-    for (const event of ["duotap","duonavigation","duocounterview","duotrainingquest","duoappearancechange","pageshow"]) {
+    for (const event of ["duotap","duonavigation","duocounterview","duotrainingquest","duoappearancechange","duoprestige","pageshow"]) {
       window.addEventListener(event, updateSoon);
     }
     for (const event of ["click","pointerup","visibilitychange"]) document.addEventListener(event, updateSoon, true);

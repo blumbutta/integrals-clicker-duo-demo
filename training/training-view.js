@@ -1,9 +1,10 @@
 /* The browser tutorial registers its coach here. The normal game never mounts it. */
 window.TrainingView = (() => {
   'use strict';
-  let spec, root, panel, ring, title, copy, mode, progress, skip, primary;
+  let spec, root, panel, ring, shade, shadePath, title, copy, mode, progress, skip, primary;
   let focusedAnchor, resizeWatch, treeWatch, frame, scrolledAnchor;
-  const listen = (type, handler) => window.addEventListener(type, handler, true);
+  const capturedPointers = new Map();
+  const listen = (type, handler, options=true) => window.addEventListener(type, handler, options);
   const element = (tag, cls, parent) => {
     const node = document.createElement(tag);
     node.className = cls;
@@ -21,8 +22,12 @@ window.TrainingView = (() => {
   }
   function currentTarget() { return spec ? resolve(spec.target) : null; }
   function allowedNodes() {
+    if (spec.target) {
+      const anchor=currentTarget();
+      return anchor && !spec.lockTarget ? [anchor] : [];
+    }
     const extra = Array.isArray(spec.allowed) ? spec.allowed : [spec.allowed];
-    return [spec.lockTarget ? null : currentTarget(), ...extra.map(resolve)].filter(Boolean);
+    return extra.map(resolve).filter(Boolean);
   }
   function contains(outer, inner) { return !!inner && !!outer && (outer === inner || outer.contains(inner)); }
   function permitted(target) {
@@ -30,8 +35,21 @@ window.TrainingView = (() => {
       allowedNodes().some(node => contains(node, target));
   }
   function guard(event) {
-    if (!spec || permitted(event.target)) return;
-    if (event.type === 'click' || event.type === 'dblclick' || event.type === 'contextmenu') event.preventDefault();
+    if (!spec || spec.lock === false) return;
+    // Drag surfaces can capture the pointer on press (the map does this). Only
+    // finish a gesture that actually began on the current highlighted target.
+    if (event.type === 'pointerup' || event.type === 'pointercancel') {
+      const original=capturedPointers.get(event.pointerId);
+      capturedPointers.delete(event.pointerId);
+      if (original && original === currentTarget()) return;
+    }
+    if (permitted(event.target)) {
+      if (event.type === 'pointerdown' && contains(currentTarget(),event.target)) {
+        capturedPointers.set(event.pointerId,currentTarget());
+      }
+      return;
+    }
+    if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation();
   }
   function focusables() {
@@ -58,11 +76,38 @@ window.TrainingView = (() => {
       event.stopImmediatePropagation();
     }
   }
+  // The launcher reveals the station just before the initial coaching frame.
+  // Keep real input out of this gap, while allowing restoreScreen's synchronous
+  // DOM actions and the launcher's own retry button.
+  function gateStartup() {
+    if (!window.DuoTraining) return;
+    const types=['pointerdown','pointerup','mousedown','mouseup','touchstart','touchend','click','keydown'];
+    function guardStartup(event) {
+      if (spec || window.DuoTraining.currentStep?.()==='done') {
+        for (const type of types) window.removeEventListener(type,guardStartup,true);
+        return;
+      }
+      if (!event.isTrusted || (event.type!=='keydown' && !event.target.closest?.('#station'))) return;
+      if (event.cancelable) event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    for (const type of types) listen(type,guardStartup,{capture:true,passive:false});
+  }
+  gateStartup();
   function mount() {
     if (root) return;
     root = element('div', '', document.body);
     root.id = 'training-coach';
     root.hidden = true;
+    const svgNS='http://www.w3.org/2000/svg';
+    shade=document.createElementNS(svgNS,'svg');
+    shade.setAttribute('class','tr-shade');
+    shade.setAttribute('aria-hidden','true');
+    shade.setAttribute('focusable','false');
+    shadePath=document.createElementNS(svgNS,'path');
+    shadePath.setAttribute('fill-rule','evenodd');
+    shade.append(shadePath);
+    root.append(shade);
     ring = element('div', 'tr-ring', root);
     ring.setAttribute('aria-hidden', 'true');
     panel = element('section', 'tr-panel', root);
@@ -75,7 +120,6 @@ window.TrainingView = (() => {
     skip.type = 'button';
     skip.textContent = 'Пропустить';
     skip.setAttribute('aria-label','Пропустить обучение');
-    skip.onclick = () => spec?.onSkip?.();
     const message = element('div','tr-message',panel);
     message.setAttribute('aria-live','polite');
     message.setAttribute('aria-atomic','true');
@@ -85,7 +129,9 @@ window.TrainingView = (() => {
     primary.type = 'button';
     primary.onclick = () => spec?.onAction?.();
 
-    for (const type of ['pointerdown','pointerup','mousedown','mouseup','touchstart','touchend','click','dblclick','contextmenu']) listen(type,guard);
+    for (const type of ['pointerdown','pointerup','pointercancel','mousedown','mouseup','touchstart','touchend','wheel','click','dblclick','contextmenu']) {
+      listen(type,guard,{capture:true,passive:false});
+    }
     listen('keydown',keyGuard);
     listen('focusin',event => {
       if (spec && !permitted(event.target)) focus(focusables()[0]);
@@ -139,6 +185,29 @@ window.TrainingView = (() => {
     const css = Math.round(value)+'px';
     if (node.style[name] !== css) node.style[name]=css;
   }
+  function roundedHole(x,y,w,h,rx,ry) {
+    const r=x+w, b=y+h, arc=' A'+rx+' '+ry+' 0 0 1 ';
+    return ' M'+(x+rx)+' '+y+' H'+(r-rx)+arc+r+' '+(y+ry)+
+      ' V'+(b-ry)+arc+(r-rx)+' '+b+' H'+(x+rx)+
+      arc+x+' '+(b-ry)+' V'+(y+ry)+arc+(x+rx)+' '+y+' Z';
+  }
+  function spotlight(viewport,target,radius,pad) {
+    const w=viewport.width,h=viewport.height;
+    const viewBox='0 0 '+w+' '+h;
+    if (shade.getAttribute('viewBox')!==viewBox) shade.setAttribute('viewBox',viewBox);
+    // A targetless live question must expose its prompt, choices, timer and
+    // confirmation button together. A detached single target has no active hole.
+    let d=target || spec.target || spec.paused ? 'M0 0 H'+w+' V'+h+' H0 Z' : '';
+    if(target){
+      const sides=radius.split(/\s+/), xRadius=sides[0], yRadius=sides[1]||xRadius;
+      const toPixels=(value,length)=>Math.min(length/2,Math.max(5,value.endsWith('%') ? length*parseFloat(value)/100 : (parseFloat(value)||0)+pad));
+      const x=target.left-viewport.left,y=target.top-viewport.top;
+      const rx=toPixels(xRadius,target.width),ry=toPixels(yRadius,target.height);
+      ring.style.borderRadius=rx+'px / '+ry+'px';
+      d+=roundedHole(x,y,target.width,target.height,rx,ry);
+    }
+    if(shadePath.getAttribute('d')!==d) shadePath.setAttribute('d',d);
+  }
   function layout() {
     if (!spec || !root || root.hidden) return;
     const stage = document.getElementById('station');
@@ -165,16 +234,17 @@ window.TrainingView = (() => {
     let target=region?.visible;
     if (target && (target.width<2 || target.height<2)) target=null;
     ring.hidden=!target;
+    let radius='0px';
+    const p=Math.max(3,Math.round(font*.2));
     if (target) {
-      const p=Math.max(3,Math.round(font*.2));
       target=intersect(bounds,box(target.left-p,target.top-p,target.right+p,target.bottom+p));
       coordinate(ring,'left',target.left-viewport.left);
       coordinate(ring,'top',target.top-viewport.top);
       coordinate(ring,'width',target.width);
       coordinate(ring,'height',target.height);
-      const radius=getComputedStyle(anchor).borderTopLeftRadius;
-      ring.style.borderRadius=radius.includes('%') ? radius : (Math.max(5, Math.round((parseFloat(radius)||0)+p))+'px');
+      radius=getComputedStyle(anchor).borderTopLeftRadius;
     }
+    spotlight(viewport,target,radius,p);
     const card=panel.getBoundingClientRect();
     const left=bounds.left+pad, top=bounds.top+pad;
     const right=bounds.right-pad-card.width, bottom=bounds.bottom-pad-card.height;
@@ -218,7 +288,7 @@ window.TrainingView = (() => {
     const id=options.id??options.key;
     spec={...options,id,paused:options.paused??!options.live};
     const changed=!old || old.id!==id;
-    if (changed) scrolledAnchor=null;
+    if (changed) { scrolledAnchor=null; capturedPointers.clear(); }
     if (changed) root.dataset.step=id || '';
     if (!old || old.paused!==spec.paused) {
       root.dataset.paused=String(spec.paused);
@@ -233,7 +303,10 @@ window.TrainingView = (() => {
     text(title,spec.title); title.hidden=!spec.title;
     text(copy,message); copy.hidden=!message;
     text(primary,spec.actionLabel); primary.hidden=!spec.onAction || !spec.actionLabel;
-    skip.hidden=!spec.onSkip;
+    const skippable=spec.required===false && typeof spec.onSkip==='function';
+    skip.hidden=!skippable;
+    skip.disabled=!skippable;
+    skip.onclick=skippable ? spec.onSkip : null;
     if (root.hidden) {
       root.hidden=false;
       const station=document.getElementById('station');
@@ -252,6 +325,7 @@ window.TrainingView = (() => {
     treeWatch.disconnect();
     if (focusedAnchor) resizeWatch?.unobserve(focusedAnchor);
     focusedAnchor=null;
+    capturedPointers.clear();
     scrolledAnchor=null;
     if (frame) cancelAnimationFrame(frame);
     frame=0;

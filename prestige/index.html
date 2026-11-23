@@ -38,7 +38,7 @@ window.addEventListener('hashchange',orient);
 new ResizeObserver(fit).observe(stage);
 function replay() {
   hint.textContent = 'В тестовой игре нажми «Чёрная дыра».';
-  frame.src = 'entry.html?v=562385a75e5b';
+  frame.src = 'entry.html?v=6bd1158f5b9a';
 }
 window.addEventListener('message', event => {
   if(event.source === frame.contentWindow && event.data === 'prestige-demo-complete') {
