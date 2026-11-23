@@ -35,17 +35,28 @@ window.BlackHoleArt = (() => {
     [.408,.8,.83,.58,.003,true],[.249,3.3,1.29,.83,.004,false]
   ];
   const base=new Image(),corona=new Image();
-  let loading;
-  function load(){
-    if(!loading){
-      const imageAt=(image,path)=>new Promise((resolve,reject)=>{
-        image.onload=resolve;
-        image.onerror=()=>reject(new Error('Missing artwork '+path));
-        image.src=window.duoArt('art/'+path);
-      });
-      loading=Promise.all([imageAt(base,'black-hole.png'),imageAt(corona,'black-hole-corona.png')]);
-    }
+  const textures=new Map();
+  function loadTexture(image,path){
+    if(textures.has(image))return textures.get(image);
+    const loading=new Promise((resolve,reject)=>{
+      const failure=()=>reject(new Error('Missing artwork '+path));
+      const timer=setTimeout(()=>{
+        image.onload=image.onerror=null;
+        image.removeAttribute('src');
+        failure();
+      },30000);
+      image.onload=()=>{clearTimeout(timer);resolve();};
+      image.onerror=()=>{clearTimeout(timer);failure();};
+      image.src=window.duoArt('art/'+path);
+    }).catch(error=>{
+      textures.delete(image);
+      throw error;
+    });
+    textures.set(image,loading);
     return loading;
+  }
+  function load(){
+    return Promise.all([loadTexture(base,'black-hole.png'),loadTexture(corona,'black-hole-corona.png')]);
   }
   function sample(radius,angle){
     const depth=Math.sin(angle),x=radius*Math.cos(angle),y=radius*.115*depth;
@@ -2034,10 +2045,34 @@ window.WorldCollapse = (() => {
   function bitmap(w,h){
     const element=document.createElement('canvas');element.width=w;element.height=h;return element;
   }
-  async function image(path){
-    const img=new Image();
-    await new Promise((ok,fail)=>{img.onload=ok;img.onerror=()=>fail(new Error('Не удалось загрузить '+path));img.src=window.duoArt(path);});
-    return img;
+  function image(path){
+    return new Promise((resolve,reject)=>{
+      const img=new Image();
+      const deadline=setTimeout(()=>{
+        img.onload=img.onerror=null;
+        img.removeAttribute('src');
+        reject(new Error('Превышено время загрузки '+path));
+      },30000);
+      img.onload=()=>{clearTimeout(deadline);resolve(img);};
+      img.onerror=()=>{clearTimeout(deadline);reject(new Error('Не удалось загрузить '+path));};
+      img.src=window.duoArt(path);
+    });
+  }
+  let warmed=null;
+  function scenery(snapshot){
+    let stage=0;
+    for(const [i,place] of DuoWorldMap.districts.entries()){
+      if(snapshot.pairs.some(p=>p.id===place.id&&p.unlocked))stage=i+1;
+    }
+    if(warmed?.stage===stage)return warmed;
+    const pictures=Promise.all([
+      image('art/world-'+String(stage).padStart(2,'0')+'.webp'),
+      image('art/map/rebirth-sky.jpg')
+    ]);
+    const entry={stage,pictures};
+    warmed=entry;
+    pictures.catch(()=>{if(warmed===entry)warmed=null;});
+    return entry;
   }
   // The original mountain silhouette includes the peaks of the academy's armillary.
   function cutTerrain(terrain,stage,tint){
@@ -2220,11 +2255,15 @@ window.WorldCollapse = (() => {
     return {uv,ix,texture,bounds,count:indices.length};
   }
   function makeGpu(land,people,wings){
-    const surface=bitmap(1,1),gl=surface.getContext('webgl',{alpha:true,premultipliedAlpha:true,antialias:false,depth:false,stencil:false});
+    const surface=bitmap(1,1);
+    let gl;
+    try{gl=surface.getContext('webgl',{alpha:true,premultipliedAlpha:true,antialias:false,depth:false,stencil:false});}
+    catch(_){return null;}
     if(!gl)return null;
     let program;
     const meshes=[];
     function release(){
+      if(gl.isContextLost())return;
       for(const m of meshes){gl.deleteBuffer(m.uv);gl.deleteBuffer(m.ix);gl.deleteTexture(m.texture);}
       if(program)gl.deleteProgram(program);
       gl.getExtension('WEBGL_lose_context')?.loseContext();
@@ -2247,6 +2286,7 @@ window.WorldCollapse = (() => {
       meshes.push(makeMesh(gl,24,16,[b.x,b.y,b.width,b.height],people.hubTexture));
       function draw(ctx,view,p,radius){
         if(gl.isContextLost())return false;
+        const resized=surface.width!==view.width||surface.height!==view.height;
         if(surface.width!==view.width)surface.width=view.width;
         if(surface.height!==view.height)surface.height=view.height;
         gl.viewport(0,0,view.width,view.height);gl.clear(gl.COLOR_BUFFER_BIT);
@@ -2257,8 +2297,12 @@ window.WorldCollapse = (() => {
           gl.bindBuffer(gl.ARRAY_BUFFER,m.uv);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
           gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,m.ix);gl.drawElements(gl.TRIANGLES,m.count,gl.UNSIGNED_SHORT,0);
         }
+        if(gl.isContextLost())return false;
+        if(resized&&(gl.drawingBufferWidth!==view.width || gl.drawingBufferHeight!==view.height || gl.getError()!==gl.NO_ERROR))return false;
         wings.draw(ctx,view,surface,view.left,view.top,view.width/view.scale,view.height/view.scale);
-        ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(surface,0,0);ctx.restore();
+        ctx.save();
+        try{ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(surface,0,0);}
+        finally{ctx.restore();}
         return true;
       }
       return {draw,release};
@@ -2301,14 +2345,10 @@ window.WorldCollapse = (() => {
     return {draw};
   }
   async function prepare(host,snapshot){
-    let stage=0;
-    for(const [i,place] of window.DuoWorldMap.districts.entries()){
-      if(snapshot.pairs.some(p=>p.id===place.id&&p.unlocked))stage=i+1;
-    }
-    const [terrain,stars,people]=await Promise.all([
-      image('art/world-'+String(stage).padStart(2,'0')+'.webp'),
-      image('art/map/rebirth-sky.jpg'),RebirthPeople.prepare(snapshot),BlackHoleArt.load()
-    ]);
+    const {stage,pictures}=scenery(snapshot);
+    // A cancelled run cannot pin an in-flight request for its successor.
+    warmed=null;
+    const [[terrain,stars],people]=await Promise.all([pictures,RebirthPeople.prepare(snapshot),BlackHoleArt.load()]);
     const selection=window.Appearance?.selection?.();
     const tint=selection&&selection.themes!=='classic'?Appearance.visual('themes',selection.themes).color:null;
     const sky=prepareSky(stars,tint),land=cutTerrain(terrain,stage,tint);
@@ -2354,7 +2394,12 @@ window.WorldCollapse = (() => {
           const b=people.hubBounds;ctx.drawImage(people.hubTexture,b.x,b.y,b.width,b.height);ctx.restore();
         }else{
           const step=Math.round(slide*240)/240,p=12*step*step*(3-2*step);
-          if(!gpu?.draw(ctx,view,p,8*scale)){
+          let drawn=false;
+          if(gpu){
+            try{drawn=gpu.draw(ctx,view,p,8*scale);}
+            catch(error){console.warn('World terrain switched to Canvas 2D',error);}
+          }
+          if(!drawn){
             if(gpu){gpu.release();gpu=null;}
             if(!software)software=makeSoftware(land,people,wings);
             const start=performance.now();
@@ -2380,7 +2425,7 @@ window.WorldCollapse = (() => {
     }
     return {render,destroy};
   }
-  return Object.freeze({prepare});
+  return Object.freeze({prepare,preload(snapshot){scenery(snapshot);}});
 })();
 
 ;
@@ -2398,18 +2443,54 @@ window.WorldRebirth=(()=>{
     if(width)r.title.style.setProperty('--title-fit',Math.min(1,r.host.clientWidth*.86/width));
   }
 
-  function finish(){
-    const {host,scene,frame}=run;
-    cancelAnimationFrame(frame);scene?.destroy();host.remove();run=null;
+  function releaseScene(scene){
+    try{scene?.destroy();}catch(error){console.warn('World transition cleanup',error);}
+  }
+  function finish(r){
+    if(run!==r)return;
+    clearTimeout(r.preparationTimeout);cancelAnimationFrame(r.frame);
+    run=null;releaseScene(r.scene);r.scene=null;r.host.remove();
     const station=document.getElementById('station');
     station.removeAttribute('inert');delete station.dataset.rebirth;
     window.dispatchEvent(new Event('duonavigation'));App.sync();
-    document.querySelector('#tabs [aria-current="page"]')?.focus({preventScroll:true});
+    document.querySelector(App.sheet?'#sheet-content [data-next]':'#tabs [aria-current="page"]')?.focus({preventScroll:true});
+  }
+  function announceBirth(r){
+    if(r.announced||!['epoch','universe'].includes(r.result))return;
+    r.announced=true;window.dispatchEvent(new Event('duoprestige'));
+  }
+  function recover(r,error){
+    if(run!==r)return;
+    console.warn('World transition interrupted',error);
+    DuoAudio.stopWorldTransition();
+    announceBirth(r);
+    finish(r);
+    const message=document.createElement('p');
+    if(r.announced){
+      // A display failure after the save must never repeat or reverse the purchase.
+      message.setAttribute('role','status');message.className='rebirth-receipt';
+      message.textContent=r.result==='universe'?'Родилась новая вселенная':'Создан новый мир · Эпоха '+epochs[Economy.snapshot().prestigeLevel];
+      document.body.append(message);setTimeout(()=>message.remove(),4500);
+    }else{
+      if(App.sheet!=='prestige')App.openSheet('prestige');
+      message.setAttribute('role','alert');message.className='rebirth-retry';
+      message.textContent='Не удалось показать переход. Ваш мир сохранён. Попробуйте ещё раз.';
+      document.querySelector('#sheet-content .rebirth-retry')?.remove();
+      document.querySelector('#sheet-content .bh-content')?.prepend(message);
+    }
   }
   function commit(r){
     // Seal the result before any synchronous award or navigation callback.
     r.result='failed';
-    if(ExtraModel.collapse())r.result=r.cosmic?'universe':'epoch';
+    try{
+      if(ExtraModel.collapse())r.result=r.cosmic?'universe':'epoch';
+    }catch(error){
+      // The durable write precedes quest/achievement refreshes in resetRun().
+      const saved=Economy.snapshot();
+      if(r.cosmic && saved.cosmicAscensions>r.previousAscensions)r.result='universe';
+      else if(!r.cosmic && saved.prestigeLevel===r.previousLevel+1)r.result='epoch';
+      throw error;
+    }
     const current=Economy.snapshot().prestigeLevel;
     r.title.textContent={epoch:'Создан новый мир',universe:'Родилась новая вселенная',failed:'Переход не сохранён'}[r.result];
     r.detail.textContent=r.result==='epoch'?'ЭПОХА '+epochs[current]:
@@ -2419,14 +2500,17 @@ window.WorldRebirth=(()=>{
     if(r.result==='failed')DuoAudio.stopWorldTransition();else DuoAudio.play('world-birth');
   }
   function revealWorld(r){
-    r.revealing=true;r.scene.destroy();r.scene=null;r.caption.hidden=true;
+    r.revealing=true;releaseScene(r.scene);r.scene=null;r.caption.hidden=true;
     document.getElementById('station').dataset.rebirth='reveal';
-    if(r.result!=='failed')window.dispatchEvent(new Event('duoprestige'));
+    announceBirth(r);
     window.dispatchEvent(new Event('duonavigation'));App.sync();
   }
   function draw(now){
     const r=run;
     if(!r||hidden())return;
+    try{advance(r,now);}catch(error){recover(r,error);}
+  }
+  function advance(r,now){
     r.frame=0;
     if(r.last!==null)r.time+=Math.max(0,now-r.last)/1000;
     r.last=now;
@@ -2445,7 +2529,7 @@ window.WorldRebirth=(()=>{
     }else{
       if(!r.revealing)revealWorld(r);
       r.host.style.opacity=String(1-Math.min(1,(t-end)/reveal));
-      if(t>=end+reveal){finish();return;}
+      if(t>=end+reveal){finish(r);return;}
     }
     r.frame=requestAnimationFrame(draw);
   }
@@ -2466,18 +2550,27 @@ window.WorldRebirth=(()=>{
     caption.setAttribute('role','status');caption.setAttribute('aria-atomic','true');
     const title=document.createElement('h2'),detail=document.createElement('p');
     title.id='rebirth-title';detail.id='rebirth-detail';caption.append(title,detail);host.append(stage,caption);
-    const r=run={host,caption,title,detail,scene:null,frame:0,last:null,painted:-1,time:0,result:'',cosmic:snapshot.prestigeLevel===10};
-    station.dataset.rebirth='scene';App.route('world');station.setAttribute('inert','');
-    document.body.append(host);host.focus({preventScroll:true});
+    const r=run={host,caption,title,detail,scene:null,frame:0,last:null,painted:-1,time:0,result:'',
+      cosmic:snapshot.prestigeLevel===10,previousLevel:snapshot.prestigeLevel,previousAscensions:snapshot.cosmicAscensions};
+    const progress=document.createElement('div'),status=document.createElement('p'),cancel=document.createElement('button');
+    progress.className='rebirth-loading';status.setAttribute('role','status');status.textContent='Загружаем карту мира…';
+    cancel.type='button';cancel.textContent='Отмена';cancel.onclick=()=>finish(r);
+    progress.append(status,cancel);host.append(progress);host.dataset.loading='';
+    host.addEventListener('keydown',e=>{
+      if(e.key==='Escape'&&host.hasAttribute('data-loading')){e.stopPropagation();e.preventDefault();finish(r);}
+    });
+    document.querySelector('#sheet-content .rebirth-retry')?.remove();
+    station.setAttribute('inert','');document.body.append(host);cancel.focus({preventScroll:true});
+    r.preparationTimeout=setTimeout(()=>recover(r,new Error('World assets timed out')),30000);
     try{
-      r.scene=await WorldCollapse.prepare(stage,snapshot);
+      const scene=await WorldCollapse.prepare(stage,snapshot);
+      if(run!==r){releaseScene(scene);return;}
+      clearTimeout(r.preparationTimeout);r.scene=scene;
       r.scene.render(0);
+      station.dataset.rebirth='scene';App.route('world');
+      delete host.dataset.loading;progress.remove();host.focus({preventScroll:true});
     }catch(e){
-      console.warn('World transition could not start',e);
-      finish();App.openSheet('prestige');
-      const msg=document.createElement('p');msg.setAttribute('role','alert');
-      msg.textContent='Не удалось показать переход. Ваш мир сохранён. Попробуйте ещё раз.';
-      document.querySelector('#sheet-content article')?.prepend(msg);return;
+      recover(r,e);return;
     }
     wake();
   }
@@ -7016,6 +7109,7 @@ window.Extras = (() => {
   }
   function prestige(){
     const s=Economy.snapshot(),max=s.prestigeLevel===10;
+    if(!confirm&&s.canPrestige)WorldCollapse.preload(s);
     const title=confirm?'Вы точно уверены?':max?'За гранью бесконечности':'Начало новой эпохи';
     const description=confirm ? (max?'Интегралы, ресурсы, улучшения и номер престижа обнулятся. Вы получите космическую награду; достижения и оформление сохранятся.':'Интегралы, ресурсы и улучшения обнулятся. Престиж вырастет на одну ступень. Достижения и оформление сохранятся.') :
       (max?'Новый переход обнулит интегралы, ресурсы, улучшения и номер престижа. Профиль получит космическую карту, тему и кнопку. Достижения сохранятся.':'Интегралы, ресурсы и улучшения начнутся с нуля, престиж вырастет на одну ступень. Каждый престиж добавляет 10% к базовому производству и открывает особое оформление. Достижения и награды сохранятся.');
