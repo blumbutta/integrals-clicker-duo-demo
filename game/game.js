@@ -1,0 +1,6310 @@
+/* Decimal figures match IntegralNumbers in the original phone UI. */
+window.IntegralNumbers = (() => {
+  "use strict";
+  const decimal = options => new Intl.NumberFormat("ru-RU", {
+    style:"decimal", notation:"standard", useGrouping:true, ...options
+  });
+  const exactFormat=decimal({maximumFractionDigits:1});
+  const rateFormat=decimal({maximumFractionDigits:2});
+  const priceFormat=decimal({minimumSignificantDigits:1,maximumSignificantDigits:3});
+  function unsigned(value,formatter) {
+    if(typeof value==="bigint")return formatter.format(value>0n ? value : 0n);
+    return Number.isFinite(value) ? formatter.format(Math.max(0,value)) : "∞";
+  }
+  return Object.freeze({
+    exact:value=>unsigned(value,exactFormat),
+    catalog:value=>unsigned(value,priceFormat),
+    rate:value=>Number.isFinite(value)?rateFormat.format(value):"∞",
+    prestigePrice: exactFormat.format(8888888888888888888888888n)
+  });
+})();
+
+;
+// The standalone preview uses the same keys with embedded images.
+window.duoArt = path => path;
+
+;
+// The original 16-second recording loops at the same level as on iPhone.
+// WAV effects use the note scores and envelopes in Services/Audio/GameAudio.swift.
+window.DuoAudio = (() => {
+  'use strict';
+  const musicName='integrals-soundtrack';
+  const known=new Set(['click','purchase','golden','tick','reward','miss','correct','loss','achievement','prestigeOpen',
+    'world-charge','world-infall','world-launch','world-birth']);
+  const notices=new Set(['golden','reward','miss','correct','loss','achievement','prestigeOpen']);
+  const vibration={click:8,purchase:16,golden:[18,38,30],correct:15,loss:35,reward:[12,40,22],achievement:[12,40,22],'world-birth':32};
+  const prefs={sound:true,haptics:true};
+  for(const key of Object.keys(prefs)) {
+    try { prefs[key]=localStorage.getItem('integrals.duo.'+key)!=='off'; } catch (_) {}
+  }
+  let context=null,music=null,gain=null,started=false,foreground=true,calledResume=null,priority=null;
+  let transportGeneration=0,noticeSequence=0,voiceSequence=0;
+  const decoded=new Map(), voices=[];
+  function active(){return started && foreground && !document.hidden && prefs.sound;}
+  function enabled(key){return !!prefs[key];}
+  function load(name){
+    if(decoded.has(name))return decoded.get(name);
+    const url=window.duoArt('art/audio/'+name+'.wav');
+    const result=fetch(url).then(response=>{
+      if(!response.ok)throw Error('audio '+response.status);
+      return response.arrayBuffer();
+    }).then(bytes=>context.decodeAudioData(bytes)).catch(()=>{decoded.delete(name);return null});
+    decoded.set(name,result);return result;
+  }
+  function ensureContext(){
+    if(!context){
+      const Audio=window.AudioContext||window.webkitAudioContext;
+      if(!Audio)return false;
+      try{context=new Audio();}catch(_){return false;}
+    }
+    return true;
+  }
+  function stopNode(node){
+    if(!node)return;
+    try{node.stop()}catch(_){}
+    node.disconnect();
+  }
+  function muteNow(){
+    transportGeneration++;
+    while(voices.length)stopNode(voices.pop());
+    stopNode(priority);priority=null;
+    if(gain)gain.gain.value=0;
+    if(context && context.state!=='suspended')context.suspend().catch(()=>{});
+    // Suspending the context holds the loop's playhead; reuse its source on return.
+  }
+  function transport(userGesture=false){
+    if(!active()){muteNow();return;}
+    if(!ensureContext())return;
+    if(context.state!=='running' && (!calledResume || userGesture===true)){
+      // A browser may keep an earlier resume pending until a real touch ends.
+      // Retry inside that gesture; an older completion must not clear the new request.
+      const pending=context.resume().catch(()=>{});
+      calledResume=pending;
+      pending.then(()=>{
+        if(calledResume===pending)calledResume=null;
+        if(!active())muteNow();
+      });
+    }
+    if(gain)gain.gain.value=.32;
+    if(!music){
+      const gen=transportGeneration;
+      load(musicName).then(buffer=>{
+        if(!buffer||!active()||gen!==transportGeneration||music)return;
+        gain=context.createGain();gain.gain.value=.32;gain.connect(context.destination);
+        music=context.createBufferSource();music.buffer=buffer;music.loop=true;music.connect(gain);music.start();
+      });
+    }
+  }
+  function begin(userGesture=false){
+    if(!started){
+      if(!userGesture && navigator.userActivation?.hasBeenActive===false)return;
+      started=true;transport(userGesture);
+    } else if(active() && (!context||context.state!=='running'))transport(userGesture);
+  }
+  function unlock(event){
+    if(event?.isTrusted===false)return;
+    if(event?.type==='pointerdown' && event.pointerType!=='mouse')return;
+    if(event?.type==='pointerup' && event.pointerType==='mouse')return;
+    begin(true);
+  }
+  function setEnabled(key,value){
+    if(!(key in prefs))return;
+    prefs[key]=Boolean(value);
+    try{localStorage.setItem('integrals.duo.'+key,prefs[key]?'on':'off');}catch(_){}
+    if(key==='sound'){if(value)started=true;transport();}
+    else if(!value && navigator.vibrate)navigator.vibrate(0);
+  }
+  function play(name){
+    if(!known.has(name)||!foreground||document.hidden)return;
+    if(prefs.haptics && navigator.vibrate && vibration[name]){
+      try{navigator.vibrate(vibration[name]);}catch(_){}
+    }
+    begin();
+    if(!active()||!context)return;
+    const gen=transportGeneration,notice=notices.has(name);
+    const sequence=notice?++noticeSequence:++voiceSequence;
+    const requested=performance.now();
+    load(name).then(buffer=>{
+      if(!buffer || !active() || gen!==transportGeneration)return;
+      if(notice?sequence!==noticeSequence:sequence<voiceSequence-5)return;
+      // An interaction that passed while a device was stalled should never replay later.
+      if(name==='click' && performance.now()-requested>250)return;
+      if(notice){stopNode(priority);priority=null;}
+      else if(voices.length>=6)stopNode(voices.shift());
+      const node=context.createBufferSource();node.buffer=buffer;node.connect(context.destination);
+      if(notice)priority=node;else voices.push(node);
+      node.onended=()=>{
+        if(priority===node)priority=null;
+        const idx=voices.indexOf(node);if(idx>=0)voices.splice(idx,1);
+        node.disconnect();
+      };
+      node.start();
+    });
+  }
+  window.addEventListener('duotap',()=>play('click'));
+  document.addEventListener('pointerdown',unlock,{capture:true,passive:true});
+  document.addEventListener('pointerup',unlock,{capture:true,passive:true});
+  document.addEventListener('click',unlock,{capture:true,passive:true});
+  document.addEventListener('keydown',unlock,{capture:true});
+  document.addEventListener('visibilitychange',transport);
+  window.addEventListener('duopause',()=>{foreground=false;transport()});
+  window.addEventListener('duoresume',()=>{foreground=true;transport()});
+  window.addEventListener('pagehide',()=>{foreground=false;transport()});
+  window.addEventListener('pageshow',()=>{foreground=true;transport()});
+  return Object.freeze({play,enabled,setEnabled});
+})();
+
+;
+/* Integrals Clicker • Duo Max. Local, single-device economy derived from GameModel.swift. */
+(function () {
+  "use strict";
+
+  const resources = [
+    {"id": "autoclick", "name": "Бит информации", "description": "Ноль или единица — начало любого вычисления.", "basePrice": 15.0, "baseCps": 0.25, "maximumCount": 2500, "icon": "science-resource-00"},
+    {"id": "abacus", "name": "Школьник", "description": "Осваивает математику и учится находить решения.", "basePrice": 125.0, "baseCps": 2.0, "maximumCount": 2000, "icon": "science-resource-01"},
+    {"id": "calculator", "name": "Студент", "description": "Разбирается в формулах и проверяет свои идеи.", "basePrice": 1200.0, "baseCps": 14.0, "maximumCount": 1875, "icon": "science-resource-02"},
+    {"id": "algorithm", "name": "Преподаватель", "description": "Помогает новым умам понять сложные задачи.", "basePrice": 12000.0, "baseCps": 100.0, "maximumCount": 1750, "icon": "science-resource-03"},
+    {"id": "neuron", "name": "Профессор", "description": "Развивает научную школу и готовит исследователей.", "basePrice": 160000.0, "baseCps": 800.0, "maximumCount": 1650, "icon": "science-resource-04"},
+    {"id": "quantum", "name": "Академик", "description": "Объединяет знания и задаёт новые направления науки.", "basePrice": 2300000.0, "baseCps": 7000.0, "maximumCount": 1600, "icon": "science-resource-05"},
+    {"id": "singularity", "name": "Исследовательская группа", "description": "Проверяет гипотезы совместными расчётами.", "basePrice": 40000000.0, "baseCps": 70000.0, "maximumCount": 1550, "icon": "science-resource-06"},
+    {"id": "dimension", "name": "Лаборатория", "description": "Превращает расчёты в проверяемые эксперименты.", "basePrice": 700000000.0, "baseCps": 900000.0, "maximumCount": 1500, "icon": "science-resource-07"},
+    {"id": "universe", "name": "Научный институт", "description": "Объединяет лаборатории вокруг больших научных задач.", "basePrice": 14000000000.0, "baseCps": 12000000.0, "maximumCount": 1450, "icon": "science-resource-08"},
+    {"id": "multiverse", "name": "Суперкомпьютер", "description": "Выполняет миллиарды операций для точных научных моделей.", "basePrice": 300000000000.0, "baseCps": 200000000.0, "maximumCount": 1400, "icon": "science-resource-09"},
+    {"id": "superintelligence", "name": "Дата-центр ИИ", "description": "Обучает модели и ищет закономерности в научных данных.", "basePrice": 10000000000000.0, "baseCps": 8000000000.0, "maximumCount": 1350, "icon": "science-resource-10"},
+    {"id": "automaton", "name": "Исследовательский кампус", "description": "Собирает учёных, вычисления и лаборатории в одном месте.", "basePrice": 365000000000000.0, "baseCps": 130000000000.0, "maximumCount": 1300, "icon": "science-resource-11"},
+    {"id": "navigator", "name": "Наукоград", "description": "Целый город работает ради новых открытий.", "basePrice": 1.35e+16, "baseCps": 4300000000000.0, "maximumCount": 1250, "icon": "science-resource-12"},
+    {"id": "chronologist", "name": "Детектор частиц", "description": "Измеряет следы частиц и помогает понять устройство материи.", "basePrice": 4.95e+17, "baseCps": 140000000000000.0, "maximumCount": 1200, "icon": "science-resource-13"},
+    {"id": "oracle", "name": "Коллайдер", "description": "Столкновения частиц открывают новые физические закономерности.", "basePrice": 1.8e+19, "baseCps": 4600000000000000.0, "maximumCount": 1150, "icon": "science-resource-14"},
+    {"id": "architect", "name": "Термоядерный реактор", "description": "Управляемый синтез даёт энергию масштабным исследованиям.", "basePrice": 6.6e+20, "baseCps": 1.5e+17, "maximumCount": 1100, "icon": "science-resource-15"},
+    {"id": "nanoforge", "name": "Гравитационный реактор", "description": "Исследует управление гравитацией на пути к чёрной дыре.", "basePrice": 2.45e+22, "baseCps": 4.95e+18, "maximumCount": 1000, "icon": "science-resource-16"}
+  ];
+  const districts = [
+    {"id": "school", "name": "Школа", "resourceIDs": ["abacus", "algorithm"], "description": "Школьники и преподаватели решают задачи вместе. Бонус усиливает их производство."},
+    {"id": "university", "name": "Университет", "resourceIDs": ["calculator", "neuron"], "description": "Студенты и профессора проверяют теории и находят новые решения."},
+    {"id": "academy", "name": "Академия наук", "resourceIDs": ["quantum", "singularity"], "description": "Академики направляют исследовательские группы к новым открытиям."},
+    {"id": "research", "name": "Исследовательский центр", "resourceIDs": ["dimension", "universe"], "description": "Лаборатории и научные институты объединяют эксперименты и расчёты."},
+    {"id": "computing", "name": "Вычислительный центр", "resourceIDs": ["multiverse", "superintelligence"], "description": "Суперкомпьютеры и дата-центры ИИ ускоряют научные вычисления."},
+    {"id": "science-city", "name": "Наукоград", "resourceIDs": ["automaton", "navigator"], "description": "Исследовательские кампусы образуют город, работающий над общими задачами."},
+    {"id": "accelerator", "name": "Ускорительный комплекс", "resourceIDs": ["chronologist", "oracle"], "description": "Коллайдеры сталкивают частицы, а детекторы измеряют результаты."},
+    {"id": "energy", "name": "Энергетическая станция", "resourceIDs": ["architect", "nanoforge"], "description": "Термоядерные и гравитационные реакторы питают самые масштабные исследования."}
+  ];
+
+  const catalogue = new Map(resources.map(item => [item.id, item]));
+  const districtByID = new Map(districts.map(item => [item.id, item]));
+  const lateMilestones = {
+    superintelligence: [10, 25, 50, 75, 100, 150, 200, 300, 400],
+    automaton: [10, 25, 50, 75, 100, 150, 200, 250], navigator: [5, 10, 20, 35, 50, 75, 100],
+    chronologist: [3, 8, 15, 25, 45, 75], oracle: [2, 5, 10, 20, 50], architect: [1, 5, 10, 25], nanoforge: [2, 5, 10]
+  };
+  const lateTeamUnlock = {superintelligence:18, automaton:18, navigator:8, chronologist:5, oracle:3, architect:3, nanoforge:3};
+  const researchBudget = 8.888888888888889e23;
+
+  function roundPrice(value) {
+    const step = Math.max(1, 5 * Math.pow(10, Math.floor(Math.log10(value)) - 2));
+    return Math.ceil(value / step - 1e-10) * step;
+  }
+
+  function theoreticalPrice(item, owned, count = 1) {
+    if (!owned && count === 1) return item.basePrice;
+    const series = (ratio, length) => length === 1 ? 1 : (Math.pow(ratio, length) - 1) / (ratio - 1);
+    const early = Math.min(count, Math.max(0, 100 - owned));
+    const later = count - early;
+    let cost = early ? item.basePrice * Math.pow(1.15, owned) * series(1.15, early) : 0;
+    if (later) {
+      cost += item.basePrice * Math.pow(1.15, 100) * Math.pow(1.02, Math.max(0, owned - 100)) * series(1.02, later);
+    }
+    return roundPrice(Math.ceil(cost - 1e-9));
+  }
+
+  function investment(item, count) {
+    let total = 0;
+    for (let start = 0; start < count; start += 100) total += theoreticalPrice(item, start, Math.min(100, count - start));
+    return total;
+  }
+
+  function createResearch() {
+    const list = [];
+    function add(id, name, description, price, target, requiredAmount, options = {}) {
+      list.push({id, name, description, price: roundPrice(price), target, requiredAmount, multiplier:1, productionShare:0, requiredClicks:target === "click", pairID:null, ...options});
+    }
+    const manual = [
+      ["Острый карандаш", 100, 25], ["Быстрая мысль", 1500, 150],
+      ["Поток сознания", 25000, 500], ["Чистая математика", 1000000, 2000]
+    ];
+    manual.forEach(([name, price, taps], i) => add("click-" + (i+1), name, "Сила клика ×2.", price, "click", taps, {multiplier:2}));
+    const linked = [
+      ["Прикладная мысль", 5e4, 500, 0.015], ["Связь с лабораторией", 5e6, 2000, 0.025],
+      ["Коллективное озарение", 5e8, 5000, 0.03], ["Расчёт в уме", 5e10, 12000, 0.035],
+      ["Прикосновение к бесконечности", 5e12, 25000, 0.045]
+    ];
+    linked.forEach(([name, price, taps, share], i) => add("click-sync-" + (i+1), name,
+      "Каждый ручной клик дополнительно приносит " + (share * 100).toLocaleString("ru-RU") + "% текущего производства в секунду.", price, "click", taps, {productionShare:share}));
+    const firstNames = ["Двоичный разряд","Пять с плюсом","Красный диплом","Новый учебный план","Научная школа","Фундаментальный труд","Общая гипотеза","Точный эксперимент","Исследовательская программа","Параллельные вычисления","Обучение модели","Общий проект","Город открытий","Точная регистрация","Встречные пучки","Удержание плазмы","Управление гравитацией"];
+    const names = ["Первый метод","Совершенство","Новый метод","Прорыв","Большая теория","Научная школа","Новая парадигма","Великий синтез","За пределами"];
+    const levels = [10,25,50,75,100,150,250,500,1000];
+    const multipliers = [2,2,3,4,6,10,15,20,30];
+    const earlyFactors = [12,120,500,8000,120000,30000000], advancedFactors = [20,30,50], lateFactors = [3,4,5,6,8,10,12,16,20];
+    resources.forEach((item, i) => {
+      const late = lateMilestones[item.id];
+      let firstPrice = 0;
+      (late || levels).forEach((amount, level) => {
+        const next = theoreticalPrice(item, amount);
+        const cost = roundPrice(late ? next * (item.id === "nanoforge" ? 3 : lateFactors[level])
+          : level < 6 ? Math.max(item.basePrice * earlyFactors[level], next * 2) : next * advancedFactors[level - 6]);
+        if (!level) firstPrice = cost;
+        if (investment(item, amount) + cost > researchBudget) return;
+        const multiplier = late && level >= 6 ? 2 : multipliers[level];
+        add(item.id + "-" + (level + 1), level ? item.name + " · " + names[level] : firstNames[i],
+          item.name + ": собственное производство ×" + multiplier + ". Командный бонус сохраняется.", cost, item.id, amount, {multiplier});
+      });
+      const threshold = lateTeamUnlock[item.id] || 65;
+      const cost = roundPrice(Math.max(theoreticalPrice(item, threshold) * 3, late ? firstPrice * 1.25 : item.basePrice * 1800));
+      if (cost + investment(item, threshold) <= researchBudget) {
+        add(item.id + "-team", item.name + " · командная работа", "Бонус всему производству растёт с количеством помощников, предел +70%. Бонусы разных команд складываются.", cost, item.id, threshold, {teamwork:true});
+      }
+    });
+    districts.forEach(pair => {
+      const partner = Math.max(...pair.resourceIDs.map(id => catalogue.get(id).basePrice));
+      add("pair-" + pair.id + "-1", pair.name + " · совместный проект", "Предел бонуса пары растёт с 25% до 35%.", Math.min(partner * 120, researchBudget * 0.005),
+        "pair-" + pair.id, pair.resourceIDs.includes("nanoforge") ? 5 : 10, {pairID:pair.id});
+    });
+    return list.sort((a, b) => a.price - b.price);
+  }
+
+  const research = createResearch();
+  const researchByID = new Map(research.map(item => [item.id,item]));
+  const storageKey = "integrals.duomax.progress.v1";
+  const empty = () => ({version:1,balance:0,totalEarned:0,clicks:0,counts:{},upgrades:[],discoveries:[],seen:[],progress:{},purchases:{},runPurchases:{},prestigeLevel:0,highestPrestige:0,cosmicAscensions:0,totalRemainder:0,lifetimeBits:"",lifetimeEarned:0,runEarned:0,baselineClicks:0,baselineWins:0,prestigeDiscovered:false});
+  function load() {
+    try {
+      const raw = JSON.parse(window.localStorage.getItem(storageKey));
+      if (!raw || raw.version !== 1 || ![raw.balance,raw.clicks,raw.totalEarned].every(x => Number.isFinite(x) && x >= 0)) return empty();
+      const data = empty();
+      data.balance = raw.balance;
+      data.totalEarned = Math.max(data.balance, raw.totalEarned);
+      data.clicks = Math.floor(raw.clicks);
+      for (const item of resources) {
+        const value = raw.counts && raw.counts[item.id];
+        data.counts[item.id] = Number.isInteger(value) ? Math.max(0, Math.min(item.maximumCount, value)) : 0;
+      }
+      data.upgrades = Array.isArray(raw.upgrades) ? [...new Set(raw.upgrades.filter(id => researchByID.has(id)))] : [];
+      data.discoveries = Array.isArray(raw.discoveries) ? [...new Set(raw.discoveries.filter(id => catalogue.has(id)))] : [];
+      data.seen = Array.isArray(raw.seen) ? raw.seen.filter(id=>catalogue.has(id)) : [];
+      data.progress = raw.progress && typeof raw.progress === "object" && !Array.isArray(raw.progress) ? raw.progress : {};
+      for (const r of resources) data.purchases[r.id] = validNumber(raw.purchases ? raw.purchases[r.id] : data.counts[r.id]);
+      for (const item of resources) data.runPurchases[item.id] = validNumber(raw.runPurchases ? raw.runPurchases[item.id] : data.counts[item.id]);
+      for (const key of ["highestPrestige","prestigeLevel","cosmicAscensions","baselineClicks","baselineWins"]) data[key] = Math.floor(validNumber(raw[key]));
+      data.prestigeLevel = Math.min(10,data.prestigeLevel);
+      data.highestPrestige = Math.max(data.prestigeLevel,Math.min(10,data.highestPrestige));
+      data.prestigeDiscovered = Boolean(raw.prestigeDiscovered);
+      data.lifetimeEarned = Math.max(validNumber(raw.lifetimeEarned),data.totalEarned);
+      data.totalRemainder = Number.isFinite(raw.totalRemainder) ? raw.totalRemainder : 0;
+      data.lifetimeBits = typeof raw.lifetimeBits==="string" && /^[0-9a-f]{1,478}$/.test(raw.lifetimeBits) ? raw.lifetimeBits : "";
+      data.runEarned = validNumber(raw.runEarned === undefined ? data.totalEarned : raw.runEarned);
+      return data;
+    } catch (_) { return empty(); }
+  }
+  function validNumber(x) { return Number.isFinite(x) && x >= 0 ? x : 0; }
+  // Every finite IEEE-754 reward is an integer multiple of 2^-1074.
+  // Keep that exact lifetime sum across world resets, as the phone ledger does.
+  const fp = new DataView(new ArrayBuffer(8));
+  const fractionBits=1074n, fractionUnit=1n << fractionBits, lifetimeCap=(10n**250n)*fractionUnit;
+  function magnitude(amount){
+    if(!(amount>0))return 0n;
+    if(amount>=1e250)return lifetimeCap;
+    fp.setFloat64(0,amount); const hi=fp.getUint32(0), lo=fp.getUint32(4), exponent=(hi>>>20)&2047;
+    const mantissa=(BigInt(hi&0xfffff)<<32n)+BigInt(lo)+(exponent?1n<<52n:0n);
+    return mantissa << BigInt(Math.max(0,exponent-1));
+  }
+  const state = load();
+  function savedLifetime() {return state.lifetimeBits ? BigInt("0x"+state.lifetimeBits) : magnitude(state.lifetimeEarned);}
+  let lifetime=savedLifetime();
+  function lifetimeText(pending=0){
+    const estimate=lifetime+magnitude(pending);
+    const total=estimate>lifetimeCap ? lifetimeCap : estimate;
+    const tenths=(total*10n + fractionUnit/2n) >> fractionBits;
+    const whole=String(tenths/10n).replace(/\B(?=(\d{3})+(?!\d))/g," ");
+    return whole + (tenths%10n ? ","+String(tenths%10n) : "");
+  }
+  const prestigePrice = Number("8888888888888888888888888");
+  const discovered = new Set(state.discoveries), studied = new Set(state.upgrades);
+  const owned = id => state.counts[id] || 0;
+  const isUnlocked = item => {
+    const index = resources.indexOf(item);
+    return index === 0 || (index > 0 && owned(resources[index-1].id) > 0);
+  };
+  function updateDiscoveries() {
+    if (owned("nanoforge") && state.balance >= prestigePrice) state.prestigeDiscovered = true;
+    resources.forEach(item => {
+      if (!discovered.has(item.id) && (owned(item.id) || (isUnlocked(item) && state.balance >= item.basePrice))) discovered.add(item.id);
+    });
+  }
+  updateDiscoveries();
+
+  const clock = () => performance.now();
+  let lastTick = clock(), lastSave = lastTick, lastTap = -Infinity, active = !document.hidden;
+  let dirty = false, productionCache = null;
+  function save() {
+    try {
+      state.discoveries = [...discovered];
+      state.upgrades = [...studied];
+      window.localStorage.setItem(storageKey, JSON.stringify(state));
+      dirty = false;
+      lastSave = clock();
+      return true;
+    } catch (_) { return false; }
+  }
+  function calculateProduction(countOf) {
+    const rates = {}, teamBonus = {};
+    resources.forEach(item => { rates[item.id] = item.baseCps * countOf(item.id) * (1 + state.prestigeLevel * 0.1); });
+    let flat = 1 + state.prestigeLevel * 0.1, share = 0.05, team = 0;
+    for (const id of studied) {
+      const item = researchByID.get(id);
+      if (item.target === "click") { flat *= item.multiplier; share += item.productionShare; }
+      else if (catalogue.has(item.target)) {
+        rates[item.target] *= item.multiplier;
+        if (item.teamwork) {
+          const count = countOf(item.target), late = lateMilestones[item.target];
+          const scale = late ? late[late.length - 1] * 0.3 : 300;
+          if (count) {
+            const fraction = 0.1 + 0.6 * count / (count + scale);
+            teamBonus[item.target] = fraction;
+            team += fraction;
+          }
+        }
+      }
+    }
+    const baseCps = resources.reduce((sum, item) => sum + rates[item.id], 0);
+    const pairs = districts.map(pair => {
+      const matched = Math.min(...pair.resourceIDs.map(countOf));
+      const limit = studied.has("pair-" + pair.id + "-1") ? 0.35 : 0.25;
+      const fraction = limit * matched / (matched + 20);
+      let extra = 0;
+      for (const id of pair.resourceIDs) { extra += rates[id] * fraction; rates[id] *= 1 + fraction; }
+      return {...pair, unlocked:pair.resourceIDs.some(id => countOf(id)>0), matchedCount:matched, bonusFraction:fraction, extraCps:extra * (1+team)};
+    });
+    let cps = 0;
+    resources.forEach(item => { rates[item.id] *= 1 + team; cps += rates[item.id]; });
+    // Each project's extraCps already includes the research multiplier.
+    const teamGainCps = pairs.reduce((sum, pair) => sum + pair.extraCps, baseCps * team);
+    return {cps,clickPower:flat + cps * Math.min(0.2, share), rates,pairs,teamBonus,
+      teamGainCps,teamGainFraction:baseCps ? teamGainCps / baseCps : 0,teamResearchFraction:team};
+  }
+  function production(){ return productionCache || (productionCache=calculateProduction(owned)); }
+  function productionGain(id, quantity){
+    if(!catalogue.has(id)||!Number.isInteger(quantity)||quantity<1)return 0;
+    return Math.max(0,calculateProduction(key=>owned(key)+(key===id ? quantity : 0)).cps-production().cps);
+  }
+  function credit(amount) {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    state.balance = Math.min(1e250, state.balance + amount);
+    const previous=state.totalEarned, sum=previous+amount, included=sum-previous;
+    const rounding=(previous-(sum-included))+(amount-included), low=state.totalRemainder+rounding;
+    const combined=sum+low;
+    state.totalEarned=Math.max(state.balance,Math.min(1e250,combined));
+    state.totalRemainder=state.totalEarned>=1e250||combined!==state.totalEarned ? 0 : low-(combined-sum);
+    state.runEarned = Math.min(1e250,state.runEarned + amount);
+    lifetime+=magnitude(amount);
+    if(lifetime>lifetimeCap)lifetime=lifetimeCap;
+    state.lifetimeBits=lifetime.toString(16);
+    state.lifetimeEarned=Number(lifetime >> fractionBits) + Number((lifetime%fractionUnit)>>1022n) / 4503599627370496;
+    dirty = true;
+    updateDiscoveries();
+  }
+  // The display and ledger use the same elapsed interval and foreground cap.
+  // Only settle() credits production or writes the save.
+  function pendingIncome(now) {
+    return active ? production().cps * Math.min(5, Math.max(0, now-lastTick) / 1000) : 0;
+  }
+  window.LiveCounters = Object.freeze({
+    earning: () => active && production().cps>0,
+    balance: (now=clock()) => Math.min(1e250,state.balance+pendingIncome(now)),
+    totals(now=clock()) {
+      const pending=pendingIncome(now);
+      return {
+        balance:Math.min(1e250,state.balance+pending),
+        runEarned:Math.min(1e250,state.runEarned+pending),
+        lifetime:lifetimeText(pending)
+      };
+    }
+  });
+  function settle() {
+    const now = clock();
+    credit(pendingIncome(now));
+    lastTick = now;
+    if (dirty && now - lastSave >= 5000) save();
+  }
+  function quantity(id, amount = 1) {
+    const item = catalogue.get(id);
+    if (!item || !isUnlocked(item)) return 0;
+    const available = item.maximumCount - owned(id);
+    if (amount !== 0) return Number.isInteger(amount) && amount > 0 && amount <= available ? amount : 0;
+    let lo = 0, hi = available;
+    while (lo < hi) {
+      const candidate = Math.ceil((lo + hi) / 2);
+      if (theoreticalPrice(item, owned(id), candidate) <= state.balance) lo = candidate;
+      else hi = candidate - 1;
+    }
+    return lo;
+  }
+  function price(id, amount = 1) {
+    const item = catalogue.get(id);
+    if (!item) return Infinity;
+    if (amount === 0) amount = Math.max(1,quantity(id, 0));
+    if (!Number.isInteger(amount) || amount < 1 || owned(id) + amount > item.maximumCount) return Infinity;
+    return theoreticalPrice(item, owned(id), amount);
+  }
+  function researchStatus(item) {
+    const pair = item.pairID && districtByID.get(item.pairID);
+    const amount = pair ? Math.min(...pair.resourceIDs.map(owned)) : item.requiredClicks ? state.clicks : owned(item.target);
+    const visible = pair ? amount > 0 : item.requiredClicks || discovered.has(item.target);
+    const unlocked = amount >= item.requiredAmount, done = studied.has(item.id);
+    return {...item, visible, unlocked, studied:done, canBuy:visible && unlocked && !done && state.balance >= item.price};
+  }
+  function affordableResearchCount(){
+    let count=0;
+    for (const item of research){
+      if (item.price>state.balance)break;
+      if (studied.has(item.id))continue;
+      if (item.pairID){
+        if(districtByID.get(item.pairID).resourceIDs.every(id=>owned(id)>=item.requiredAmount)) count++;
+      }else if(item.requiredClicks ? state.clicks>=item.requiredAmount : discovered.has(item.target)&&owned(item.target)>=item.requiredAmount) count++;
+    }
+    return count;
+  }
+  function canPrestige() {
+    return owned("nanoforge") > 0 && state.balance >= prestigePrice && !(state.progress.quests && state.progress.quests.active);
+  }
+  function snapshot() {
+    const prod = production();
+    return {
+      balance:state.balance, clickPower:prod.clickPower, cps:prod.cps, clicks:state.clicks, totalEarned:state.totalEarned,
+      totalHelpers:resources.reduce((sum, item) => sum + owned(item.id),0), pairs:prod.pairs,
+      teamGainCps:prod.teamGainCps, teamGainFraction:prod.teamGainFraction, teamResearchFraction:prod.teamResearchFraction,
+      prestigeLevel:state.prestigeLevel, highestPrestige:state.highestPrestige, cosmicAscensions:state.cosmicAscensions,
+      lifetimeEarned:state.lifetimeEarned, runEarned:state.runEarned, runClicks:state.clicks-state.baselineClicks,
+      challengeWins:state.progress.quests?.wins || 0, runWins:(state.progress.quests && state.progress.quests.wins || 0)-state.baselineWins,
+      goldenClicks:state.progress.extras?.goldenClicks || 0, spins:state.progress.extras?.spins || 0,
+      prestigePrice, canPrestige:canPrestige(), prestigeDiscovered:state.prestigeDiscovered, hasPrestigeResource:owned("nanoforge")>0,
+      get affordableResearchCount(){return affordableResearchCount();},
+      get hasUnseenResources(){return [...discovered].some(id=>!state.seen.includes(id));},
+      researchCount:studied.size, totalPurchased:Object.values(state.purchases).reduce((a,b)=>a+b,0),
+      // UI reads the full shop and research catalogue only on their respective screens.
+      get resources() { return resources.map(item => ({...item, owned:owned(item.id), purchasedThisRun:state.runPurchases[item.id]||0, price:price(item.id), discovered:discovered.has(item.id), unseen:discovered.has(item.id) && !state.seen.includes(item.id), unlocked:isUnlocked(item),
+        canBuy:isUnlocked(item) && state.balance >= price(item.id), production:prod.rates[item.id], teamBonusFraction:prod.teamBonus[item.id] || 0})); },
+      get research() { return research.map(researchStatus); }
+    };
+  }
+  function tap() {
+    const time=clock();
+    if (!active || time-lastTap<1000/30) return 0;
+    lastTap=time;
+    settle();
+    const reward = production().clickPower;
+    state.clicks = Math.min(Number.MAX_SAFE_INTEGER, state.clicks + 1);
+    credit(reward);
+    save(); collectHonors();
+    return reward;
+  }
+  function buy(id, amount = 1) {
+    if (!active) return false;
+    settle();
+    const count = quantity(id, amount), cost = price(id, count);
+    if (count === 0 || state.balance < cost) return false;
+    const before = rollbackPoint();
+    state.balance -= cost;
+    state.counts[id] = owned(id) + count;
+    state.purchases[id] = (state.purchases[id] || 0) + count;
+    state.runPurchases[id] = (state.runPurchases[id] || 0) + count;
+    dirty = true;
+    productionCache = null;
+    updateDiscoveries();
+    const saved=commitOrRestore(before);if(saved)collectHonors();return saved;
+  }
+  function study(id) {
+    if (!active) return false;
+    settle();
+    const item = researchByID.get(id);
+    if (!item || !researchStatus(item).canBuy) return false;
+    const before = rollbackPoint();
+    state.balance -= item.price;
+    studied.add(id);
+    dirty = true;
+    productionCache = null;
+    const saved=commitOrRestore(before);if(saved)collectHonors();return saved;
+  }
+  function markSeen(id) {
+    if (discovered.has(id) && !state.seen.includes(id)) {state.seen.push(id); save();}
+  }
+  const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
+  function progress(key) {return clone(state.progress[key]);}
+  function rollbackPoint(){return clone({...state,discoveries:[...discovered],upgrades:[...studied]});}
+  function commitOrRestore(before){if(save())return true;restore(before);return false;}
+  function restore(before) {
+    Object.assign(state,before); lifetime=savedLifetime();
+    for (const [set,items] of [[discovered,state.discoveries],[studied,state.upgrades]]) {
+      set.clear(); items.forEach(id=>set.add(id));
+    }
+    productionCache=null;
+  }
+  function applyReward(change = {}){
+    const award = change.integrals === undefined ? 0 : change.integrals;
+    if (!Number.isFinite(award)) return false;
+    const resource = catalogue.get(change.resourceID);
+    if (change.resourceID && (!resource || !Number.isInteger(change.count) || change.count <= 0 ||
+        owned(resource.id) + change.count > resource.maximumCount)) return false;
+    if (award >= 0) credit(award); else state.balance = Math.max(0,state.balance + award);
+    if (resource) {state.counts[resource.id] = owned(resource.id) + change.count; productionCache=null; updateDiscoveries();}
+    dirty=true;return true;
+  }
+  function collectHonors(){if(window.Honors)window.Honors.collect();}
+  function updateProgress(key,value,change = {}) {
+    if (!key || typeof key !== "string" || Object.prototype.hasOwnProperty.call(Object.prototype,key)) return false;
+    settle();
+    const before=rollbackPoint();
+    if(!applyReward(change))return false;
+    state.progress[key]=clone(value);
+    const saved=commitOrRestore(before);
+    if(saved && (change.integrals || change.resourceID || key==="quests"))collectHonors();
+    return saved;
+  }
+  // Balances, stock, earned IDs and reward receipts are written together.
+  // A chain may award a resource that unlocks another milestone immediately.
+  function commitHonors(makeReceipts){
+    settle();const before=rollbackPoint();
+    try {
+      const receipts=makeReceipts(applyReward);
+      if(!receipts){restore(before);return false;}
+      state.progress.honors=receipts;
+      return commitOrRestore(before);
+    } catch (_) {restore(before);return false;}
+  }
+  function award(amount) {
+    if (!Number.isFinite(amount) || amount < 0) return false;
+    return updateProgress("awards",state.progress.awards || {},{integrals:amount});
+  }
+  function resetRun(options = {}) {
+    settle();
+    if (!canPrestige()) return false;
+    if (window.Honors && !window.Honors.collect()) return false;
+    const before=rollbackPoint();
+    if (state.prestigeLevel === 10) {
+      state.prestigeLevel=0; state.cosmicAscensions++; state.totalEarned=0; state.totalRemainder=0;
+      if (state.progress.quests) state.progress.quests.result=null;
+    } else { state.prestigeLevel++; state.highestPrestige=Math.max(state.highestPrestige,state.prestigeLevel); }
+    if (options.extras) state.progress.extras = clone(options.extras);
+    state.baselineClicks=state.clicks; state.baselineWins=state.progress.quests && state.progress.quests.wins || 0;
+    state.runEarned=0; state.balance=0; state.counts={}; state.runPurchases={}; state.seen=[];
+    state.prestigeDiscovered=false; discovered.clear(); studied.clear();
+    productionCache=null; dirty=true;
+    if (save()) { if (window.Quests) Quests.refreshProgress();collectHonors(); return true; }
+    restore(before); return false;
+  }
+  function pause() { if (active) { settle(); active = false; if (dirty) save(); } }
+  function resume() { if (!active) { lastTick = clock(); lastTap = -Infinity; active = true; } }
+  document.addEventListener("visibilitychange", () => document.hidden ? pause() : resume());
+  window.addEventListener("duopause", pause);
+  window.addEventListener("duoresume", () => { if (!document.hidden) resume(); });
+  window.addEventListener("pagehide", pause);
+  window.addEventListener("pageshow", () => { if (!document.hidden) resume(); });
+  function hud() { const prod=production(); return {balance:state.balance,cps:prod.cps,clickPower:prod.clickPower,clicks:state.clicks}; }
+  window.Economy = {snapshot, hud, commitHonors, productionGain, lifetimeText, progress, updateProgress, award, resetRun, markSeen, owned,
+    purchased:id => state.purchases[id] || 0, grantValue:(id,count) => catalogue.has(id) ? theoreticalPrice(catalogue.get(id),owned(id),count) : 0,
+     tap, buy, study, quantity, price, save, pause, resume, tick() { settle(); collectHonors(); return snapshot(); }};
+})();
+
+;
+// Daily offers, black-hole transitions and golden flights share the economy save.
+window.ExtraModel = (() => {
+  const weights=[25,20,15,10,10,8,7,5], seconds=[30,45,60,90,120,180,300,600];
+  const price=Number('8888888888888888888888888');
+  let formatter;
+  function calendarDay(time,zone) {
+    if(!formatter || formatter.resolvedOptions().timeZone!==zone)
+      formatter=new Intl.DateTimeFormat('en-US',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'});
+    const parts={}; for(const part of formatter.formatToParts(time)) parts[part.type]=part.value;
+    return Number(parts.year+parts.month+parts.day);
+  }
+  function load() {
+    const saved=Economy.progress('extras');
+    if(saved && saved.zone) return saved;
+    const now=Date.now(), zone=Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';
+    const model={zone,firstDay:calendarDay(now,zone),claimedDay:0,latestDay:0,offer:null,receipt:null,goldenClicks:0,spins:0,
+      goldWait:45,goldEvent:null};
+    Economy.updateProgress('extras',model);
+    return model;
+  }
+  function save(model,reward){return Economy.updateProgress('extras',model,reward)}
+  function available(m=load()){const day=calendarDay(Date.now(),m.zone);return !!m.receipt||(day>m.firstDay&&day>=m.latestDay&&day>m.claimedDay)}
+  function shuffle(items) {const copy=items.slice();for(let i=copy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[copy[i],copy[j]]=[copy[j],copy[i]]}return copy}
+  function candidate(budget,s) {
+    for(const r of shuffle(s.resources.filter(r=>r.discovered&&r.unlocked&&r.owned<r.maximumCount))){
+      const gain=n=>Economy.productionGain(r.id,n);
+      let lng=0,high=r.maximumCount-r.owned;
+      const value=n=>Math.max(Economy.price(r.id,n),gain(n)*600);
+      while(lng<high){const mid=Math.ceil((lng+high)/2); if(value(mid)<=budget)lng=mid;else high=mid-1}
+      if(lng && value(lng)>=.65*budget && gain(lng)>=Math.max(.01,s.cps*.002))return {resourceID:r.id,count:lng};
+    } return {};
+  }
+  function offer(){
+    const m=load();if(!available(m)||m.receipt)return m.offer;
+    const day=calendarDay(Date.now(),m.zone);
+    if(m.offer?.day===day){
+      let changed=false;
+      const owned=Economy.snapshot().resources;
+      for(const p of m.offer.prizes){
+        if(!p.resourceID)continue;
+        const r=owned.find(x=>x.id===p.resourceID);
+        if(!r?.unlocked || !(p.count>0) || r.owned+p.count>r.maximumCount){
+          delete p.resourceID;delete p.count;changed=true;
+        }
+      }
+      return !changed||save(m)?m.offer:null;
+    }
+    const s=Economy.snapshot(),slots=shuffle([2,4,6]).slice(0,Math.random()<.5?2:3);
+    const prizes=seconds.map((duration,i)=>{
+      const integrals=Math.max(25,Math.floor(Math.max(1,s.cps)*duration*(.9+Math.random()*.2)));
+      return {id:i,weight:weights[i],integrals,...(slots.includes(i)?candidate(integrals,s):{})};
+    });
+    m.latestDay=day;m.offer={day,prizes:shuffle(prizes)};return save(m)?m.offer:null;
+  }
+  function presentationDay(m=load()){
+    if(m.receipt)return m.claimedDay || null;
+    if(!available(m))return null;
+    const today=calendarDay(Date.now(),m.zone);
+    if(m.offer?.day===today)return today;
+    return offer()?.day===today ? today : null;
+  }
+  function spin(){
+    const m=load();if(!available(m)||m.receipt||!m.offer||m.offer.day!==calendarDay(Date.now(),m.zone))return null;
+    let roll=Math.floor(Math.random()*100);
+    const selected=m.offer.prizes.find(p=>(roll-=p.weight)<0);
+    const prize={...selected};
+    const r=prize.resourceID&&Economy.snapshot().resources.find(r=>r.id===prize.resourceID);
+    if(!r||!r.unlocked||r.owned+prize.count>r.maximumCount){delete prize.resourceID;delete prize.count}
+    m.claimedDay=m.offer.day;m.spins+=1;m.receipt=prize;
+    return save(m,prize.resourceID?{resourceID:prize.resourceID,count:prize.count}:{integrals:prize.integrals})===false?null:prize;
+  }
+  function acknowledge(){const m=load();if(!m.receipt)return true;m.receipt=null;return save(m)}
+  function collapse(){const m=load();return Economy.resetRun({extras:{...m,goldEvent:null,goldWait:90,offer:null}})}
+  return {load,save,available,presentationDay,offer,spin,acknowledge,collapse,price};
+})();
+
+;
+// The routes are baked from the iOS ScienceWorldRoadNetwork.PublicRoutes at each of the
+// eight city stages. Signed corridor IDs share a single measured polyline in both directions.
+(() => {
+  "use strict";
+  const roadLines = [[281,373,282,386,285,408],[285,408,299,424,310,430,321,435,332,442,344,448,353,456,362,464,376,479,388,478,401,476],[401,476,415,467,429,458,447,452,465,445,486,440,507,436,530,434,552,433,574,434,597,436,618,440,639,445,657,452,675,458,689,467,703,476,712,486,720,497,726,519,720,541,712,552,703,562,689,571,675,580],[675,580,657,586,639,593,618,598,597,602,574,604,552,605,530,604,507,602,486,598,465,593,447,586,429,580,415,571,401,562,392,552,384,541,378,519,384,497,392,486,401,476],[579,340,577,348,575,355],[575,355,562,354,548,353,535,354,522,355,508,358,495,362,483,366,471,369,458,370,445,370,432,368,419,367,402,370,385,374,370,377,354,380,340,382,326,384,314,389,302,394,285,408],[575,355,561,373,552,393,550,414,552,433],[552,433,530,434,507,436,486,440,465,445,447,452,429,458,415,467,401,476],[675,580,689,571,703,562,712,552,720,541,726,519,720,497,712,486,703,476,689,467,675,458,657,452,639,445,618,440,597,436,574,434,552,433],[575,355,591,354,607,353,620,354,634,356,650,365,660,373,670,381,685,388,700,395,715,398,730,401,745,403,760,405],[760,405,756,416,752,428,744,439,735,450,726,458,718,467,703,476],[703,476,712,486,720,497,726,519,720,541,712,552,703,562,689,571,675,580],[552,433,574,434,597,436,618,440,639,445,657,452,675,458,689,467,703,476],[876,394,871,402,864,409],[864,409,844,409,825,409,808,408,790,407,775,406,760,405],[864,409,880,412,895,416,906,423,916,430,930,432,945,435,960,433,974,431,988,426,1003,420,1016,412,1028,403,1033,417,1038,431,1048,444,1057,456,1070,472,1083,489,1089,510,1095,530,1094,553,1093,576,1084,596,1075,617,1060,626,1044,636,1028,642,1013,644,998,645,981,645,963,644,946,644,930,640,914,635,898,631],[898,631,881,628,864,626,845,620,826,615,804,612,782,608,766,604,750,599,734,596,718,592,696,586,675,580],[885,609,886,619,898,631],[401,476,392,486,384,497,378,519,384,541,392,552,401,562,415,571,429,580],[429,580,447,586,465,593,486,598,507,602,530,604,552,605,574,604,597,602,618,598,639,593,657,586,675,580],[429,580,408,589,386,596,372,600,359,604,340,606,322,608,304,608,285,608],[285,608,264,608,242,609,222,609,201,609,178,606,156,602,138,596,120,590,107,575,94,560,81,548,68,536,60,522,53,507,52,492,52,477,57,461,62,445,70,432,78,420,87,410,96,400,116,393,135,401,156,406,176,409,188,410,200,410,215,410,230,410,244,408,257,405,271,406,285,408],[287,583,287,596,285,608],[675,580,690,586,704,591,713,610,725,620,737,630,744,640,752,650,754,670,746,680,739,690,741,710],[741,710,722,716,704,721,681,727,668,731,655,735,637,742,616,753,608,764,599,776,591,797,586,808,581,820,568,834,558,841,548,848,534,854,520,860,505,864,490,869,477,873,464,877,450,877,437,877,420,878,402,879,386,880,369,880],[369,880,350,885,330,890,312,895,293,901,275,906,257,909,238,913,220,916,200,915,180,915,160,914,144,910,128,907,112,903,101,889,90,875,87,852,84,830,80,808,76,785,70,764,64,743,64,722,63,702,68,684,74,665,83,648,92,630,101,616,110,603,120,590],[120,590,107,575,94,560,81,548,68,536,60,522,53,507,52,492,52,477,57,461,62,445,70,432,78,420,87,410,96,400,116,393,135,401,156,406,176,409,188,410,200,410,215,410,230,410,244,408,257,405,271,406,285,408],[120,590,138,596,156,602,178,606,201,609,222,609,242,609,264,608,285,608],[345,835,350,850,359,867,369,880],[741,710,722,716,704,721,681,727,668,731,655,735,637,742,616,753,608,764,599,776,591,797,586,808,581,820,568,834,558,841,548,848,534,854,520,860,505,864,490,869,477,873,464,877],[464,877,450,877,437,877,420,878,402,879,386,880,369,880],[741,710,758,720,775,730,794,740,814,750,832,760,851,770,868,780,886,790,904,800,922,810,937,817,952,823,967,830,985,840,1003,850,1018,860,1032,870,1044,880,1055,890,1064,900,1072,910,1084,930,1093,950,1097,970,1097,990,1095,1010,1087,1030,1080,1040,1073,1050,1065,1060,1057,1070,1045,1080,1033,1090,1020,1100,1008,1110,997,1120,986,1130,978,1140,970,1150,961,1170,958,1180,939,1174],[939,1174,919,1172,898,1172,886,1172,873,1173,858,1172,843,1172,828,1170,814,1169,799,1166,784,1163,768,1160,752,1156,738,1153,723,1150,709,1146,695,1143,682,1138,669,1134,656,1130,643,1125,624,1116,604,1106,592,1096,580,1087,571,1070,581,1052,590,1041,600,1030,608,1018,617,1007,618,989,610,978,603,968,583,960,572,955,561,950,541,939,520,928,500,918,479,908,468,901,457,894,461,884,464,877],[923,1143,930,1155,939,1174],[864,409,880,412,895,416,906,423,916,430,930,432,945,435,960,433,974,431,988,426,1003,420,1016,412,1028,403,1033,417,1038,431,1048,444,1057,456,1070,472,1083,489,1089,510,1095,530,1094,553,1093,576,1084,596,1075,617,1060,626,1044,636,1028,642],[1028,642,1042,646,1055,650,1064,662,1072,673,1078,686,1083,699,1082,713,1082,727,1076,740,1071,754,1061,766,1051,778,1040,788,1030,799],[1030,799,1015,817,1009,833,1003,850],[1003,850,985,840,967,830,952,823,937,817,922,810,904,800,886,790,868,780,851,770,832,760,814,750,794,740,775,730,758,720,741,710],[1028,642,1013,644,998,645,981,645,963,644,946,644,930,640,914,635,898,631],[1003,850,1018,860,1032,870,1044,880,1055,890,1064,900,1072,910,1084,930,1093,950,1097,970,1097,990,1095,1010,1087,1030,1080,1040,1073,1050,1065,1060,1057,1070,1045,1080,1033,1090,1020,1100,1008,1110,997,1120,986,1130,978,1140,970,1150,961,1170,958,1180,939,1174],[917,754,918,768,937,778,960,786,985,792,1010,799,1030,799]];
+  const stageRoutes = [[[[0,0],[1,2,3,4,-2,-1],[1,2,-4,-3,-2,-1]]],[[[1,0],[5,6,-1],[5,7,8,-4,9,-7,6,-1],[5,7,-9,4,-8,-7,6,-1],[5,7,8,-4,9,8,-2,-1],[5,7,-9,4,-2,-1]],[[0,1],[1,-6,-5],[1,2,-8,-9,4,-8,-7,-5],[1,2,-8,-9,4,-2,-6,-5],[1,2,-4,9,-7,-5],[1,2,-4,9,8,-2,-6,-5]],[[1,1],[5,7,8,-2,-6,-5],[5,6,2,-8,-9,4,-2,-6,-5],[5,6,2,-4,9,8,-2,-6,-5],[5,7,-9,4,-2,-6,-5],[5,7,-9,4,-8,-7,-5]]],[[[1,0],[5,6,-1],[5,10,11,12,4,-8,13,-11,-10,6,-1],[5,7,8,-4,-12,-11,-10,6,-1],[5,7,13,-11,-10,6,-1],[5,10,11,12,4,-2,-1],[5,7,13,12,4,-8,-7,10,11,-13,8,-4,-12,-13,8,-2,-1],[5,7,13,12,4,-8,-7,6,-1],[5,7,13,12,4,-2,-1],[5,7,13,12,4,-8,-7,10,11,-13,8,-2,-1],[5,7,8,-4,-12,-13,8,-2,-1],[5,7,8,-4,-12,-13,-7,10,11,-13,8,-2,-1]],[[2,0],[14,15,-10,6,-1],[14,15,-10,7,8,-4,-12,-13,8,-2,-1],[14,15,11,12,4,-8,13,-11,-10,6,-1],[14,15,-10,7,8,-4,-12,-11,-10,6,-1],[14,15,11,12,4,-8,-7,10,11,-13,8,-4,-12,-13,8,-2,-1],[14,15,-10,7,13,12,4,-8,-7,6,-1],[14,15,11,12,4,-8,-7,6,-1],[14,15,-10,7,13,-11,-10,6,-1],[14,15,11,12,4,-8,13,-11,-10,7,8,-4,-12,-13,8,-2,-1],[14,15,11,-13,-7,10,11,12,4,-8,13,-11,-10,6,-1],[14,15,11,12,4,-8,-7,10,11,-13,8,-2,-1],[14,15,-10,7,13,12,4,-8,-7,10,11,-13,8,-2,-1]],[[0,1],[1,-6,-5],[1,2,-8,13,12,4,-8,-7,-5],[1,2,-8,13,12,4,-2,-6,-5],[1,2,-8,13,-11,-10,-5],[1,2,-4,-12,-11,-10,-5],[1,2,-4,-12,-13,8,-2,-6,-5]],[[2,1],[14,15,-10,-5],[14,15,11,-13,8,-4,-12,-11,-10,-5],[14,15,11,12,4,-2,-6,-5],[14,15,11,12,4,-8,13,-11,-10,-5],[14,15,11,-13,8,-2,-6,-5],[14,15,11,12,4,-8,-7,-5]],[[0,2],[1,-6,10,-15,-14],[1,2,-8,-7,10,11,-13,8,-2,-6,7,13,12,4,-8,13,-11,-15,-14],[1,2,-4,-12,-13,-7,10,11,12,4,-8,13,-11,-15,-14],[1,2,-4,-12,-13,-7,6,2,-8,13,12,4,-8,13,-11,-15,-14],[1,-6,7,8,-4,-12,-13,-7,10,11,12,4,-8,13,-11,-15,-14],[1,2,-4,-12,-13,-7,10,11,12,4,-2,-6,10,-15,-14],[1,-6,10,11,12,4,-2,-6,10,-15,-14],[1,2,-8,13,-11,-10,6,2,-4,-12,-11,-15,-14],[1,2,-8,13,-11,-10,6,2,-8,13,-11,-15,-14],[1,-6,10,11,12,4,-8,13,-11,-15,-14],[1,-6,10,11,-13,8,-4,-12,-11,-10,7,13,-11,-15,-14],[1,2,-8,-7,6,2,-4,-12,-11,-15,-14],[1,2,-8,13,12,4,-2,-6,10,11,-13,-7,10,-15,-14],[1,2,-8,-7,6,2,-4,-12,-11,-10,7,8,-2,-6,10,-15,-14]],[[1,2],[5,10,-15,-14],[5,7,8,-4,-12,-11,-10,6,2,-8,13,-11,-15,-14],[5,10,11,-13,8,-2,-6,7,13,-11,-15,-14],[5,10,11,-13,8,-4,-12,-11,-10,6,2,-8,13,-11,-15,-14],[5,10,11,-13,-7,6,2,-8,13,-11,-15,-14],[5,6,2,-8,13,-11,-10,7,8,-4,-12,-11,-15,-14],[5,10,11,12,4,-8,13,-11,-15,-14],[5,10,11,-13,8,-2,-6,10,-15,-14],[5,6,2,-8,-7,10,11,-13,-7,10,-15,-14],[5,10,11,-13,-7,6,2,-4,-12,-11,-15,-14],[5,6,2,-8,13,-11,-10,7,13,-11,-15,-14],[5,7,8,-4,-12,-11,-10,7,13,-11,-15,-14],[5,6,2,-4,-12,-13,8,-2,-6,10,-15,-14],[5,6,2,-4,-12,-13,-7,10,-15,-14]],[[2,2],[14,15,-10,7,13,-11,-15,-14],[14,15,11,-13,8,-4,-12,-11,-10,6,2,-8,-7,10,-15,-14],[14,15,-10,7,8,-4,-12,-11,-15,-14],[14,15,11,12,4,-8,13,-11,-10,7,13,-11,-15,-14],[14,15,11,12,4,-2,-6,7,8,-4,-12,-11,-15,-14],[14,15,11,12,4,-2,-6,10,-15,-14],[14,15,11,12,4,-2,-6,7,13,-11,-10,7,13,-11,-15,-14],[14,15,11,12,4,-8,13,-11,-10,6,2,-4,-12,-11,-15,-14],[14,15,11,12,4,-8,-7,6,2,-8,13,-11,-15,-14],[14,15,-10,7,8,-2,-6,10,11,12,4,-8,13,-11,-15,-14],[14,15,-10,6,2,-4,-12,-11,-15,-14],[14,15,-10,6,2,-4,-12,-13,-7,10,11,12,4,-8,13,-11,-15,-14]]],[[[1,0],[5,6,-1],[5,10,-15,16,17,-12,-13,8,-2,-1],[5,7,8,-4,-12,-11,-10,6,-1],[5,7,13,-11,-10,6,-1],[5,10,-15,16,17,4,-2,-1],[5,7,13,12,-17,-16,15,11,-13,8,-2,-1],[5,7,13,12,4,-8,-7,6,-1],[5,10,11,12,4,-2,-1],[5,7,13,12,4,-8,-7,10,11,-13,8,-4,-12,-13,8,-2,-1],[5,7,13,12,4,-2,-1],[5,7,13,12,4,-8,-7,10,11,-13,8,-2,-1],[5,7,8,-4,-12,-13,8,-2,-1],[5,7,8,-4,-12,-13,-7,10,11,-13,8,-2,-1]],[[2,0],[14,15,-10,6,-1],[14,16,17,4,-2,-1],[14,16,17,-12,-13,8,-2,-1],[14,16,17,4,-8,-7,10,11,-13,8,-2,-1],[14,16,17,4,-8,13,-11,-10,6,-1],[14,16,17,-12,-11,-15,16,17,4,-2,-1],[14,16,17,-12,-11,-10,6,-1],[14,15,11,12,4,-8,-7,6,-1],[14,15,11,-13,-7,10,-15,16,17,4,-2,-1],[14,16,17,-12,-13,8,-4,-12,-13,8,-2,-1],[14,16,17,4,-8,13,12,4,-2,-1],[14,16,17,-12,-11,-10,7,13,12,4,-2,-1]],[[3,0],[18,17,4,-2,-1],[18,-16,15,11,12,4,-2,-1],[18,17,4,-8,-7,10,11,-13,8,-2,-1],[18,-16,15,-10,7,8,-4,-12,-13,8,-2,-1],[18,17,4,-8,-7,10,-15,16,17,4,-2,-1],[18,17,4,-8,-7,10,11,12,-17,-16,15,-10,6,-1],[18,-16,15,-10,7,13,12,-17,-16,15,-10,6,-1],[18,-16,15,11,-13,8,-4,-12,-13,8,-2,-1],[18,-16,15,-10,7,13,-11,-15,16,17,4,-2,-1],[18,-16,15,11,12,-17,-16,15,-10,6,-1],[18,17,-12,-11,-15,16,17,4,-8,-7,6,-1],[18,-16,15,11,-13,-7,10,-15,16,17,4,-2,-1],[18,17,-12,-11,-10,7,13,12,4,-8,-7,10,11,-13,8,-2,-1]],[[0,1],[1,-6,-5],[1,2,-8,13,12,-17,-16,15,-10,-5],[1,2,-8,13,-11,-15,16,17,-12,-13,-7,-5],[1,2,-8,13,12,4,-8,-7,-5],[1,2,-4,-17,-16,15,-10,-5],[1,2,-4,-12,-11,-15,16,17,-12,-13,-7,-5],[1,2,-4,-12,-13,8,-2,-6,-5],[1,2,-8,13,12,-17,-16,15,11,-13,-7,-5]],[[2,1],[14,15,-10,-5],[14,16,17,4,-8,-7,-5],[14,16,17,-12,-13,-7,-5],[14,15,11,12,4,-8,13,-11,-15,16,17,-12,-13,-7,-5],[14,15,11,-13,8,-2,-6,-5],[14,16,17,4,-2,-6,-5],[14,16,17,-12,-11,-15,16,17,-12,-13,-7,-5],[14,16,17,-12,-13,8,-2,-6,-5],[14,16,17,4,-8,13,-11,-10,-5],[14,15,11,12,-17,-16,15,-10,-5]],[[3,1],[18,17,-12,-13,-7,-5],[18,-16,15,11,12,4,-8,13,-11,-10,-5],[18,-16,15,11,12,-17,-16,15,-10,-5],[18,-16,15,11,-13,8,-2,-6,-5],[18,17,-12,-11,-15,16,17,4,-2,-6,-5],[18,17,-12,-13,8,-2,-6,-5],[18,17,4,-8,13,-11,-15,16,17,-12,-13,-7,-5],[18,17,-12,-13,8,-4,-12,-13,-7,-5],[18,17,4,-2,-6,-5]],[[0,2],[1,-6,10,-15,-14],[1,2,-8,-7,10,11,-13,8,-2,-6,7,13,12,-17,-16,-14],[1,2,-4,-12,-13,-7,10,11,12,4,-8,13,-11,-15,-14],[1,2,-4,-12,-13,-7,6,2,-8,13,12,-17,-16,-14],[1,-6,7,8,-4,-12,-13,-7,10,11,12,-17,-16,-14],[1,2,-4,-17,-16,-14],[1,-6,10,11,12,-17,-16,-14],[1,2,-8,13,-11,-10,6,2,-4,-12,-11,-15,-14],[1,2,-8,13,-11,-10,6,2,-8,13,-11,-15,-14],[1,-6,10,11,-13,8,-4,-17,-16,-14],[1,2,-8,-7,6,2,-4,-12,-11,-15,-14],[1,2,-8,13,12,-17,-16,-14],[1,2,-4,-12,-13,-7,10,11,12,-17,-16,-14],[1,2,-8,-7,6,2,-4,-12,-11,-10,7,8,-2,-6,10,-15,-14]],[[1,2],[5,10,-15,-14],[5,7,8,-4,-12,-11,-10,6,2,-8,13,-11,-15,-14],[5,10,11,-13,8,-2,-6,7,13,-11,-15,-14],[5,10,11,-13,8,-4,-12,-11,-10,6,2,-8,13,-11,-15,-14],[5,10,11,-13,-7,6,2,-8,13,-11,-15,-14],[5,6,2,-8,13,-11,-10,7,8,-4,-12,-11,-15,-14],[5,10,11,12,4,-8,13,-11,-15,-14],[5,10,11,-13,8,-2,-6,10,-15,-14],[5,6,2,-8,-7,10,11,-13,-7,10,-15,-14],[5,10,11,-13,-7,6,2,-4,-12,-11,-15,-14],[5,6,2,-8,13,-11,-10,7,13,-11,-15,-14],[5,10,11,12,-17,-16,-14],[5,7,8,-4,-17,-16,-14],[5,6,2,-4,-12,-13,8,-2,-6,10,-15,-14],[5,6,2,-4,-12,-13,-7,10,-15,-14]],[[3,2],[18,17,-12,-11,-15,-14],[18,17,4,-8,13,12,-17,-16,-14],[18,17,4,-2,-6,10,11,-13,8,-4,-12,-11,-15,-14],[18,17,4,-8,-7,6,2,-8,13,-11,-15,-14],[18,17,-12,-11,-10,7,8,-4,-17,-16,-14],[18,17,-12,-11,-10,6,2,-8,13,-11,-15,-14],[18,17,4,-2,-6,7,8,-4,-17,-16,-14],[18,17,4,-2,-6,10,11,-13,-7,6,2,-8,13,-11,-15,-14],[18,17,-12,-11,-10,7,8,-2,-6,10,-15,-14],[18,17,-12,-13,8,-4,-12,-11,-15,-14],[18,17,-12,-13,-7,10,11,12,-17,-16,-14],[18,17,4,-8,-7,6,2,-4,-12,-11,-15,-14],[18,17,4,-8,13,-11,-10,7,8,-4,-12,-11,-15,-14],[18,17,-12,-11,-10,7,13,12,4,-2,-6,10,-15,-14],[18,17,4,-2,-6,10,-15,-14]],[[0,3],[1,2,-4,-17,-18],[1,2,-8,13,-11,-15,16,-18],[1,2,-4,-12,-13,8,-2,-6,10,-15,16,-18],[1,2,-4,-12,-13,8,-2,-6,7,13,12,-17,-18],[1,2,-8,-7,10,-15,16,-18],[1,-6,10,11,12,4,-2,-6,7,13,12,-17,-18],[1,2,-4,-12,-11,-10,6,2,-8,13,12,-17,-18],[1,-6,7,13,12,4,-2,-6,10,11,12,-17,-18],[1,2,-4,-12,-11,-10,7,13,12,-17,-18],[1,-6,10,11,12,4,-2,-6,7,13,-11,-10,7,13,12,-17,-18],[1,2,-4,-12,-11,-15,16,-18],[1,2,-8,13,12,4,-2,-6,7,8,-4,-17,-18]],[[1,3],[5,7,13,12,-17,-18],[5,6,2,-4,-12,-13,-7,10,11,12,-17,-18],[5,10,-15,16,-18],[5,6,2,-8,13,-11,-15,16,-18],[5,6,2,-4,-12,-11,-15,16,-18],[5,10,11,-13,-7,6,2,-8,13,12,-17,-18],[5,10,11,12,4,-8,-7,6,2,-4,-17,-18],[5,10,11,-13,8,-2,-6,7,13,12,4,-8,-7,10,11,12,-17,-18],[5,6,2,-4,-12,-11,-10,7,8,-2,-6,10,11,12,-17,-18]],[[2,3],[14,15,11,12,-17,-18],[14,15,-10,7,13,12,4,-2,-6,10,11,12,-17,-18],[14,15,-10,6,2,-8,13,-11,-15,16,-18],[14,15,11,12,4,-8,-7,6,2,-4,-17,-18],[14,15,11,12,4,-8,13,-11,-15,16,-18],[14,15,-10,7,8,-2,-6,10,11,12,4,-8,13,12,-17,-18],[14,15,11,12,4,-2,-6,10,-15,16,-18],[14,15,-10,6,2,-4,-12,-11,-15,16,-18],[14,15,11,-13,-7,10,-15,16,-18],[14,15,11,-13,8,-4,-12,-11,-10,7,13,12,4,-8,13,12,-17,-18],[14,15,-10,7,13,-11,-15,16,-18],[14,15,-10,6,2,-4,-12,-13,-7,10,11,12,-17,-18],[14,15,11,-13,-7,6,2,-8,13,12,4,-2,-6,7,13,12,-17,-18],[14,15,11,-13,-7,6,2,-4,-12,-11,-10,7,8,-4,-17,-18],[14,15,-10,7,8,-4,-12,-11,-15,16,-18]],[[3,3],[18,17,-12,-11,-15,16,-18],[18,-16,15,-10,7,8,-4,-12,-13,-7,6,2,-8,13,12,-17,-18],[18,-16,15,11,12,4,-8,-7,10,-15,16,-18],[18,17,-12,-13,-7,6,2,-8,13,-11,-15,16,-18],[18,-16,15,11,12,4,-8,13,-11,-10,7,13,12,-17,-18],[18,-16,15,11,-13,-7,10,-15,16,-18],[18,17,-12,-13,-7,10,-15,16,-18],[18,-16,15,11,-13,8,-4,-12,-11,-10,7,13,12,4,-8,13,12,-17,-18],[18,-16,15,11,-13,8,-4,-12,-11,-15,16,-18],[18,17,-12,-13,8,-4,-17,-18],[18,-16,15,11,12,4,-2,-6,7,8,-4,-12,-13,-7,10,11,12,-17,-18],[18,17,4,-2,-6,7,8,-4,-17,-18],[18,17,4,-2,-6,7,8,-4,-12,-11,-15,16,-18],[18,17,-12,-13,8,-2,-6,10,11,12,4,-8,-7,6,2,-4,-17,-18],[18,-16,15,-10,7,8,-4,-12,-11,-15,16,-18],[18,17,-12,-13,-7,10,11,12,4,-2,-6,7,8,-4,-17,-18]]],[[[1,0],[5,6,-1],[5,10,-15,16,17,-12,-13,8,-2,-1],[5,7,8,19,20,-17,-16,15,11,12,-20,-19,-2,-1],[5,7,13,-11,-10,6,-1],[5,10,-15,16,17,-20,-19,-2,-1],[5,7,13,12,-17,-16,15,11,-13,8,19,21,22,-1],[5,7,13,12,-20,-19,-8,-7,6,-1],[5,10,11,12,-20,-19,-2,-1],[5,7,13,12,-20,21,22,-1],[5,7,13,12,-20,-19,-2,-1],[5,7,13,12,-20,-19,-8,-7,10,11,-13,8,-2,-1],[5,7,8,19,20,-12,-13,8,-2,-1],[5,7,8,19,20,-12,-13,-7,10,11,-13,8,-2,-1],[5,7,13,12,-17,-16,15,11,-13,8,-2,-1]],[[2,0],[14,15,-10,6,-1],[14,16,17,-20,-19,-2,-1],[14,16,17,-12,-13,8,-2,-1],[14,16,17,-20,-19,-8,-7,10,11,-13,8,-2,-1],[14,16,17,-20,-19,-8,13,-11,-10,6,-1],[14,16,17,-12,-11,-15,16,17,-20,-19,-2,-1],[14,16,17,-12,-11,-10,6,-1],[14,15,11,12,-20,-19,-8,13,-11,-10,6,-1],[14,15,11,-13,-7,10,-15,16,17,-20,21,22,-1],[14,16,17,-12,-13,8,19,21,22,-1],[14,16,17,-20,21,22,-1],[14,16,17,-12,-11,-10,7,13,12,-20,-19,-2,-1]],[[3,0],[18,17,-20,-19,-2,-1],[18,-16,15,11,12,-20,-19,-2,-1],[18,17,-20,-19,-8,13,12,-17,-16,15,-10,6,-1],[18,-16,15,-10,7,8,19,21,22,-1],[18,17,-20,21,22,-1],[18,-16,15,-10,7,13,12,-17,-16,15,-10,6,-1],[18,-16,15,11,-13,8,19,21,22,-1],[18,-16,15,-10,7,13,-11,-15,16,17,-20,-19,-2,-1],[18,-16,15,11,12,-17,-16,15,-10,6,-1],[18,17,-12,-11,-15,16,17,-20,21,22,-1],[18,-16,15,11,-13,-7,10,-15,16,17,-20,-19,-2,-1],[18,17,-12,-11,-10,7,13,12,-20,21,22,-1]],[[4,0],[23,-21,-19,-2,-1],[23,-21,-19,-8,13,12,-17,-16,15,-10,6,-1],[23,-21,20,-17,-16,15,-10,6,-1],[23,-21,-19,-8,13,-11,-10,6,-1],[23,-21,-19,-8,13,-11,-15,16,17,-20,-19,-2,-1],[23,-21,-19,-8,-7,10,-15,16,17,-12,-13,8,-2,-1],[23,-21,20,-12,-11,-10,7,8,19,21,22,-1],[23,-21,20,-17,-16,15,11,-13,8,-2,-1],[23,-21,-19,-8,-7,10,-15,16,17,-20,-19,-2,-1],[23,-21,20,-12,-11,-15,16,17,-20,-19,-2,-1],[23,-21,-19,-8,-7,10,11,-13,8,-2,-1],[23,-21,20,-17,-16,15,-10,7,13,12,-20,-19,-2,-1],[23,-21,-19,-8,13,12,-20,21,22,-1]],[[0,1],[1,-6,-5],[1,2,-8,13,12,-17,-16,15,-10,-5],[1,-22,-21,-19,-8,13,12,-17,-16,15,-10,-5],[1,2,-8,13,-11,-15,16,17,-12,-13,-7,-5],[1,2,-8,13,12,-20,-19,-8,-7,-5],[1,-22,-21,20,-17,-16,15,-10,-5],[1,-22,-21,-19,-8,-7,-5],[1,-22,-21,-19,-2,-6,-5],[1,2,19,20,-12,-11,-15,16,17,-12,-13,-7,-5],[1,2,19,21,22,-6,-5],[1,2,-8,13,12,-17,-16,15,11,-13,-7,-5],[1,2,19,20,-17,-16,15,-10,-5]],[[2,1],[14,15,-10,-5],[14,16,17,-20,21,22,-6,-5],[14,16,17,-12,-13,-7,-5],[14,15,11,12,-20,-19,-2,-22,-21,20,-12,-13,-7,-5],[14,15,11,-13,8,-2,-22,-21,-19,-8,-7,-5],[14,16,17,-12,-11,-15,16,17,-12,-13,-7,-5],[14,16,17,-12,-13,8,-2,-22,-21,-19,-8,-7,-5],[14,16,17,-20,-19,-2,-22,-21,-19,-8,-7,-5],[14,16,17,-20,-19,-8,-7,-5],[14,15,11,12,-17,-16,15,-10,-5]],[[3,1],[18,17,-12,-13,-7,-5],[18,-16,15,11,12,-20,-19,-8,13,-11,-10,-5],[18,-16,15,11,12,-17,-16,15,-10,-5],[18,-16,15,11,-13,8,-2,-6,-5],[18,17,-12,-11,-15,16,17,-20,21,22,-6,-5],[18,-16,15,11,12,-20,-19,-2,-22,-21,-19,-8,-7,-5],[18,17,-12,-13,8,-2,-22,-21,20,-12,-13,-7,-5],[18,17,-20,-19,-8,13,-11,-15,16,17,-12,-13,-7,-5],[18,17,-12,-13,8,19,20,-12,-13,-7,-5],[18,17,-20,21,22,2,-8,13,-11,-10,-5]],[[4,1],[23,-21,-19,-8,-7,-5],[23,22,2,-8,13,-11,-15,16,17,-12,-13,-7,-5],[23,-21,20,-12,-13,8,-2,-22,-21,-19,-8,-7,-5],[23,22,2,-8,13,12,-20,-19,-8,-7,-5],[23,-21,20,-17,-16,15,11,-13,8,-2,-6,-5],[23,-21,-19,-2,-22,-21,20,-17,-16,15,-10,-5],[23,-21,20,-17,-16,15,-10,-5],[23,22,2,19,21,22,-6,-5],[23,-21,-19,-8,13,12,-20,21,22,-6,-5],[23,-21,20,-17,-16,15,11,-13,-7,-5],[23,-21,20,-12,-11,-15,16,17,-12,-13,-7,-5],[23,22,2,19,20,-12,-13,8,-2,-22,-21,-19,-8,-7,-5],[23,-21,-19,-2,-22,-21,20,-12,-13,8,-2,-6,-5],[23,22,2,19,20,-12,-11,-15,16,17,-12,-13,-7,-5]],[[0,2],[1,-6,10,-15,-14],[1,-6,10,11,-13,8,-2,-22,-21,-19,-8,13,-11,-15,-14],[1,-6,7,8,19,21,22,2,-8,13,-11,-10,7,13,-11,-15,-14],[1,2,19,20,-12,-11,-10,7,8,-2,-6,10,-15,-14],[1,-22,-21,20,-12,-13,8,19,20,-17,-16,-14],[1,-22,-21,-19,-8,-7,10,11,-13,8,-2,-6,10,-15,-14],[1,-22,-21,-19,-8,-7,10,-15,-14],[1,-22,-21,20,-17,-16,-14],[1,-22,-21,20,-12,-11,-15,-14],[1,2,-8,-7,6,-22,-21,20,-12,-11,-15,-14],[1,-22,-21,20,-12,-11,-10,7,13,12,-17,-16,-14],[1,-6,7,8,19,21,22,2,-8,13,12,-17,-16,-14],[1,-22,-21,-19,-8,-7,6,2,19,20,-17,-16,-14],[1,2,-8,13,12,-17,-16,-14]],[[1,2],[5,10,-15,-14],[5,7,8,19,20,-17,-16,-14],[5,10,11,-13,8,-2,-6,7,13,-11,-15,-14],[5,10,11,-13,8,19,20,-17,-16,-14],[5,10,11,-13,-7,6,-22,-21,20,-12,-11,-15,-14],[5,6,-22,-21,20,-17,-16,-14],[5,6,2,-8,13,-11,-10,7,8,19,20,-12,-11,-15,-14],[5,10,11,12,-20,21,22,-6,10,-15,-14],[5,10,11,-13,8,-2,-6,10,-15,-14],[5,6,-22,-21,-19,-8,13,-11,-15,-14],[5,10,11,-13,-7,6,2,19,20,-12,-11,-15,-14],[5,6,-22,-21,20,-12,-11,-15,-14],[5,10,11,12,-17,-16,-14],[5,7,8,19,21,22,-6,10,-15,-14],[5,6,-22,-21,20,-12,-13,-7,10,-15,-14],[5,6,2,19,20,-12,-11,-10,7,13,-11,-15,-14]],[[3,2],[18,17,-12,-11,-15,-14],[18,17,-20,-19,-8,13,12,-17,-16,-14],[18,17,-20,21,22,-6,7,13,12,-17,-16,-14],[18,17,-20,-19,-2,-22,-21,20,-12,-11,-15,-14],[18,17,-12,-11,-10,7,8,19,21,22,-6,10,-15,-14],[18,17,-12,-11,-10,6,-22,-21,20,-12,-11,-15,-14],[18,17,-20,21,22,2,19,20,-12,-11,-15,-14],[18,17,-20,21,22,-6,7,13,-11,-15,-14],[18,17,-12,-11,-10,7,8,-2,-22,-21,20,-12,-11,-15,-14],[18,17,-12,-13,8,19,21,22,-6,10,-15,-14],[18,17,-12,-13,-7,10,11,12,-17,-16,-14],[18,17,-20,-19,-8,-7,6,2,19,20,-12,-11,-15,-14],[18,17,-12,-11,-10,7,13,12,-20,21,22,-6,10,-15,-14],[18,17,-20,21,22,-6,10,-15,-14]],[[4,2],[23,-21,20,-12,-11,-15,-14],[23,22,2,-8,13,-11,-10,6,-22,-21,20,-12,-11,-15,-14],[23,22,2,19,21,22,-6,7,13,-11,-15,-14],[23,22,-6,10,11,-13,8,-2,-22,-21,20,-12,-11,-15,-14],[23,-21,20,-12,-13,-7,6,2,-8,13,12,-17,-16,-14],[23,22,2,19,20,-12,-13,-7,10,-15,-14],[23,22,-6,7,13,12,-20,-19,-8,13,-11,-15,-14],[23,22,2,19,21,22,-6,10,-15,-14],[23,-21,-19,-8,-7,10,11,-13,8,-2,-22,-21,20,-12,-11,-15,-14],[23,-21,-19,-2,-22,-21,20,-12,-11,-15,-14],[23,-21,-19,-2,-6,10,11,12,-20,21,22,-6,10,-15,-14],[23,22,2,-8,13,12,-17,-16,-14],[23,22,2,-8,-7,6,-22,-21,20,-12,-11,-15,-14],[23,22,-6,10,11,12,-17,-16,-14]],[[0,3],[1,2,19,20,-17,-18],[1,2,-8,13,-11,-15,16,-18],[1,2,19,20,-12,-13,8,-2,-6,10,-15,16,-18],[1,2,19,20,-12,-13,-7,10,-15,16,-18],[1,-22,-21,20,-12,-11,-15,16,-18],[1,-6,10,-15,16,-18],[1,-6,7,13,-11,-10,6,-22,-21,20,-17,-18],[1,-22,-21,-19,-8,-7,10,-15,16,-18],[1,2,19,21,22,-6,10,11,12,-17,-18],[1,-6,7,8,-2,-22,-21,20,-17,-18],[1,2,-8,13,12,-20,21,22,-6,10,11,12,-17,-18],[1,-22,-21,20,-12,-11,-10,6,2,19,20,-17,-18]],[[1,3],[5,7,13,12,-17,-18],[5,6,-22,-21,20,-17,-18],[5,10,-15,16,-18],[5,6,-22,-21,20,-12,-11,-10,7,13,12,-17,-18],[5,6,-22,-21,-19,-2,-6,7,13,12,-17,-18],[5,6,-22,-21,20,-12,-11,-15,16,-18],[5,10,11,-13,-7,6,2,-8,13,12,-17,-18],[5,10,11,12,-20,-19,-2,-22,-21,20,-17,-18],[5,6,2,19,20,-12,-11,-15,16,-18],[5,10,11,-13,8,-2,-22,-21,-19,-8,-7,10,-15,16,-18],[5,6,2,19,20,-12,-13,-7,10,11,12,-20,-19,-8,13,12,-17,-18]],[[2,3],[14,15,11,12,-17,-18],[14,15,-10,7,13,12,-20,21,22,2,19,20,-17,-18],[14,15,-10,6,2,-8,13,-11,-15,16,-18],[14,15,11,12,-20,-19,-2,-22,-21,20,-17,-18],[14,15,11,12,-20,-19,-8,13,-11,-10,6,2,19,20,-17,-18],[14,15,-10,7,8,-2,-6,10,11,12,-20,-19,-8,13,12,-17,-18],[14,15,11,12,-20,21,22,-6,7,13,12,-17,-18],[14,15,-10,6,-22,-21,20,-17,-18],[14,15,11,-13,-7,10,-15,16,-18],[14,15,-10,6,-22,-21,-19,-8,13,12,-17,-18],[14,15,11,-13,8,19,20,-12,-11,-10,6,2,-8,13,12,-17,-18],[14,15,-10,7,13,-11,-15,16,-18],[14,15,-10,6,-22,-21,-19,-8,-7,10,11,12,-17,-18],[14,15,11,-13,-7,6,2,-8,13,12,-20,-19,-2,-6,7,13,12,-17,-18],[14,15,11,-13,-7,6,2,19,20,-12,-11,-10,7,8,19,20,-17,-18],[14,15,-10,7,8,19,20,-12,-13,-7,10,11,12,-17,-18]],[[4,3],[23,-21,20,-17,-18],[23,22,-6,7,8,19,20,-17,-18],[23,22,2,19,20,-12,-13,-7,10,11,12,-17,-18],[23,-21,20,-12,-11,-10,7,13,12,-20,-19,-8,13,12,-17,-18],[23,-21,20,-12,-13,-7,10,-15,16,-18],[23,22,2,-8,13,-11,-15,16,-18],[23,-21,20,-12,-11,-10,7,13,12,-20,-19,-8,-7,6,2,19,20,-17,-18],[23,22,2,-8,-7,6,2,19,20,-17,-18],[23,-21,20,-12,-13,-7,10,11,12,-20,-19,-8,13,12,-17,-18],[23,-21,-19,-2,-6,7,8,19,20,-17,-18],[23,-21,-19,-2,-6,10,11,12,-20,-19,-8,13,12,-17,-18],[23,22,2,-8,13,12,-20,21,22,2,19,20,-17,-18],[23,22,-6,10,-15,16,-18],[23,-21,-19,-8,13,12,-20,21,22,2,19,20,-17,-18],[23,-21,-19,-2,-6,7,13,-11,-10,6,-22,-21,20,-17,-18],[23,-21,20,-12,-13,8,-2,-22,-21,20,-17,-18]],[[0,4],[1,2,19,21,-23],[1,2,-8,-7,10,-15,16,17,-20,21,-23],[1,2,-8,13,12,-20,-19,-2,-6,7,8,19,21,-23],[1,2,-8,13,-11,-10,7,8,19,21,-23],[1,-6,7,13,12,-17,-16,15,11,12,-20,21,-23],[1,-6,10,11,12,-17,-16,15,11,12,-20,21,-23],[1,2,-8,13,-11,-15,16,17,-20,21,-23],[1,2,-8,13,12,-17,-16,15,11,12,-20,21,-23],[1,2,19,20,-17,-16,15,11,12,-20,21,-23],[1,-6,7,13,-11,-10,6,2,19,21,-23],[1,2,-8,-7,6,-22,-23],[1,-6,10,11,12,-20,-19,-8,-7,6,2,19,21,-23],[1,-6,10,-15,16,17,-20,21,-23],[1,2,-8,13,12,-20,-19,-2,-6,10,11,12,-20,21,-23]],[[1,4],[5,7,8,19,21,-23],[5,6,2,19,20,-12,-11,-15,16,17,-20,21,-23],[5,6,2,-8,13,-11,-10,7,8,-2,-6,10,11,12,-20,21,-23],[5,7,8,-2,-6,10,-15,16,17,-12,-13,8,19,21,-23],[5,7,8,19,20,-12,-11,-10,6,2,-8,13,12,-20,21,-23],[5,7,8,19,20,-12,-13,-7,10,-15,16,17,-20,21,-23],[5,10,-15,16,17,-20,-19,-2,-6,7,8,19,21,-23],[5,7,13,12,-17,-16,15,11,12,-20,21,-23],[5,10,11,12,-17,-16,15,-10,6,2,19,21,-23],[5,6,2,19,20,-17,-16,15,11,12,-20,21,-23],[5,6,2,-8,13,-11,-15,16,17,-20,21,-23],[5,10,-15,16,17,-20,-19,-8,-7,6,2,19,21,-23],[5,7,13,-11,-10,6,2,19,21,-23],[5,10,11,-13,-7,6,2,19,20,-12,-11,-10,7,8,19,21,-23]],[[2,4],[14,15,11,12,-20,21,-23],[14,15,11,12,-17,-16,15,11,12,-20,21,-23],[14,15,11,12,-17,-16,15,-10,7,13,-11,-10,7,8,19,21,-23],[14,16,17,-20,-19,-8,13,-11,-15,16,17,-20,21,-23],[14,16,17,-20,-19,-2,-22,-23],[14,15,11,-13,-7,6,2,19,20,-17,-16,15,-10,7,8,19,21,-23],[14,16,17,-12,-11,-10,7,8,19,21,-23],[14,15,11,12,-20,-19,-2,-6,7,8,19,21,-23],[14,15,11,12,-17,-16,15,-10,7,8,-2,-6,7,8,19,21,-23],[14,16,17,-12,-13,-7,6,2,-8,13,-11,-10,7,8,19,21,-23],[14,16,17,-12,-13,-7,6,2,19,21,-23],[14,15,-10,7,13,-11,-15,16,17,-12,-13,8,19,21,-23],[14,16,17,-12,-11,-10,6,2,19,21,-23],[14,16,17,-20,-19,-2,-6,10,11,-13,8,19,21,-23],[14,15,-10,6,2,-8,-7,10,11,12,-17,-16,15,11,12,-20,21,-23],[14,15,11,12,-17,-16,15,-10,6,2,19,21,-23]],[[3,4],[18,17,-20,21,-23],[18,17,-20,-19,-2,-6,10,11,12,-20,21,-23],[18,-16,15,-10,6,2,19,21,-23],[18,-16,15,-10,6,2,-8,-7,10,11,12,-20,21,-23],[18,-16,15,-10,7,13,-11,-15,16,17,-20,21,-23],[18,-16,15,-10,7,8,19,20,-12,-11,-10,7,8,19,21,-23],[18,17,-20,-19,-2,-6,10,-15,16,17,-20,21,-23],[18,-16,15,11,-13,8,19,20,-12,-11,-10,7,13,12,-20,21,-23],[18,-16,15,-10,7,8,19,21,-23],[18,17,-12,-11,-15,16,17,-20,-19,-2,-22,-23],[18,17,-20,-19,-8,-7,10,-15,16,17,-20,21,-23],[18,17,-12,-11,-15,16,17,-20,21,-23],[18,17,-12,-13,8,19,20,-12,-13,8,19,21,-23],[18,-16,15,-10,6,2,-8,-7,6,2,19,21,-23]],[[4,4],[23,-21,-19,-2,-22,-23],[23,22,2,-8,13,12,-20,-19,-2,-6,10,11,-13,8,19,21,-23],[23,22,-6,7,8,19,20,-17,-16,15,11,12,-20,21,-23],[23,-21,20,-12,-11,-10,7,13,12,-17,-16,15,11,12,-20,21,-23],[23,22,2,19,20,-17,-16,15,11,12,-20,21,-23],[23,-21,20,-12,-11,-15,16,17,-20,-19,-2,-22,-23],[23,22,2,19,20,-12,-13,8,-2,-6,7,13,-11,-10,7,8,19,21,-23],[23,22,2,19,20,-12,-13,-7,6,2,19,21,-23],[23,-21,20,-12,-13,8,-2,-6,7,13,12,-20,21,-23],[23,22,-6,7,8,-2,-22,-23],[23,-21,-19,-2,-6,7,8,19,20,-17,-16,15,11,12,-20,21,-23],[23,-21,20,-12,-13,-7,6,2,19,21,-23],[23,22,-6,10,11,12,-20,-19,-2,-22,-23],[23,-21,20,-12,-11,-15,16,17,-20,-19,-8,-7,6,2,19,21,-23]]],[[[1,0],[5,6,-1],[5,10,-15,16,17,-12,-13,8,-2,-1],[5,7,8,19,20,24,25,26,27,-1],[5,7,13,-11,-10,6,-1],[5,10,-15,16,17,-20,-19,-2,-1],[5,7,13,12,24,25,26,28,-21,-19,-2,-1],[5,7,13,12,-20,-19,-8,-7,6,-1],[5,10,11,12,-17,-16,15,-10,6,-1],[5,7,13,12,-20,21,-28,27,-1],[5,7,13,12,-20,-19,-2,-1],[5,7,13,12,-17,-16,15,-10,6,-1],[5,7,13,12,-20,-19,-8,-7,10,11,-13,8,-2,-1]],[[2,0],[14,15,-10,6,-1],[14,16,17,-20,-19,-2,-1],[14,16,17,-12,-13,8,-2,-1],[14,16,17,-20,-19,-8,-7,10,11,-13,8,-2,-1],[14,16,17,-20,-19,-8,13,-11,-10,6,-1],[14,16,17,-12,-11,-15,16,17,-20,-19,-2,-1],[14,16,17,-12,-11,-10,6,-1],[14,15,11,12,-17,-16,15,-10,6,-1],[14,15,11,-13,-7,10,-15,16,17,-20,21,-28,27,-1],[14,16,17,-12,-13,8,19,21,-28,27,-1],[14,16,17,-20,21,-28,27,-1],[14,16,17,-12,-11,-10,7,13,12,-20,-19,-2,-1]],[[3,0],[18,17,-20,-19,-2,-1],[18,-16,15,11,12,-17,-16,15,-10,6,-1],[18,17,-20,-19,-8,13,12,24,25,26,27,-1],[18,-16,15,-10,7,8,19,21,-28,27,-1],[18,17,-20,21,-28,-26,-25,-24,-20,-19,-2,-1],[18,-16,15,-10,7,13,12,-20,-19,-8,-7,6,-1],[18,-16,15,11,-13,8,19,21,-28,27,-1],[18,-16,15,-10,7,13,-11,-15,16,17,-20,-19,-2,-1],[18,-16,15,11,12,24,25,26,27,-1],[18,17,-12,-11,-15,16,17,-20,21,-28,27,-1],[18,-16,15,11,-13,-7,10,-15,16,17,-20,-19,-2,-1],[18,17,-20,21,-28,-26,-25,-24,-12,-13,8,-2,-1],[18,17,-12,-11,-10,7,13,12,-20,21,-28,27,-1]],[[4,0],[23,-21,-19,-2,-1],[23,-28,-26,-25,-24,-20,-19,-2,-1],[23,-21,20,-17,-16,15,-10,6,-1],[23,-21,-19,-8,13,-11,-10,6,-1],[23,-28,-26,-25,-24,-20,21,-28,27,-1],[23,-21,20,-12,-11,-10,7,13,12,-17,-16,15,-10,6,-1],[23,-21,-19,-8,-7,10,-15,16,17,-20,-19,-2,-1],[23,-21,20,-12,-11,-15,16,17,-20,-19,-2,-1],[23,-21,20,24,25,26,27,-1],[23,-21,-19,-8,13,12,-20,21,-28,27,-1]],[[5,0],[29,26,27,-1],[29,-25,-24,-20,21,-28,-26,-25,-24,-20,-19,-2,-1],[29,26,28,-21,-19,-8,13,12,-20,21,-28,27,-1],[29,-25,-24,-12,-13,8,19,20,-17,-16,15,-10,6,-1],[29,26,28,-21,20,-12,-11,-15,16,17,-20,-19,-2,-1],[29,-25,-24,-20,-19,-8,-7,10,-15,16,17,-20,-19,-2,-1],[29,26,28,-21,-19,-8,-7,10,-15,16,17,-20,-19,-2,-1],[29,-25,-24,-20,-19,-8,13,-11,-15,16,17,-20,-19,-2,-1],[29,26,28,-21,-19,-8,-7,10,11,-13,8,19,21,-28,27,-1],[29,-25,-24,-20,-19,-8,-7,10,11,12,24,25,26,27,-1],[29,26,28,-21,20,-12,-13,-7,10,11,-13,8,-2,-1],[29,26,28,-21,20,-12,-13,-7,10,11,12,-20,-19,-8,-7,6,-1],[29,26,28,-21,20,-12,-13,-7,10,11,12,-20,-19,-2,-1],[29,-25,-24,-12,-13,-7,10,11,12,-20,-19,-8,13,-11,-10,6,-1],[29,-25,-24,-12,-13,8,19,21,-28,-26,-25,-24,-20,-19,-2,-1]],[[0,1],[1,-6,-5],[1,2,-8,13,12,-17,-16,15,-10,-5],[1,-27,-26,-25,-24,-12,-13,-7,-5],[1,2,-8,13,-11,-15,16,17,-12,-13,-7,-5],[1,2,-8,13,12,24,25,26,28,-21,-19,-8,-7,-5],[1,-27,28,-21,-19,-8,-7,-5],[1,-27,28,-21,-19,-2,-6,-5],[1,-27,-26,-25,-24,-12,-11,-10,-5],[1,2,19,20,24,25,26,28,-21,-19,-8,-7,-5],[1,2,19,21,-28,-26,-25,-24,-12,-13,-7,-5],[1,2,-8,13,12,-17,-16,15,11,-13,-7,-5]],[[2,1],[14,15,-10,-5],[14,16,17,-20,21,-28,27,-6,-5],[14,16,17,-12,-13,-7,-5],[14,15,11,12,-17,-16,15,-10,-5],[14,15,11,-13,8,-2,-27,28,-21,-19,-8,-7,-5],[14,16,17,-12,-11,-15,16,17,-12,-13,-7,-5],[14,16,17,-12,-13,8,-2,-27,28,-21,-19,-8,-7,-5],[14,16,17,-20,-19,-2,-27,28,-21,-19,-8,-7,-5],[14,16,17,-20,-19,-8,-7,-5],[14,15,11,12,-20,21,-28,-26,-25,-24,-12,-13,-7,-5]],[[3,1],[18,17,-12,-13,-7,-5],[18,-16,15,11,12,24,25,26,28,-21,-19,-8,-7,-5],[18,-16,15,11,-13,8,-2,-6,-5],[18,17,-12,-11,-15,16,17,-20,21,-28,27,-6,-5],[18,-16,15,11,12,-17,-16,15,-10,-5],[18,-16,15,11,12,-20,-19,-2,-27,28,-21,-19,-8,-7,-5],[18,17,-12,-13,8,-2,-27,-26,-25,-24,-12,-13,-7,-5],[18,17,-20,-19,-8,13,-11,-15,16,17,-12,-13,-7,-5],[18,17,-12,-13,8,19,20,-12,-13,-7,-5],[18,17,-20,21,-28,-26,-25,-24,-12,-13,-7,-5],[18,-16,15,11,12,-20,-19,-8,13,-11,-10,-5]],[[4,1],[23,-21,-19,-8,-7,-5],[23,-28,27,2,19,21,-28,-26,-25,-24,-12,-13,-7,-5],[23,-21,20,24,25,26,28,-21,-19,-8,-7,-5],[23,-28,-26,-25,-24,-12,-13,-7,-5],[23,-21,-19,-2,-27,-26,-25,-24,-12,-13,-7,-5],[23,-28,27,2,-8,13,12,-17,-16,15,-10,-5],[23,-21,-19,-8,13,12,24,25,26,28,-21,-19,-8,-7,-5],[23,-21,20,-12,-11,-15,16,17,-12,-13,-7,-5],[23,-28,27,2,19,20,-12,-13,8,-2,-27,28,-21,-19,-8,-7,-5],[23,-28,27,2,-8,13,-11,-10,-5],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-10,-5],[23,-28,27,2,19,20,-17,-16,15,-10,-5]],[[5,1],[29,-25,-24,-12,-13,-7,-5],[29,26,28,-21,-19,-8,13,12,-20,-19,-8,-7,-5],[29,26,28,-21,20,-12,-11,-15,16,17,-12,-13,-7,-5],[29,-25,-24,-20,21,-28,-26,-25,-24,-12,-13,-7,-5],[29,-25,-24,-20,21,-28,27,2,19,20,-12,-13,-7,-5],[29,-25,-24,-12,-13,8,19,21,-28,27,-6,-5],[29,26,27,2,-8,13,-11,-15,16,17,-12,-13,-7,-5],[29,26,28,-21,-19,-2,-27,-26,-25,-24,-12,-13,-7,-5],[29,-25,-24,-12,-11,-15,16,17,-12,-13,-7,-5],[29,-25,-24,-12,-13,8,19,20,-12,-13,-7,-5],[29,-25,-24,-12,-11,-15,16,17,-20,-19,-2,-6,-5],[29,26,28,-21,20,-17,-16,15,-10,-5],[29,26,27,2,19,20,-17,-16,15,-10,-5]],[[0,2],[1,-6,10,-15,-14],[1,-6,10,11,-13,8,-2,-27,28,-21,20,-12,-11,-15,-14],[1,-6,7,8,19,21,-28,27,2,-8,13,-11,-10,7,13,-11,-15,-14],[1,2,19,20,24,25,26,28,-21,20,-12,-11,-15,-14],[1,-27,28,-21,20,-12,-13,8,-2,-6,7,13,-11,-15,-14],[1,-27,28,-21,20,-17,-16,-14],[1,-27,-26,-25,-24,-12,-11,-15,-14],[1,-27,-26,-25,-24,-12,-13,-7,10,-15,-14],[1,2,-8,-7,6,-27,28,-21,20,-12,-11,-15,-14],[1,-27,-26,-25,-24,-20,-19,-8,13,-11,-15,-14],[1,-27,-26,-25,-24,-20,-19,-2,-6,10,-15,-14],[1,2,-8,13,12,-17,-16,-14]],[[1,2],[5,10,-15,-14],[5,7,8,19,20,-17,-16,-14],[5,10,11,-13,8,-2,-6,7,13,-11,-15,-14],[5,10,11,-13,8,19,20,-17,-16,-14],[5,10,11,-13,-7,6,-27,28,-21,20,-12,-11,-15,-14],[5,6,-27,-26,-25,-24,-12,-11,-15,-14],[5,6,2,-8,13,-11,-10,7,8,19,20,-12,-11,-15,-14],[5,10,11,12,-17,-16,-14],[5,10,11,-13,8,-2,-6,10,-15,-14],[5,10,11,-13,-7,6,2,19,20,-12,-11,-15,-14],[5,7,8,19,21,-28,27,-6,10,-15,-14],[5,6,-27,28,-21,20,-12,-11,-10,7,13,-11,-15,-14],[5,6,2,19,20,-12,-11,-10,7,13,-11,-15,-14]],[[3,2],[18,17,-12,-11,-15,-14],[18,17,-20,-19,-8,13,12,-17,-16,-14],[18,17,-20,21,-28,-26,-25,-24,-12,-11,-15,-14],[18,17,-20,-19,-2,-27,-26,-25,-24,-12,-11,-15,-14],[18,17,-12,-11,-10,7,8,19,21,-28,27,-6,10,-15,-14],[18,17,-12,-11,-10,6,-27,28,-21,20,-12,-11,-15,-14],[18,17,-20,21,-28,27,2,-8,13,-11,-15,-14],[18,17,-12,-11,-10,7,8,-2,-27,28,-21,20,-12,-11,-15,-14],[18,17,-12,-13,8,19,21,-28,27,-6,10,-15,-14],[18,17,-12,-13,-7,10,11,12,-17,-16,-14],[18,17,-20,-19,-8,-7,6,2,19,20,-12,-11,-15,-14],[18,17,-12,-11,-10,7,13,12,-20,21,-28,27,-6,10,-15,-14],[18,17,-20,21,-28,27,-6,10,-15,-14]],[[4,2],[23,-21,20,-12,-11,-15,-14],[23,-28,27,-6,7,13,12,-17,-16,-14],[23,-28,27,2,-8,13,12,-17,-16,-14],[23,-28,-26,-25,-24,-20,-19,-2,-6,10,-15,-14],[23,-21,20,-12,-13,-7,6,2,-8,13,12,-17,-16,-14],[23,-28,27,2,19,20,-12,-11,-10,7,13,-11,-15,-14],[23,-28,-26,-25,-24,-12,-11,-15,-14],[23,-28,27,2,-8,13,-11,-10,6,2,-8,13,-11,-15,-14],[23,-21,-19,-8,-7,10,11,-13,8,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-21,-19,-2,-6,10,11,12,-20,21,-28,27,-6,10,-15,-14],[23,-28,27,-6,7,8,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-28,27,-6,10,11,12,-17,-16,-14]],[[5,2],[29,-25,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-2,-27,-26,-25,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-8,13,-11,-15,-14],[29,26,27,2,19,20,-17,-16,-14],[29,-25,-24,-20,-19,-2,-27,-26,-25,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-2,-27,28,-21,20,-12,-11,-15,-14],[29,-25,-24,-12,-11,-10,7,13,12,-20,-19,-8,13,-11,-15,-14],[29,-25,-24,-12,-11,-10,6,-27,28,-21,20,-12,-11,-15,-14],[29,-25,-24,-20,21,-28,27,-6,10,-15,-14],[29,26,28,-21,-19,-8,13,12,-17,-16,-14],[29,26,28,-21,20,-12,-11,-10,7,8,19,20,-12,-11,-15,-14],[29,26,27,2,-8,-7,10,11,12,-20,-19,-8,13,-11,-15,-14],[29,26,27,-6,7,8,19,20,-12,-11,-15,-14]],[[0,3],[1,2,19,20,-17,-18],[1,2,-8,13,-11,-15,16,-18],[1,2,19,20,-12,-13,8,-2,-6,10,-15,16,-18],[1,2,19,20,-12,-13,-7,10,-15,16,-18],[1,-27,-26,-25,-24,-12,-11,-15,16,-18],[1,-6,10,-15,16,-18],[1,-6,7,13,-11,-10,6,-27,28,-21,20,-17,-18],[1,-27,28,-21,20,24,25,26,28,-21,20,-17,-18],[1,2,19,21,-28,27,-6,7,13,12,-17,-18],[1,-6,7,8,-2,-27,28,-21,20,-17,-18],[1,2,-8,13,12,24,25,26,28,-21,20,-17,-18],[1,-27,28,-21,-19,-2,-6,10,-15,16,-18],[1,-27,-26,-25,-24,-20,-19,-8,13,12,-17,-18]],[[1,3],[5,7,13,12,-17,-18],[5,6,-27,28,-21,20,-17,-18],[5,10,-15,16,-18],[5,6,-27,-26,-25,-24,-12,-11,-15,16,-18],[5,6,-27,28,-21,-19,-2,-6,10,11,12,-17,-18],[5,10,11,-13,-7,6,2,-8,13,12,-17,-18],[5,10,11,12,24,25,26,28,-21,20,-17,-18],[5,6,2,19,20,24,25,26,28,-21,20,-17,-18],[5,10,11,-13,8,-2,-27,28,-21,-19,-8,-7,10,-15,16,-18]],[[2,3],[14,15,11,12,-17,-18],[14,15,-10,7,13,12,24,25,26,28,-21,20,-17,-18],[14,15,-10,6,2,-8,13,-11,-15,16,-18],[14,15,11,12,24,25,26,28,-21,20,-17,-18],[14,15,11,12,-20,-19,-8,13,-11,-10,6,2,19,20,-17,-18],[14,15,-10,7,8,-2,-6,10,11,12,-20,-19,-8,13,12,-17,-18],[14,15,-10,6,-27,28,-21,-19,-8,13,12,-17,-18],[14,15,11,-13,-7,10,-15,16,-18],[14,15,11,-13,8,19,20,-12,-11,-10,6,2,-8,13,12,-17,-18],[14,15,-10,7,13,-11,-15,16,-18],[14,15,-10,6,-27,28,-21,20,-12,-11,-15,16,-18],[14,15,11,-13,-7,6,2,-8,13,12,-20,-19,-2,-6,7,13,12,-17,-18],[14,15,11,-13,-7,6,2,19,20,-12,-11,-10,7,8,19,20,-17,-18],[14,15,-10,7,8,19,20,-12,-13,-7,10,11,12,-17,-18]],[[4,3],[23,-21,20,-17,-18],[23,-28,-26,-25,-24,-12,-11,-15,16,-18],[23,-28,27,2,19,21,-28,27,2,19,20,-17,-18],[23,-21,20,-12,-11,-10,7,13,12,-20,-19,-8,13,12,-17,-18],[23,-21,20,24,25,26,28,-21,20,-17,-18],[23,-28,27,-6,7,13,-11,-10,6,2,19,20,-17,-18],[23,-21,20,-12,-11,-10,7,13,12,-20,-19,-8,-7,6,2,19,20,-17,-18],[23,-28,27,-6,10,11,12,-17,-18],[23,-21,20,-12,-13,-7,10,11,12,-20,-19,-8,13,12,-17,-18],[23,-21,-19,-2,-6,7,8,19,20,-17,-18],[23,-21,-19,-2,-6,10,11,12,-20,-19,-8,13,12,-17,-18],[23,-28,27,-6,7,8,-2,-27,28,-21,20,-17,-18],[23,-21,-19,-8,13,12,24,25,26,28,-21,20,-17,-18],[23,-21,-19,-2,-6,7,13,-11,-10,6,-27,28,-21,20,-17,-18]],[[5,3],[29,26,28,-21,20,-17,-18],[29,-25,-24,-12,-13,8,-2,-27,28,-21,-19,-8,13,12,-17,-18],[29,26,28,-21,-19,-8,-7,10,11,12,-20,21,-28,27,2,19,20,-17,-18],[29,-25,-24,-20,-19,-2,-27,28,-21,20,-12,-13,-7,10,11,12,-17,-18],[29,26,28,-21,20,24,25,26,27,2,19,20,-17,-18],[29,26,27,-6,7,8,19,21,-28,27,2,19,20,-17,-18],[29,-25,-24,-20,21,-28,27,-6,10,11,12,-17,-18],[29,26,28,-21,20,-12,-11,-10,7,13,12,-20,-19,-2,-6,7,13,12,-17,-18],[29,26,28,-21,-19,-8,13,-11,-15,16,-18],[29,26,27,2,-8,13,-11,-10,6,2,19,20,-17,-18],[29,-25,-24,-20,-19,-2,-27,28,-21,20,-17,-18],[29,26,27,2,-8,-7,10,11,-13,8,19,20,-12,-11,-10,7,13,12,-17,-18],[29,26,27,2,-8,13,12,-20,21,-28,27,2,19,20,-17,-18],[29,-25,-24,-12,-13,-7,10,-15,16,-18],[29,26,28,-21,-19,-2,-27,28,-21,20,-17,-18],[29,26,27,2,-8,13,12,-20,-19,-2,-6,10,-15,16,-18]],[[0,4],[1,2,19,21,-23],[1,2,-8,-7,10,-15,16,17,-20,21,-23],[1,2,-8,13,12,-17,-16,15,-10,7,8,19,21,-23],[1,2,-8,13,12,-20,-19,-2,-6,7,8,19,21,-23],[1,-6,10,11,-13,8,19,21,-23],[1,-27,-26,-25,-24,-20,21,-23],[1,-6,10,11,12,-17,-16,15,11,12,-20,21,-23],[1,-6,10,11,12,-20,-19,-8,13,12,-20,21,-23],[1,-6,7,13,-11,-10,6,2,19,21,-23],[1,2,-8,-7,6,-27,-26,-25,-24,-20,21,-23],[1,2,-8,13,12,24,25,26,27,2,19,21,-23],[1,-6,10,-15,16,17,-20,21,-23],[1,-6,7,13,12,24,25,26,28,-23]],[[1,4],[5,7,8,19,21,-23],[5,6,2,19,20,-12,-11,-15,16,17,-20,21,-23],[5,6,2,-8,13,-11,-10,7,8,-2,-27,28,-23],[5,7,8,-2,-27,-26,-25,-24,-20,21,-23],[5,7,8,19,20,-12,-11,-10,6,-27,28,-23],[5,7,8,19,20,-17,-16,15,-10,7,8,19,21,-23],[5,10,-15,16,17,-20,-19,-2,-27,28,-23],[5,7,13,12,24,25,26,28,-23],[5,10,11,12,-20,-19,-2,-27,28,-23],[5,6,-27,-26,-25,-24,-20,21,-23],[5,7,8,19,20,24,25,26,27,2,19,21,-23],[5,6,2,-8,13,-11,-15,16,17,-20,21,-23],[5,10,-15,16,17,-20,-19,-8,-7,6,2,19,21,-23],[5,7,13,-11,-10,6,2,19,21,-23],[5,10,11,-13,-7,6,-27,28,-23]],[[2,4],[14,15,11,12,-20,21,-23],[14,15,11,12,-20,-19,-2,-6,10,11,12,-20,21,-23],[14,15,11,12,24,25,26,27,2,19,21,-23],[14,16,17,-20,-19,-8,13,-11,-15,16,17,-20,21,-23],[14,16,17,-20,-19,-2,-27,28,-23],[14,15,11,-13,-7,6,-27,-26,-25,-24,-20,21,-23],[14,16,17,-12,-11,-10,7,8,19,21,-23],[14,15,11,12,-17,-16,15,-10,7,8,19,21,-23],[14,15,11,12,-17,-16,15,-10,7,8,-2,-27,28,-23],[14,16,17,-12,-13,-7,6,2,-8,13,-11,-10,7,8,19,21,-23],[14,16,17,-12,-13,-7,6,-27,28,-23],[14,15,-10,7,13,-11,-15,16,17,-12,-13,8,19,21,-23],[14,16,17,-12,-11,-10,6,2,19,21,-23],[14,15,-10,6,-27,-26,-25,-24,-12,-13,8,19,21,-23],[14,15,11,12,-20,-19,-8,-7,6,2,19,20,-12,-13,8,19,21,-23]],[[3,4],[18,17,-20,21,-23],[18,17,-20,-19,-2,-27,-26,-25,-24,-20,21,-23],[18,-16,15,-10,6,2,19,21,-23],[18,-16,15,-10,6,-27,28,-23],[18,-16,15,-10,7,13,-11,-15,16,17,-20,21,-23],[18,-16,15,-10,7,8,19,20,24,25,26,28,-23],[18,-16,15,11,-13,8,19,20,-12,-11,-10,7,13,12,-20,21,-23],[18,-16,15,-10,7,8,19,21,-23],[18,17,-12,-11,-15,16,17,-20,-19,-2,-27,28,-23],[18,17,-20,-19,-8,-7,10,-15,16,17,-20,21,-23],[18,17,-12,-11,-15,16,17,-20,21,-23],[18,17,-12,-13,8,19,20,-12,-13,8,19,21,-23]],[[5,4],[29,26,28,-23],[29,-25,-24,-20,-19,-8,-7,10,11,12,24,25,26,28,-23],[29,26,27,2,-8,-7,6,2,19,21,-23],[29,-25,-24,-20,-19,-8,13,-11,-15,16,17,-20,21,-23],[29,26,27,-6,7,13,-11,-15,16,17,-20,21,-23],[29,26,27,-6,7,8,19,21,-23],[29,26,27,2,19,20,-12,-13,8,19,21,-23],[29,-25,-24,-12,-11,-15,16,17,-20,21,-23],[29,26,27,2,19,20,24,25,26,28,-23],[29,26,27,-6,7,8,-2,-27,28,-23],[29,-25,-24,-12,-13,-7,6,-27,28,-23],[29,26,27,-6,10,-15,16,17,-20,21,-23],[29,-25,-24,-20,-19,-2,-27,28,-23],[29,26,27,2,19,20,-12,-13,-7,6,2,19,21,-23]],[[0,5],[1,-27,-26,-29],[1,-27,28,-21,20,-17,-16,15,-10,7,13,12,24,25,-29],[1,2,19,20,-12,-13,8,-2,-27,28,-21,-19,-8,13,12,24,25,-29],[1,-6,10,11,12,-17,-16,15,-10,7,8,19,20,24,25,-29],[1,2,19,20,24,25,-29],[1,-27,28,-21,20,24,25,-29],[1,2,19,20,-17,-16,15,11,12,24,25,-29],[1,-27,28,-21,20,-12,-13,8,-2,-6,7,13,12,24,25,-29],[1,-27,28,-21,-19,-8,13,12,-17,-16,15,11,12,24,25,-29],[1,-6,10,-15,16,17,-12,-11,-10,7,13,12,24,25,-29],[1,-27,28,-21,-19,-2,-6,10,11,12,24,25,-29],[1,-6,10,-15,16,17,-12,-11,-10,7,8,-2,-27,-26,-29],[1,-27,28,-21,-19,-2,-6,10,11,12,-20,21,-28,-26,-29],[1,-6,7,13,12,24,25,-29],[1,2,19,21,-28,27,-6,7,13,12,24,25,-29]],[[1,5],[5,7,13,12,24,25,-29],[5,6,-27,28,-21,20,-12,-13,8,19,21,-28,-26,-29],[5,6,-27,28,-21,20,-12,-13,-7,10,11,12,24,25,-29],[5,7,13,-11,-10,6,-27,28,-21,-19,-2,-6,10,11,12,24,25,-29],[5,10,-15,16,17,-12,-13,-7,6,2,19,20,24,25,-29],[5,7,8,-2,-27,28,-21,20,24,25,-29],[5,7,8,-2,-6,10,11,12,-17,-16,15,11,12,24,25,-29],[5,7,13,12,-20,21,-28,27,2,19,20,24,25,-29],[5,10,-15,16,17,-20,21,-28,27,2,19,20,24,25,-29],[5,10,-15,16,17,-12,-13,-7,6,-27,-26,-29],[5,6,2,-8,13,-11,-15,16,17,-20,21,-28,-26,-29],[5,6,2,19,20,24,25,-29],[5,7,13,-11,-15,16,17,-12,-13,8,-2,-6,7,13,12,24,25,-29],[5,7,8,19,21,-28,27,-6,10,11,-13,-7,6,-27,-26,-29],[5,10,-15,16,17,-12,-11,-10,7,13,12,24,25,-29],[5,7,8,19,21,-28,27,-6,10,11,12,24,25,-29]],[[2,5],[14,15,11,12,24,25,-29],[14,16,17,-12,-13,-7,10,11,12,-20,-19,-2,-27,-26,-29],[14,16,17,-12,-11,-15,16,17,-20,21,-28,-26,-29],[14,15,-10,7,13,-11,-15,16,17,-12,-13,-7,10,11,12,24,25,-29],[14,15,11,-13,-7,6,2,19,21,-28,27,-6,10,11,12,24,25,-29],[14,16,17,-20,21,-28,27,-6,7,13,12,24,25,-29],[14,16,17,-20,21,-28,27,2,19,20,24,25,-29],[14,15,-10,6,2,19,20,-12,-13,8,-2,-27,-26,-29],[14,16,17,-20,21,-28,27,-6,10,11,12,24,25,-29],[14,15,-10,6,-27,28,-21,-19,-8,-7,10,11,12,24,25,-29],[14,15,-10,7,8,19,21,-28,27,-6,10,11,12,24,25,-29],[14,15,11,-13,8,19,21,-28,27,-6,10,11,12,24,25,-29],[14,15,-10,7,13,-11,-15,16,17,-12,-13,8,19,20,24,25,-29]],[[3,5],[18,17,-20,21,-28,-26,-29],[18,17,-20,-19,-8,13,12,24,25,-29],[18,-16,15,-10,7,8,-2,-27,28,-21,20,24,25,-29],[18,17,-12,-11,-10,7,8,-2,-27,28,-21,-19,-8,13,12,24,25,-29],[18,17,-12,-13,8,19,20,24,25,-29],[18,-16,15,11,12,-20,21,-28,27,2,-8,-7,6,-27,-26,-29],[18,-16,15,11,-13,8,-2,-6,10,11,12,-20,-19,-8,-7,10,11,12,24,25,-29],[18,17,-20,-19,-2,-27,28,-21,20,24,25,-29],[18,17,-20,-19,-8,-7,10,11,-13,8,-2,-6,7,13,12,24,25,-29],[18,17,-12,-13,-7,6,-27,28,-21,20,-17,-16,15,11,12,24,25,-29],[18,17,-20,21,-28,27,2,-8,-7,6,-27,28,-21,20,24,25,-29],[18,-16,15,-10,6,-27,28,-21,-19,-8,13,12,24,25,-29],[18,17,-20,21,-28,27,-6,10,11,-13,-7,6,2,-8,13,12,24,25,-29],[18,-16,15,-10,7,13,12,24,25,-29],[18,17,-20,-19,-2,-6,10,11,12,24,25,-29],[18,17,-12,-11,-10,7,8,-2,-6,10,-15,16,17,-20,21,-28,-26,-29]],[[4,5],[23,-28,-26,-29],[23,-28,27,-6,10,11,-13,8,-2,-27,-26,-29],[23,-28,27,2,19,21,-28,-26,-29],[23,-28,27,-6,10,11,12,-20,21,-28,-26,-29],[23,-28,27,-6,10,11,12,24,25,-29],[23,-21,20,-12,-11,-10,7,13,12,24,25,-29],[23,-21,-19,-8,13,12,-17,-16,15,11,12,24,25,-29],[23,-21,20,-12,-13,-7,6,-27,28,-21,20,24,25,-29],[23,-21,-19,-2,-27,28,-21,20,24,25,-29],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-10,7,13,12,24,25,-29],[23,-28,27,2,-8,-7,6,-27,-26,-29],[23,-28,27,2,19,20,-12,-13,8,-2,-6,10,11,12,24,25,-29],[23,-21,-19,-8,-7,6,-27,28,-21,20,24,25,-29]],[[5,5],[29,26,28,-21,20,24,25,-29],[29,-25,-24,-20,-19,-8,13,-11,-10,6,-27,28,-21,20,24,25,-29],[29,-25,-24,-12,-13,8,19,21,-28,27,2,-8,-7,10,11,12,24,25,-29],[29,26,27,2,-8,13,12,24,25,-29],[29,-25,-24,-12,-13,-7,6,2,19,20,-17,-16,15,11,12,24,25,-29],[29,-25,-24,-12,-11,-15,16,17,-20,21,-28,27,2,19,20,24,25,-29],[29,26,27,2,-8,-7,10,11,-13,8,19,21,-28,-26,-29],[29,-25,-24,-12,-11,-10,7,8,19,21,-28,27,-6,10,11,-13,-7,10,11,12,24,25,-29],[29,-25,-24,-12,-11,-10,7,13,12,-17,-16,15,11,12,24,25,-29],[29,26,27,2,19,20,24,25,-29],[29,-25,-24,-12,-13,-7,10,-15,16,17,-20,21,-28,-26,-29],[29,26,28,-21,20,-17,-16,15,11,-13,-7,10,11,12,24,25,-29],[29,26,28,-21,-19,-8,13,-11,-15,16,17,-20,21,-28,-26,-29],[29,26,27,2,19,21,-28,-26,-29],[29,-25,-24,-20,-19,-8,13,12,-17,-16,15,-10,6,2,19,20,24,25,-29],[29,26,27,2,-8,-7,6,-27,28,-21,20,24,25,-29]]],[[[1,0],[5,6,-1],[5,10,-15,16,17,-12,-13,8,-2,-1],[5,7,8,19,20,24,30,31,26,27,-1],[5,7,13,-11,-10,6,-1],[5,10,-15,16,17,-20,-19,-2,-1],[5,7,13,12,24,30,31,26,28,-21,-19,-2,-1],[5,7,13,12,-20,-19,-8,-7,6,-1],[5,10,11,12,-17,-16,15,-10,6,-1],[5,7,13,12,-20,21,-28,27,-1],[5,7,13,12,-20,-19,-2,-1],[5,7,13,12,-17,-16,15,-10,6,-1],[5,7,13,12,-20,-19,-8,-7,10,11,-13,8,-2,-1]],[[2,0],[14,15,-10,6,-1],[14,16,17,-20,-19,-2,-1],[14,16,17,-12,-13,8,-2,-1],[14,16,17,-20,-19,-8,-7,10,11,-13,8,-2,-1],[14,16,17,-20,-19,-8,13,-11,-10,6,-1],[14,16,17,-12,-11,-15,16,17,-20,-19,-2,-1],[14,16,17,-12,-11,-10,6,-1],[14,15,11,12,-17,-16,15,-10,6,-1],[14,15,11,-13,-7,10,-15,16,17,-20,21,-28,27,-1],[14,16,17,-12,-13,8,19,21,-28,27,-1],[14,16,17,-20,21,-28,27,-1],[14,16,17,-12,-11,-10,7,13,12,-20,-19,-2,-1]],[[3,0],[18,17,-20,-19,-2,-1],[18,-16,15,11,12,-17,-16,15,-10,6,-1],[18,17,-20,-19,-8,13,12,24,30,31,26,27,-1],[18,-16,15,-10,7,8,19,21,-28,27,-1],[18,17,-20,21,-28,-26,-31,-30,-24,-20,-19,-2,-1],[18,-16,15,-10,7,13,12,-20,-19,-8,-7,6,-1],[18,-16,15,11,-13,8,19,21,-28,27,-1],[18,-16,15,-10,7,13,-11,-15,16,17,-20,-19,-2,-1],[18,-16,15,11,12,24,30,31,26,27,-1],[18,17,-12,-11,-15,16,17,-20,21,-28,27,-1],[18,-16,15,11,-13,-7,10,-15,16,17,-20,-19,-2,-1],[18,17,-20,21,-28,-26,-31,-30,-24,-12,-11,-10,6,-1],[18,17,-12,-11,-10,7,13,12,-20,21,-28,27,-1]],[[4,0],[23,-21,-19,-2,-1],[23,-28,-26,-31,-30,-24,-20,-19,-2,-1],[23,-21,20,-17,-16,15,-10,6,-1],[23,-21,-19,-8,13,-11,-10,6,-1],[23,-21,20,-12,-11,-10,7,13,12,-17,-16,15,-10,6,-1],[23,-21,-19,-8,-7,10,-15,16,17,-20,-19,-2,-1],[23,-28,-26,-31,-30,-24,-12,-13,8,-2,-1],[23,-21,20,-12,-11,-15,16,17,-20,-19,-2,-1],[23,-21,20,24,30,31,26,27,-1],[23,-21,-19,-8,13,12,-20,21,-28,27,-1]],[[5,0],[29,26,27,-1],[29,-31,-30,32,33,31,26,27,-1],[29,26,28,-21,-19,-8,13,12,-20,21,-28,27,-1],[29,-31,-30,-24,-12,-13,-7,10,-15,16,17,-20,-19,-2,-1],[29,26,28,-21,20,-12,-11,-15,16,17,-20,-19,-2,-1],[29,-31,-30,32,33,-30,-24,-20,-19,-2,-1],[29,26,28,-21,-19,-8,-7,10,-15,16,17,-20,-19,-2,-1],[29,-31,-33,-32,-24,-12,-13,8,-2,-1],[29,26,28,-21,-19,-8,-7,10,11,-13,8,19,21,-28,27,-1],[29,26,28,-21,20,-12,-13,-7,10,11,-13,8,-2,-1],[29,26,28,-21,20,-12,-13,-7,10,11,12,-20,-19,-8,-7,6,-1],[29,26,28,-21,20,-12,-13,-7,10,11,12,-20,-19,-2,-1],[29,-31,-33,-32,-24,-20,-19,-8,13,-11,-10,6,-1]],[[6,0],[34,-32,-24,-20,-19,-2,-1],[34,-32,-24,-12,-13,8,19,20,24,30,31,26,27,-1],[34,-32,30,-33,-32,-24,-12,-13,8,-2,-1],[34,-32,-24,-12,-13,-7,10,11,12,-17,-16,15,-10,6,-1],[34,-32,-24,-12,-11,-10,7,8,19,21,-28,27,-1],[34,33,31,26,28,-21,-19,-8,-7,10,11,12,-20,-19,-2,-1],[34,33,-30,32,33,-30,-24,-20,-19,-2,-1],[34,-32,30,-33,-32,-24,-20,-19,-2,-1],[34,-32,-24,-20,-19,-8,-7,10,-15,16,17,-20,-19,-2,-1],[34,33,31,26,28,-21,20,-12,-13,-7,10,11,12,-20,-19,-2,-1],[34,-32,30,31,26,28,-21,-19,-8,13,-11,-10,6,-1],[34,-32,-24,-20,-19,-8,13,-11,-15,16,17,-20,-19,-2,-1],[34,-32,-24,-20,21,-28,-26,-31,-30,-24,-12,-13,8,-2,-1],[34,-32,30,31,26,28,-21,-19,-2,-1]],[[0,1],[1,-6,-5],[1,2,-8,13,12,-17,-16,15,-10,-5],[1,-27,-26,-31,-30,-24,-12,-13,-7,-5],[1,2,-8,13,-11,-15,16,17,-12,-13,-7,-5],[1,2,-8,13,12,24,30,31,26,28,-21,-19,-8,-7,-5],[1,-27,28,-21,-19,-8,-7,-5],[1,-27,28,-21,-19,-2,-6,-5],[1,-27,-26,-31,-30,-24,-20,-19,-8,-7,-5],[1,2,19,20,24,30,31,26,28,-21,-19,-8,-7,-5],[1,2,19,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[1,2,-8,13,12,-17,-16,15,11,-13,-7,-5]],[[2,1],[14,15,-10,-5],[14,16,17,-20,21,-28,27,-6,-5],[14,16,17,-12,-13,-7,-5],[14,15,11,12,-17,-16,15,-10,-5],[14,15,11,-13,8,-2,-27,28,-21,-19,-8,-7,-5],[14,16,17,-12,-11,-15,16,17,-12,-13,-7,-5],[14,16,17,-12,-13,8,-2,-27,28,-21,-19,-8,-7,-5],[14,16,17,-20,-19,-2,-27,28,-21,-19,-8,-7,-5],[14,16,17,-20,-19,-8,-7,-5],[14,15,11,12,-20,21,-28,-26,-31,-30,-24,-12,-13,-7,-5]],[[3,1],[18,17,-12,-13,-7,-5],[18,-16,15,11,12,24,30,31,26,28,-21,-19,-8,-7,-5],[18,-16,15,11,-13,8,-2,-6,-5],[18,17,-12,-11,-15,16,17,-20,21,-28,27,-6,-5],[18,-16,15,11,12,-17,-16,15,-10,-5],[18,-16,15,11,12,-20,-19,-2,-27,28,-21,-19,-8,-7,-5],[18,17,-12,-13,8,-2,-27,-26,-31,-30,-24,-12,-13,-7,-5],[18,17,-20,-19,-8,13,-11,-15,16,17,-12,-13,-7,-5],[18,17,-12,-13,8,19,20,-12,-13,-7,-5],[18,17,-20,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[18,-16,15,11,12,-20,-19,-8,13,-11,-10,-5]],[[4,1],[23,-21,-19,-8,-7,-5],[23,-28,27,2,19,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[23,-21,20,24,30,31,26,28,-21,-19,-8,-7,-5],[23,-28,-26,-31,-30,-24,-12,-13,-7,-5],[23,-21,-19,-2,-27,-26,-31,-30,-24,-12,-13,-7,-5],[23,-28,27,2,-8,13,12,-17,-16,15,-10,-5],[23,-21,-19,-8,13,12,24,30,31,26,28,-21,-19,-8,-7,-5],[23,-21,20,-12,-11,-15,16,17,-12,-13,-7,-5],[23,-28,27,2,19,20,-12,-13,8,-2,-27,28,-21,-19,-8,-7,-5],[23,-28,27,2,-8,13,-11,-10,-5],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-10,-5],[23,-28,27,2,19,20,-17,-16,15,-10,-5]],[[5,1],[29,-31,-30,-24,-12,-13,-7,-5],[29,26,28,-21,-19,-8,13,12,-20,-19,-8,-7,-5],[29,26,28,-21,20,-12,-11,-15,16,17,-12,-13,-7,-5],[29,-31,-33,-32,30,31,26,28,-21,-19,-8,-7,-5],[29,-31,-30,32,33,31,26,28,-21,-19,-8,-7,-5],[29,-31,-30,-24,-12,-11,-15,16,17,-12,-13,-7,-5],[29,26,27,2,-8,13,-11,-15,16,17,-12,-13,-7,-5],[29,26,28,-21,-19,-2,-27,-26,-31,-30,-24,-12,-13,-7,-5],[29,-31,-30,32,33,-30,-24,-12,-13,-7,-5],[29,-31,-30,-24,-20,21,-28,27,2,-8,-7,-5],[29,-31,-33,-32,-24,-12,-13,-7,-5],[29,26,28,-21,20,-17,-16,15,-10,-5],[29,26,27,2,19,20,-17,-16,15,-10,-5]],[[6,1],[34,-32,-24,-12,-13,-7,-5],[34,33,31,26,27,2,-8,-7,-5],[34,33,31,26,28,-21,-19,-2,-6,-5],[34,-32,-24,-12,-13,8,-2,-27,-26,-31,-30,-24,-12,-13,-7,-5],[34,33,-30,32,33,-30,-24,-12,-13,-7,-5],[34,33,31,26,28,-21,-19,-2,-27,28,-21,20,-12,-13,-7,-5],[34,-32,-24,-20,-19,-2,-27,28,-21,-19,-8,-7,-5],[34,-32,30,-33,-32,-24,-12,-13,-7,-5],[34,-32,30,31,26,28,-21,-19,-8,-7,-5],[34,33,31,26,28,-21,-19,-8,-7,-5],[34,33,31,26,27,-6,-5],[34,33,31,26,28,-21,-19,-2,-27,28,-21,-19,-8,-7,-5],[34,33,31,26,28,-21,20,-17,-16,15,-10,-5],[34,-32,-24,-12,-11,-15,16,17,-12,-13,-7,-5],[34,-32,30,31,26,27,-6,-5]],[[0,2],[1,-6,10,-15,-14],[1,-6,10,11,-13,8,-2,-27,28,-21,20,-12,-11,-15,-14],[1,-6,7,8,19,21,-28,27,2,-8,13,-11,-10,7,13,-11,-15,-14],[1,2,19,20,24,30,31,26,28,-21,20,-12,-11,-15,-14],[1,-27,28,-21,20,-12,-13,8,-2,-6,7,13,-11,-15,-14],[1,-27,28,-21,20,-17,-16,-14],[1,-27,-26,-31,-30,-24,-12,-11,-15,-14],[1,-27,-26,-31,-30,-24,-12,-11,-10,7,13,-11,-15,-14],[1,2,-8,-7,6,-27,28,-21,20,-12,-11,-15,-14],[1,-27,-26,-31,-30,-24,-12,-13,-7,10,-15,-14],[1,2,-8,13,12,-17,-16,-14]],[[1,2],[5,10,-15,-14],[5,7,8,19,20,-17,-16,-14],[5,10,11,-13,8,-2,-6,7,13,-11,-15,-14],[5,10,11,-13,8,19,20,-17,-16,-14],[5,10,11,-13,-7,6,-27,28,-21,20,-12,-11,-15,-14],[5,6,-27,-26,-31,-30,-24,-12,-11,-15,-14],[5,6,2,-8,13,-11,-10,7,8,19,20,-12,-11,-15,-14],[5,10,11,12,-17,-16,-14],[5,10,11,-13,8,-2,-6,10,-15,-14],[5,10,11,-13,-7,6,2,19,20,-12,-11,-15,-14],[5,7,8,19,21,-28,27,-6,10,-15,-14],[5,6,-27,28,-21,20,-12,-11,-10,7,13,-11,-15,-14],[5,6,2,19,20,-12,-11,-10,7,13,-11,-15,-14]],[[3,2],[18,17,-12,-11,-15,-14],[18,17,-20,-19,-8,13,12,-17,-16,-14],[18,17,-20,21,-28,-26,-31,-30,-24,-12,-11,-15,-14],[18,17,-20,-19,-2,-27,-26,-31,-30,-24,-12,-11,-15,-14],[18,17,-12,-11,-10,7,8,19,21,-28,27,-6,10,-15,-14],[18,17,-12,-11,-10,6,-27,28,-21,20,-12,-11,-15,-14],[18,17,-20,21,-28,27,2,-8,13,-11,-15,-14],[18,17,-12,-11,-10,7,8,-2,-27,28,-21,20,-12,-11,-15,-14],[18,17,-12,-13,8,19,21,-28,27,-6,10,-15,-14],[18,17,-12,-13,-7,10,11,12,-17,-16,-14],[18,17,-20,-19,-8,-7,6,2,19,20,-12,-11,-15,-14],[18,17,-12,-11,-10,7,13,12,-20,21,-28,27,-6,10,-15,-14],[18,17,-20,21,-28,27,-6,10,-15,-14]],[[4,2],[23,-21,20,-12,-11,-15,-14],[23,-28,27,-6,7,13,12,-17,-16,-14],[23,-28,27,2,-8,13,12,-17,-16,-14],[23,-28,-26,-31,-30,-24,-12,-11,-10,7,8,-2,-6,10,-15,-14],[23,-21,20,-12,-13,-7,6,2,-8,13,12,-17,-16,-14],[23,-28,27,2,19,20,-12,-11,-10,7,13,-11,-15,-14],[23,-28,-26,-31,-33,-32,-24,-12,-11,-15,-14],[23,-28,27,2,-8,13,-11,-10,6,2,-8,13,-11,-15,-14],[23,-21,-19,-8,-7,10,11,-13,8,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-21,-19,-2,-6,10,11,12,-20,21,-28,27,-6,10,-15,-14],[23,-28,27,-6,7,8,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-28,27,-6,10,11,12,-17,-16,-14]],[[5,2],[29,-31,-30,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-2,-27,-26,-31,-30,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-8,13,-11,-15,-14],[29,26,27,2,19,20,-17,-16,-14],[29,-31,-33,-32,-24,-20,-19,-2,-6,10,-15,-14],[29,26,28,-21,-19,-2,-27,28,-21,20,-12,-11,-15,-14],[29,-31,-33,-32,-24,-12,-11,-15,-14],[29,-31,-30,-24,-20,-19,-2,-6,10,11,-13,-7,10,-15,-14],[29,-31,-30,32,33,-30,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-8,13,12,-17,-16,-14],[29,26,28,-21,20,-12,-11,-10,7,8,19,20,-12,-11,-15,-14],[29,26,27,2,-8,-7,10,11,12,-20,-19,-8,13,-11,-15,-14],[29,26,27,-6,7,8,19,20,-12,-11,-15,-14]],[[6,2],[34,-32,-24,-12,-11,-15,-14],[34,-32,-24,-12,-13,8,-2,-27,28,-21,20,-12,-11,-15,-14],[34,33,-30,32,33,-30,-24,-12,-11,-15,-14],[34,-32,-24,-20,-19,-2,-27,28,-21,20,-12,-11,-15,-14],[34,-32,30,31,26,28,-21,20,-12,-11,-15,-14],[34,-32,-24,-20,21,-28,27,-6,10,-15,-14],[34,-32,30,-33,-32,-24,-12,-11,-15,-14],[34,33,31,26,27,-6,10,-15,-14],[34,-32,30,31,26,28,-21,-19,-2,-6,10,-15,-14],[34,-32,30,31,26,27,-6,10,-15,-14],[34,-32,-24,-12,-13,-7,10,11,12,-17,-16,-14]],[[0,3],[1,2,19,20,-17,-18],[1,2,-8,13,-11,-15,16,-18],[1,2,19,20,-12,-13,8,-2,-6,10,-15,16,-18],[1,2,19,20,-12,-13,-7,10,-15,16,-18],[1,-27,-26,-31,-30,-24,-12,-11,-15,16,-18],[1,-6,10,-15,16,-18],[1,-6,7,13,-11,-10,6,-27,28,-21,20,-17,-18],[1,-27,28,-21,20,24,30,31,26,28,-21,20,-17,-18],[1,2,19,21,-28,27,-6,7,13,12,-17,-18],[1,-6,7,8,-2,-27,28,-21,20,-17,-18],[1,2,-8,13,12,24,30,31,26,28,-21,20,-17,-18],[1,-27,28,-21,-19,-2,-6,10,-15,16,-18]],[[1,3],[5,7,13,12,-17,-18],[5,6,-27,28,-21,20,-17,-18],[5,10,-15,16,-18],[5,6,-27,-26,-31,-30,-24,-12,-11,-15,16,-18],[5,6,-27,28,-21,-19,-2,-6,10,11,12,-17,-18],[5,10,11,-13,-7,6,2,-8,13,12,-17,-18],[5,10,11,12,24,30,31,26,28,-21,20,-17,-18],[5,6,2,19,20,24,30,31,26,28,-21,20,-17,-18],[5,10,11,-13,8,-2,-27,28,-21,-19,-8,-7,10,-15,16,-18]],[[2,3],[14,15,11,12,-17,-18],[14,15,-10,7,13,12,24,30,31,26,28,-21,20,-17,-18],[14,15,-10,6,2,-8,13,-11,-15,16,-18],[14,15,11,12,24,30,31,26,28,-21,20,-17,-18],[14,15,11,12,-20,-19,-8,13,-11,-10,6,2,19,20,-17,-18],[14,15,-10,7,8,-2,-6,10,11,12,-20,-19,-8,13,12,-17,-18],[14,15,-10,6,-27,28,-21,-19,-8,13,12,-17,-18],[14,15,11,-13,-7,10,-15,16,-18],[14,15,11,-13,8,19,20,-12,-11,-10,6,2,-8,13,12,-17,-18],[14,15,-10,7,13,-11,-15,16,-18],[14,15,-10,6,-27,28,-21,20,-12,-11,-15,16,-18],[14,15,11,-13,-7,6,2,-8,13,12,-20,-19,-2,-6,7,13,12,-17,-18],[14,15,11,-13,-7,6,2,19,20,-12,-11,-10,7,8,19,20,-17,-18],[14,15,-10,7,8,19,20,-12,-13,-7,10,11,12,-17,-18]],[[4,3],[23,-21,20,-17,-18],[23,-28,-26,-31,-30,-24,-12,-11,-15,16,-18],[23,-28,27,2,19,21,-28,27,2,19,20,-17,-18],[23,-21,20,-12,-11,-10,7,13,12,-20,-19,-8,13,12,-17,-18],[23,-21,20,24,30,31,26,28,-21,20,-17,-18],[23,-28,27,-6,7,13,-11,-10,6,2,19,20,-17,-18],[23,-21,20,-12,-11,-10,7,13,12,-20,-19,-8,-7,6,2,19,20,-17,-18],[23,-28,27,-6,10,11,12,-17,-18],[23,-21,20,-12,-13,-7,10,11,12,-20,-19,-8,13,12,-17,-18],[23,-21,-19,-2,-6,7,8,19,20,-17,-18],[23,-21,-19,-2,-6,10,11,12,-20,-19,-8,13,12,-17,-18],[23,-28,27,-6,7,8,-2,-27,28,-21,20,-17,-18],[23,-21,-19,-8,13,12,24,30,31,26,28,-21,20,-17,-18],[23,-21,-19,-2,-6,7,13,-11,-10,6,-27,28,-21,20,-17,-18]],[[5,3],[29,26,28,-21,20,-17,-18],[29,-31,-30,-24,-12,-13,-7,6,2,-8,13,-11,-10,7,13,12,-17,-18],[29,26,28,-21,-19,-8,-7,10,11,12,-20,21,-28,27,2,19,20,-17,-18],[29,-31,-33,-32,-24,-20,-19,-2,-6,7,13,12,-17,-18],[29,26,28,-21,20,24,30,31,26,27,2,19,20,-17,-18],[29,26,27,-6,7,8,19,21,-28,27,2,19,20,-17,-18],[29,-31,-33,-32,30,31,26,28,-21,20,-17,-18],[29,26,28,-21,20,-12,-11,-10,7,13,12,-20,-19,-2,-6,7,13,12,-17,-18],[29,26,28,-21,-19,-8,13,-11,-15,16,-18],[29,26,27,2,-8,13,-11,-10,6,2,19,20,-17,-18],[29,-31,-30,32,33,31,26,28,-21,20,-17,-18],[29,26,27,2,-8,-7,10,11,-13,8,19,20,-12,-11,-10,7,13,12,-17,-18],[29,26,27,2,-8,13,12,-20,21,-28,27,2,19,20,-17,-18],[29,-31,-33,-32,-24,-20,21,-28,27,2,19,20,-17,-18],[29,26,28,-21,-19,-2,-27,28,-21,20,-17,-18],[29,26,27,2,-8,13,12,-20,-19,-2,-6,10,-15,16,-18]],[[6,3],[34,-32,-24,-12,-11,-15,16,-18],[34,-32,30,31,26,28,-21,20,-12,-13,-7,6,2,19,20,-17,-18],[34,-32,-24,-20,21,-28,-26,-31,-30,-24,-12,-11,-15,16,-18],[34,-32,-24,-12,-13,-7,10,11,12,-20,-19,-2,-27,28,-21,20,-17,-18],[34,33,-30,-24,-12,-11,-10,6,-27,28,-21,-19,-2,-6,7,13,12,-17,-18],[34,-32,-24,-12,-11,-10,6,2,19,20,-17,-18],[34,33,31,26,28,-21,20,24,30,31,26,28,-21,20,-17,-18],[34,33,-30,32,33,31,26,28,-21,20,-17,-18],[34,33,-30,32,33,-30,-24,-12,-11,-15,16,-18],[34,33,31,26,27,2,-8,13,12,-17,-18],[34,33,31,26,28,-21,-19,-8,-7,6,-27,28,-21,20,-17,-18],[34,33,31,26,27,-6,7,13,12,-20,-19,-8,13,12,-17,-18],[34,-32,-24,-12,-13,-7,10,11,12,-20,-19,-8,13,12,-17,-18],[34,33,-30,-24,-20,21,-28,27,2,-8,-7,10,11,12,-17,-18]],[[0,4],[1,2,19,21,-23],[1,2,-8,-7,10,-15,16,17,-20,21,-23],[1,2,-8,13,12,-17,-16,15,-10,7,8,19,21,-23],[1,2,-8,13,12,-20,-19,-2,-6,7,8,19,21,-23],[1,-6,10,11,-13,8,19,21,-23],[1,-27,-26,-31,-30,-24,-20,21,-23],[1,-6,10,11,12,-17,-16,15,11,12,-20,21,-23],[1,-6,10,11,12,-20,-19,-8,13,12,-20,21,-23],[1,-6,7,13,-11,-10,6,2,19,21,-23],[1,2,-8,-7,6,-27,-26,-31,-30,-24,-20,21,-23],[1,2,-8,13,12,24,30,31,26,27,2,19,21,-23],[1,-6,10,-15,16,17,-20,21,-23],[1,-6,7,13,12,24,30,31,26,28,-23]],[[1,4],[5,7,8,19,21,-23],[5,6,2,19,20,-12,-11,-15,16,17,-20,21,-23],[5,6,2,-8,13,-11,-10,7,8,-2,-27,28,-23],[5,7,8,-2,-27,-26,-31,-30,-24,-20,21,-23],[5,7,8,19,20,-12,-11,-10,6,-27,28,-23],[5,7,8,19,20,-17,-16,15,-10,7,8,19,21,-23],[5,10,-15,16,17,-20,-19,-2,-27,28,-23],[5,7,13,12,24,30,31,26,28,-23],[5,10,11,12,-20,-19,-2,-27,28,-23],[5,6,-27,-26,-31,-30,-24,-20,21,-23],[5,7,8,19,20,24,30,31,26,27,2,19,21,-23],[5,6,2,-8,13,-11,-15,16,17,-20,21,-23],[5,10,-15,16,17,-20,-19,-8,-7,6,2,19,21,-23],[5,7,13,-11,-10,6,2,19,21,-23],[5,10,11,-13,-7,6,-27,28,-23]],[[2,4],[14,15,11,12,-20,21,-23],[14,15,11,12,-20,-19,-2,-6,10,11,12,-20,21,-23],[14,15,11,12,24,32,33,31,26,28,-23],[14,16,17,-20,-19,-8,13,-11,-15,16,17,-20,21,-23],[14,16,17,-20,-19,-2,-27,28,-23],[14,15,11,-13,-7,6,-27,-26,-31,-30,-24,-20,21,-23],[14,16,17,-12,-11,-10,7,8,19,21,-23],[14,15,11,12,-17,-16,15,-10,7,8,19,21,-23],[14,15,11,12,-17,-16,15,-10,7,8,-2,-27,28,-23],[14,16,17,-12,-13,-7,6,2,-8,13,-11,-10,7,8,19,21,-23],[14,16,17,-12,-13,-7,6,-27,28,-23],[14,15,-10,7,13,-11,-15,16,17,-12,-13,8,19,21,-23],[14,16,17,-12,-11,-10,6,2,19,21,-23],[14,15,-10,6,-27,-26,-31,-30,-24,-12,-13,8,19,21,-23],[14,15,11,12,-20,-19,-8,-7,6,2,19,20,-12,-13,8,19,21,-23]],[[3,4],[18,17,-20,21,-23],[18,17,-20,-19,-2,-27,-26,-31,-30,-24,-20,21,-23],[18,-16,15,-10,6,2,19,21,-23],[18,-16,15,-10,6,-27,28,-23],[18,-16,15,-10,7,13,-11,-15,16,17,-20,21,-23],[18,-16,15,-10,7,8,19,20,24,30,31,26,28,-23],[18,-16,15,11,-13,8,19,20,-12,-11,-10,7,13,12,-20,21,-23],[18,-16,15,-10,7,8,19,21,-23],[18,17,-12,-11,-15,16,17,-20,-19,-2,-27,28,-23],[18,17,-20,-19,-8,-7,10,-15,16,17,-20,21,-23],[18,17,-12,-11,-15,16,17,-20,21,-23],[18,17,-12,-13,8,19,20,-12,-13,8,19,21,-23]],[[5,4],[29,26,28,-23],[29,-31,-33,-32,30,31,26,28,-23],[29,26,27,2,-8,-7,6,2,19,21,-23],[29,-31,-30,32,33,31,26,28,-23],[29,26,27,-6,7,13,-11,-15,16,17,-20,21,-23],[29,26,27,-6,7,8,19,21,-23],[29,26,27,2,19,20,-12,-13,8,19,21,-23],[29,-31,-30,-24,-20,-19,-8,13,-11,-15,16,17,-20,21,-23],[29,26,27,2,19,20,24,30,31,26,28,-23],[29,26,27,-6,7,8,-2,-27,28,-23],[29,-31,-30,-24,-12,-11,-10,6,-27,28,-23],[29,26,27,-6,10,-15,16,17,-20,21,-23],[29,26,27,2,19,20,-12,-13,-7,6,2,19,21,-23]],[[6,4],[34,-32,-24,-20,21,-23],[34,-32,30,31,26,27,2,19,21,-23],[34,33,-30,32,33,31,26,28,-23],[34,33,31,26,27,2,-8,-7,6,2,19,21,-23],[34,-32,-24,-20,-19,-8,-7,10,-15,16,17,-12,-13,8,19,21,-23],[34,33,-30,-24,-20,-19,-2,-6,7,8,19,21,-23],[34,33,31,26,27,2,19,20,-12,-13,8,-2,-27,28,-23],[34,33,31,26,27,2,19,21,-23],[34,33,-30,-24,-12,-11,-15,16,17,-20,21,-23],[34,-32,30,-33,-32,-24,-20,21,-23],[34,-32,30,31,26,27,-6,7,8,19,21,-23],[34,33,31,26,27,-6,7,8,19,21,-23],[34,-32,-24,-20,-19,-8,-7,10,11,-13,8,19,21,-23],[34,33,-30,-24,-20,-19,-8,-7,10,11,-13,8,19,21,-23]],[[0,5],[1,-27,-26,-29],[1,-27,28,-21,20,-17,-16,15,-10,7,13,12,24,30,31,-29],[1,2,19,20,-12,-13,8,-2,-27,28,-21,-19,-8,13,12,24,30,31,-29],[1,-6,10,11,12,-17,-16,15,-10,7,8,19,20,24,30,31,-29],[1,2,19,20,24,32,33,31,-29],[1,-27,28,-21,20,24,30,31,-29],[1,2,19,20,-17,-16,15,11,12,24,30,31,-29],[1,-27,28,-21,20,-12,-13,8,-2,-6,7,13,12,24,30,31,-29],[1,-27,28,-21,-19,-8,13,12,-17,-16,15,11,12,24,30,31,-29],[1,-6,10,-15,16,17,-12,-11,-10,7,13,12,24,30,31,-29],[1,-27,28,-21,-19,-2,-6,10,11,12,24,30,31,-29],[1,-6,10,-15,16,17,-12,-11,-10,7,8,-2,-27,-26,-29],[1,-27,28,-21,20,24,32,33,31,-29],[1,-27,28,-21,-19,-2,-6,10,11,12,-20,21,-28,-26,-29],[1,-6,7,13,12,24,30,-33,-32,30,31,-29],[1,2,19,21,-28,27,-6,7,13,12,24,30,31,-29]],[[1,5],[5,7,13,12,24,30,31,-29],[5,6,-27,28,-21,20,-12,-13,8,19,21,-28,-26,-29],[5,6,-27,28,-21,20,-12,-13,-7,10,11,12,24,30,31,-29],[5,7,13,-11,-10,6,-27,28,-21,-19,-2,-6,10,11,12,24,30,31,-29],[5,10,-15,16,17,-12,-13,-7,6,2,19,20,24,30,31,-29],[5,7,8,-2,-27,28,-21,20,24,30,31,-29],[5,7,8,-2,-6,10,11,12,-17,-16,15,11,12,24,30,31,-29],[5,7,13,12,-20,21,-28,27,2,19,20,24,30,31,-29],[5,10,-15,16,17,-20,21,-28,27,2,19,20,24,30,31,-29],[5,10,-15,16,17,-12,-13,-7,6,-27,-26,-29],[5,6,2,-8,13,-11,-15,16,17,-20,21,-28,-26,-29],[5,6,2,19,20,24,32,33,31,-29],[5,7,13,-11,-15,16,17,-12,-13,8,-2,-6,7,13,12,24,30,31,-29],[5,7,8,19,21,-28,27,-6,10,11,-13,-7,6,-27,-26,-29],[5,10,-15,16,17,-12,-11,-10,7,13,12,24,30,31,-29],[5,7,8,19,21,-28,27,-6,10,11,12,24,30,31,-29]],[[2,5],[14,15,11,12,24,30,31,-29],[14,16,17,-12,-13,-7,10,11,12,-20,-19,-2,-27,-26,-29],[14,16,17,-12,-11,-15,16,17,-20,21,-28,-26,-29],[14,15,-10,7,13,-11,-15,16,17,-12,-13,-7,10,11,12,24,30,31,-29],[14,15,11,-13,-7,6,2,19,21,-28,27,-6,10,11,12,24,30,31,-29],[14,16,17,-20,21,-28,27,-6,7,13,12,24,30,31,-29],[14,15,11,12,24,32,33,31,-29],[14,16,17,-20,21,-28,27,2,19,20,24,30,31,-29],[14,15,-10,6,2,19,20,-12,-13,8,-2,-27,-26,-29],[14,15,11,12,24,30,-33,-32,30,31,-29],[14,16,17,-20,21,-28,27,-6,10,11,12,24,30,31,-29],[14,15,-10,6,-27,28,-21,-19,-8,-7,10,11,12,24,30,31,-29],[14,15,-10,7,8,19,21,-28,27,-6,10,11,12,24,30,31,-29],[14,15,11,-13,8,19,21,-28,27,-6,10,11,12,24,30,31,-29],[14,15,-10,7,13,-11,-15,16,17,-12,-13,8,19,20,24,30,31,-29]],[[3,5],[18,17,-20,21,-28,-26,-29],[18,17,-20,-19,-8,13,12,24,32,33,31,-29],[18,-16,15,-10,7,8,-2,-27,28,-21,20,24,30,31,-29],[18,17,-12,-11,-10,7,8,-2,-27,28,-21,-19,-8,13,12,24,30,31,-29],[18,17,-12,-13,8,19,20,24,30,-33,-32,30,31,-29],[18,-16,15,11,12,-20,21,-28,27,2,-8,-7,6,-27,-26,-29],[18,-16,15,11,-13,8,-2,-6,10,11,12,-20,-19,-8,-7,10,11,12,24,30,31,-29],[18,17,-20,-19,-2,-27,28,-21,20,24,32,33,31,-29],[18,17,-20,-19,-8,-7,10,11,-13,8,-2,-6,7,13,12,24,30,31,-29],[18,17,-12,-13,-7,6,-27,28,-21,20,-17,-16,15,11,12,24,30,31,-29],[18,17,-20,21,-28,27,2,-8,-7,6,-27,28,-21,20,24,30,31,-29],[18,-16,15,-10,6,-27,28,-21,-19,-8,13,12,24,30,31,-29],[18,17,-20,21,-28,27,-6,10,11,-13,-7,6,2,-8,13,12,24,30,31,-29],[18,-16,15,-10,7,13,12,24,32,33,31,-29],[18,17,-20,-19,-2,-6,10,11,12,24,30,31,-29],[18,17,-12,-11,-10,7,8,-2,-6,10,-15,16,17,-20,21,-28,-26,-29]],[[4,5],[23,-28,-26,-29],[23,-28,27,-6,10,11,-13,8,-2,-27,-26,-29],[23,-28,27,2,19,21,-28,-26,-29],[23,-28,27,-6,10,11,12,-20,21,-28,-26,-29],[23,-28,27,-6,10,11,12,24,32,33,31,-29],[23,-21,20,-12,-11,-10,7,13,12,24,30,31,-29],[23,-21,-19,-8,13,12,-17,-16,15,11,12,24,30,31,-29],[23,-21,20,-12,-13,-7,6,-27,28,-21,20,24,30,31,-29],[23,-21,-19,-2,-27,28,-21,20,24,30,31,-29],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-10,7,13,12,24,30,31,-29],[23,-28,27,2,-8,-7,6,-27,-26,-29],[23,-28,27,2,19,20,-12,-13,8,-2,-6,10,11,12,24,30,31,-29],[23,-21,-19,-8,-7,6,-27,28,-21,20,24,30,31,-29]],[[6,5],[34,33,31,-29],[34,-32,-24,-12,-11,-10,6,-27,-26,-29],[34,33,-30,32,33,31,-29],[34,-32,-24,-20,-19,-2,-6,7,13,12,24,30,31,-29],[34,33,-30,-24,-12,-11,-10,7,13,12,24,30,31,-29],[34,-32,-24,-20,-19,-8,13,12,24,30,31,-29],[34,-32,30,-33,-32,30,31,-29],[34,-32,-24,-20,-19,-8,13,-11,-10,7,13,12,24,30,31,-29],[34,33,-30,-24,-12,-13,-7,6,2,19,20,24,30,31,-29],[34,-32,-24,-12,-13,8,19,20,24,30,31,-29],[34,-32,-24,-12,-13,-7,10,11,12,24,30,31,-29],[34,33,-30,-24,-12,-13,-7,10,11,12,24,30,31,-29]],[[0,6],[1,2,19,20,24,32,-34],[1,-6,10,-15,16,17,-20,21,-28,-26,-31,-33,-34],[1,-27,28,-21,20,-12,-13,-7,6,2,-8,13,-11,-10,7,13,12,24,32,-34],[1,-6,10,-15,16,17,-20,-19,-2,-6,7,13,12,24,32,-34],[1,-27,28,-21,-19,-2,-6,10,11,-13,-7,6,2,-8,13,12,24,32,-34],[1,-27,28,-21,20,-12,-13,-7,6,2,19,21,-28,-26,-31,-33,-34],[1,2,-8,-7,6,-27,-26,-31,-30,32,-34],[1,-27,28,-21,-19,-2,-6,7,13,12,-20,21,-28,-26,-31,-33,-34],[1,2,-8,13,12,-17,-16,15,11,-13,-7,10,11,12,24,32,-34],[1,2,19,20,24,30,31,26,28,-21,-19,-8,13,12,24,32,-34],[1,-6,10,-15,16,17,-12,-13,8,19,20,24,32,-34],[1,-6,10,11,12,24,30,31,26,28,-21,20,24,32,-34],[1,2,19,21,-28,-26,-31,-30,-24,-12,-13,-7,10,11,12,24,32,-34],[1,2,19,20,-12,-11,-10,7,8,-2,-6,10,11,-13,-7,10,11,12,24,32,-34],[1,2,-8,13,12,-17,-16,15,11,-13,-7,6,2,19,20,24,32,-34]],[[1,6],[5,7,13,12,24,32,-34],[5,7,13,12,-17,-16,15,11,-13,8,19,20,24,30,-33,-34],[5,10,-15,16,17,-20,21,-28,-26,-31,-33,-34],[5,6,-27,-26,-31,-30,32,-34],[5,10,-15,16,17,-12,-13,8,-2,-6,7,13,12,24,32,-34],[5,10,11,12,-17,-16,15,-10,6,2,19,20,24,32,-34],[5,7,13,12,24,30,31,26,28,-21,-19,-8,13,12,24,32,-34],[5,7,8,19,20,-12,-13,-7,10,11,12,-17,-16,15,11,12,24,32,-34],[5,10,11,12,24,30,31,26,28,-21,20,24,32,-34],[5,7,8,-2,-6,10,11,12,24,30,-33,-34],[5,7,8,-2,-6,10,11,-13,-7,6,-27,28,-21,20,24,32,-34]],[[2,6],[14,15,11,12,24,32,-34],[14,16,17,-20,-19,-2,-27,-26,-31,-33,-34],[14,16,17,-20,21,-28,27,2,19,20,24,32,-34],[14,15,-10,6,2,-8,13,-11,-10,7,8,19,21,-28,-26,-31,-33,-34],[14,16,17,-12,-11,-10,6,-27,-26,-31,-33,-34],[14,15,11,-13,-7,10,-15,16,17,-12,-11,-10,7,8,19,20,24,32,-34],[14,15,11,12,-20,-19,-2,-6,10,11,-13,8,19,20,24,32,-34],[14,16,17,-12,-11,-10,6,-27,28,-21,20,24,32,-34],[14,16,17,-12,-13,-7,10,11,12,24,32,-34],[14,15,-10,6,2,-8,-7,10,11,12,24,30,-33,-34],[14,15,11,-13,8,-2,-27,-26,-31,-30,32,-34],[14,16,17,-12,-13,8,19,21,-28,-26,-31,-33,-34],[14,16,17,-20,21,-28,27,2,-8,13,12,24,32,-34],[14,16,17,-12,-11,-10,6,2,-8,13,12,24,32,-34],[14,16,17,-12,-13,8,19,21,-28,-26,-31,-30,32,-34],[14,16,17,-20,-19,-2,-6,7,13,12,24,32,-34]],[[3,6],[18,-16,15,11,12,24,32,-34],[18,17,-12,-11,-15,16,17,-20,-19,-8,13,12,24,30,-33,-34],[18,17,-12,-11,-15,16,17,-20,21,-28,-26,-31,-30,32,-34],[18,-16,15,11,12,-20,-19,-2,-27,-26,-31,-33,-34],[18,17,-20,-19,-8,13,-11,-10,7,8,-2,-6,10,11,12,24,30,-33,-34],[18,-16,15,11,-13,8,19,21,-28,-26,-31,-30,32,-34],[18,17,-12,-13,8,-2,-27,-26,-31,-30,32,-34],[18,-16,15,-10,7,13,-11,-15,16,17,-12,-13,-7,10,11,12,24,32,-34],[18,-16,15,-10,6,-27,-26,-31,-30,32,-34],[18,17,-12,-13,8,19,21,-28,-26,-31,-30,-24,-20,-19,-8,13,12,24,32,-34],[18,17,-12,-11,-10,6,2,-8,-7,10,11,-13,8,-2,-27,-26,-31,-33,-34],[18,17,-12,-11,-10,6,-27,28,-21,-19,-8,-7,10,11,-13,8,19,20,24,32,-34],[18,17,-12,-13,-7,10,-15,16,17,-20,-19,-2,-27,-26,-31,-33,-34],[18,17,-20,21,-28,27,-6,7,13,-11,-10,6,2,-8,13,12,24,32,-34],[18,-16,15,-10,7,13,12,24,30,31,26,28,-21,20,24,32,-34],[18,17,-20,-19,-2,-27,28,-21,20,-12,-11,-10,7,8,19,20,24,30,-33,-34]],[[4,6],[23,-21,20,24,32,-34],[23,-28,-26,-31,-30,-24,-20,21,-28,-26,-31,-33,-34],[23,-21,-19,-2,-6,10,11,12,24,30,-33,-34],[23,-21,-19,-2,-27,28,-21,20,24,30,-33,-34],[23,-28,-26,-31,-30,-24,-12,-11,-10,7,13,12,24,32,-34],[23,-28,27,-6,7,8,-2,-27,-26,-31,-33,-34],[23,-21,20,-17,-16,15,11,12,24,30,-33,-34],[23,-28,-26,-31,-30,-24,-12,-13,8,19,20,24,32,-34],[23,-28,27,2,19,21,-28,-26,-31,-30,32,-34],[23,-21,20,24,30,31,26,28,-21,-19,-8,13,12,24,32,-34],[23,-21,20,-17,-16,15,-10,7,13,-11,-10,7,8,19,20,24,32,-34],[23,-21,20,-17,-16,15,11,-13,8,-2,-6,10,11,12,24,32,-34],[23,-28,-26,-31,-30,-24,-12,-11,-10,6,2,-8,13,12,24,32,-34],[23,-28,-26,-31,-30,-24,-12,-11,-10,7,8,19,20,24,32,-34],[23,-21,-19,-2,-27,28,-21,20,-17,-16,15,11,12,24,32,-34],[23,-21,20,24,30,31,26,28,-21,20,24,32,-34]],[[5,6],[29,-31,-33,-34],[29,-31,-30,-24,-12,-13,8,19,20,24,32,-34],[29,-31,-30,-24,-20,21,-28,27,2,19,20,24,32,-34],[29,-31,-30,-24,-20,21,-28,-26,-31,-33,-34],[29,-31,-30,-24,-12,-11,-10,6,2,19,20,24,32,-34],[29,26,28,-21,-19,-2,-27,-26,-31,-33,-34],[29,26,28,-21,20,24,30,-33,-34],[29,26,27,2,-8,13,12,24,32,-34],[29,26,28,-21,-19,-8,-7,6,2,19,20,24,32,-34],[29,26,28,-21,-19,-8,-7,10,11,12,24,30,-33,-34],[29,26,27,2,-8,13,-11,-10,7,13,12,24,32,-34],[29,-31,-30,-24,-12,-11,-10,7,8,19,20,24,32,-34],[29,26,27,2,19,20,24,30,-33,-34],[29,-31,-30,-24,-12,-13,8,-2,-6,10,11,12,24,32,-34]],[[6,6],[34,33,-30,32,-34],[34,-32,-24,-20,-19,-8,13,-11,-10,6,-27,-26,-31,-33,-34],[34,-32,30,31,26,27,2,-8,13,12,24,32,-34],[34,33,31,26,28,-21,20,24,30,-33,-34],[34,-32,-24,-12,-13,-7,6,2,19,20,24,30,-33,-34],[34,-32,-24,-12,-11,-15,16,17,-20,21,-28,-26,-31,-33,-34],[34,33,31,26,28,-21,-19,-8,-7,6,2,19,20,24,32,-34],[34,-32,-24,-12,-11,-10,7,8,19,21,-28,-26,-31,-30,32,-34],[34,-32,-24,-12,-11,-10,7,13,12,-17,-16,15,11,12,24,32,-34],[34,33,31,26,27,2,-8,13,12,24,32,-34],[34,-32,30,31,26,28,-21,-19,-8,13,12,24,32,-34],[34,33,-30,-24,-12,-13,8,19,20,24,30,-33,-34],[34,33,-30,-24,-20,-19,-8,-7,10,11,-13,8,19,20,24,32,-34],[34,33,31,26,27,-6,7,13,12,24,30,-33,-34],[34,-32,30,31,26,27,2,19,20,24,32,-34],[34,33,31,26,28,-21,20,-12,-13,-7,10,11,12,24,30,-33,-34]]],[[[1,0],[5,6,-1],[5,10,-15,35,36,37,38,-24,-20,-19,-2,-1],[5,7,8,19,20,24,30,31,26,27,-1],[5,7,13,-11,-10,6,-1],[5,10,-15,35,39,17,-20,-19,-2,-1],[5,7,13,12,24,30,31,26,28,-21,-19,-2,-1],[5,7,13,12,-20,-19,-8,-7,6,-1],[5,10,11,12,-17,-39,-35,15,-10,6,-1],[5,7,13,12,-20,21,-28,27,-1],[5,7,13,12,-20,-19,-2,-1],[5,7,13,12,-17,-39,-35,15,-10,6,-1],[5,7,13,12,-20,-19,-8,-7,10,11,-13,8,-2,-1],[5,7,13,12,24,-38,-37,-36,39,17,-20,-19,-2,-1]],[[2,0],[14,15,-10,6,-1],[14,35,36,37,38,-24,-20,-19,-2,-1],[14,35,39,17,-12,-13,8,-2,-1],[14,35,36,37,38,30,31,26,27,-1],[14,35,36,37,38,-24,-12,-11,-10,6,-1],[14,35,39,17,-20,21,-28,27,-1],[14,15,11,12,-17,-39,36,37,38,-24,-20,-19,-2,-1],[14,15,11,-13,-7,10,-15,35,39,17,-20,-19,-2,-1],[14,35,39,17,-12,-13,-7,10,-15,35,39,17,-20,-19,-2,-1],[14,35,36,37,38,-24,-12,-13,8,19,21,-28,27,-1],[14,35,39,17,-20,-19,-8,-7,10,11,-13,8,-2,-1]],[[3,0],[18,17,-20,-19,-2,-1],[18,-39,-35,15,11,12,24,-38,-37,-36,39,17,-20,-19,-2,-1],[18,17,-20,-19,-8,13,12,24,-38,-37,-36,39,17,-20,-19,-2,-1],[18,-39,-35,15,-10,7,8,19,21,-28,27,-1],[18,17,-20,21,-28,-26,-31,-30,-24,-20,-19,-2,-1],[18,-39,-35,15,11,-13,8,19,20,-17,-39,-35,15,-10,6,-1],[18,-39,36,37,40,33,-30,-24,-20,-19,-2,-1],[18,-39,36,37,38,30,31,26,28,-21,-19,-2,-1],[18,-39,-35,15,11,-13,8,19,20,-12,-13,8,-2,-1],[18,-39,-35,15,-10,7,13,-11,-15,35,39,17,-20,-19,-2,-1],[18,17,-12,-11,-15,35,39,17,-20,-19,-8,-7,6,-1],[18,17,-20,21,-28,-26,-31,-30,-24,-12,-11,-10,6,-1],[18,17,-12,-11,-10,7,13,12,-20,21,-28,27,-1]],[[4,0],[23,-21,-19,-2,-1],[23,-28,-26,-31,-30,-24,-20,-19,-2,-1],[23,-21,20,-17,-39,-35,15,-10,6,-1],[23,-21,-19,-8,13,-11,-10,6,-1],[23,-28,-26,-31,-30,-38,-37,-36,39,17,-20,-19,-2,-1],[23,-21,20,-12,-11,-10,7,13,12,-17,-39,-35,15,-10,6,-1],[23,-21,-19,-8,-7,10,-15,35,39,17,-12,-13,8,-2,-1],[23,-21,20,-12,-11,-15,35,39,17,-20,-19,-2,-1],[23,-21,20,24,-38,-37,-36,-35,15,-10,6,-1],[23,-21,-19,-8,13,12,-20,21,-28,27,-1]],[[5,0],[29,26,27,-1],[29,-31,-30,-38,-37,-36,39,17,-12,-13,8,19,20,-12,-13,8,-2,-1],[29,26,28,-21,-19,-8,13,12,-20,21,-28,27,-1],[29,-31,-30,-24,-12,-13,-7,10,-15,35,39,17,-20,-19,-2,-1],[29,26,28,-21,20,-12,-11,-15,35,39,17,-20,-19,-2,-1],[29,-31,-30,-38,40,33,-30,-24,-20,-19,-2,-1],[29,26,28,-21,-19,-8,-7,10,-15,35,39,17,-20,-19,-2,-1],[29,-31,-33,-40,38,-24,-12,-11,-10,6,-1],[29,26,28,-21,-19,-8,-7,10,11,-13,8,19,21,-28,27,-1],[29,-31,-30,-38,-37,-36,39,17,-12,-11,-10,6,-1],[29,-31,-30,-38,40,33,31,26,27,-1],[29,26,28,-21,20,-12,-13,-7,10,11,-13,8,-2,-1],[29,26,28,-21,20,-12,-13,-7,10,11,12,-20,-19,-8,-7,6,-1],[29,26,28,-21,20,-12,-13,-7,10,11,12,-20,-19,-2,-1],[29,-31,-33,-40,38,30,31,26,27,-1],[29,-31,-33,-40,38,-24,-12,-13,8,-2,-1]],[[6,0],[34,-40,38,-24,-20,-19,-2,-1],[34,-40,38,-24,-12,-13,-7,10,11,12,-17,-39,36,37,38,-24,-20,-19,-2,-1],[34,-40,-37,-36,39,17,-20,-19,-8,13,-11,-10,7,8,19,21,-28,27,-1],[34,-40,38,-24,-12,-11,-10,7,8,19,20,24,30,31,26,27,-1],[34,-40,38,-24,-20,-19,-8,13,-11,-15,35,39,17,-20,-19,-2,-1],[34,33,31,26,28,-21,-19,-8,-7,10,11,12,-20,-19,-2,-1],[34,33,-30,-38,-37,-36,39,17,-12,-13,8,-2,-1],[34,-40,-37,-36,39,17,-12,-13,8,19,21,-28,27,-1],[34,-40,38,30,31,26,28,-21,-19,-8,13,-11,-10,6,-1],[34,33,31,26,28,-21,20,-12,-13,-7,10,11,12,-20,-19,-2,-1],[34,-40,-37,-36,39,17,-20,21,-28,-26,-31,-30,-24,-20,-19,-2,-1],[34,-40,38,30,31,26,28,-21,-19,-2,-1],[34,33,-30,-38,40,33,-30,-24,-20,-19,-2,-1],[34,-40,38,30,-33,-40,-37,-36,-35,15,-10,6,-1],[34,-40,-37,-36,-35,15,-10,7,8,19,20,-12,-13,8,-2,-1]],[[7,0],[41,37,38,-24,-20,-19,-2,-1],[41,37,40,33,-30,-24,-20,-19,-2,-1],[41,37,40,33,31,26,28,-21,-19,-8,-7,6,-1],[41,-36,-35,15,11,-13,8,19,20,24,-38,-37,-36,39,17,-20,-19,-2,-1],[41,-36,39,17,-12,-13,-7,10,11,12,-20,21,-28,27,-1],[41,-36,39,17,-12,-13,8,19,20,-17,-39,-35,15,-10,6,-1],[41,37,38,-24,-12,-11,-10,7,8,19,20,-17,-39,-35,15,-10,6,-1],[41,37,40,33,-30,-38,-37,-36,39,17,-20,-19,-2,-1],[41,37,38,-24,-12,-13,-7,10,-15,35,39,17,-20,-19,-2,-1],[41,37,40,33,31,26,27,-1],[41,37,38,30,-33,-40,38,-24,-20,-19,-2,-1],[41,37,38,30,31,26,28,-21,-19,-8,13,12,-20,-19,-2,-1],[41,37,38,-24,-12,-11,-10,7,13,12,-17,-39,-35,15,11,-13,8,-2,-1]],[[0,1],[1,-6,-5],[1,2,-8,13,12,-17,-39,-35,15,-10,-5],[1,-27,-26,-31,-30,-24,-12,-13,-7,-5],[1,2,-8,13,-11,-15,35,36,37,38,-24,-12,-13,-7,-5],[1,2,-8,13,12,24,30,31,26,28,-21,-19,-8,-7,-5],[1,-27,28,-21,-19,-8,-7,-5],[1,-27,28,-21,-19,-2,-6,-5],[1,-27,-26,-31,-30,-24,-20,-19,-8,-7,-5],[1,2,19,20,24,-38,-37,-36,39,17,-12,-13,-7,-5],[1,2,19,20,24,-38,-37,-36,-35,15,-10,-5],[1,2,19,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[1,2,-8,13,12,-17,-39,36,37,38,-24,-12,-13,-7,-5]],[[2,1],[14,15,-10,-5],[14,35,36,37,38,-24,-12,-13,-7,-5],[14,15,11,12,-17,-39,36,37,38,-24,-20,-19,-8,-7,-5],[14,15,11,-13,8,-2,-27,28,-21,-19,-8,-7,-5],[14,35,39,17,-20,21,-28,27,-6,-5],[14,35,36,37,38,-24,-12,-11,-10,-5],[14,35,36,37,38,-24,-20,-19,-2,-6,-5],[14,35,36,37,38,-24,-20,-19,-8,-7,-5],[14,35,39,17,-20,-19,-8,-7,-5],[14,15,11,12,-20,21,-28,-26,-31,-30,-24,-12,-13,-7,-5]],[[3,1],[18,17,-12,-13,-7,-5],[18,-39,36,37,38,-24,-12,-13,8,19,20,-12,-13,-7,-5],[18,-39,-35,15,11,-13,8,19,21,-28,27,-6,-5],[18,-39,-35,15,11,12,24,-38,-37,-36,39,17,-12,-13,-7,-5],[18,17,-12,-11,-15,35,39,17,-20,-19,-8,-7,-5],[18,-39,36,37,40,33,-30,-24,-12,-13,-7,-5],[18,-39,36,37,38,30,31,26,27,-6,-5],[18,17,-12,-13,8,-2,-27,-26,-31,-30,-24,-12,-13,-7,-5],[18,-39,-35,15,11,12,-20,21,-28,27,-6,-5],[18,17,-20,-19,-8,13,-11,-15,35,36,37,38,-24,-12,-13,-7,-5],[18,17,-12,-13,8,19,20,-12,-13,-7,-5],[18,17,-20,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[18,-39,-35,15,11,12,-17,-39,36,37,38,-24,-12,-13,-7,-5]],[[4,1],[23,-21,-19,-8,-7,-5],[23,-28,27,2,19,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[23,-21,20,24,30,31,26,28,-21,-19,-8,-7,-5],[23,-28,-26,-31,-30,-24,-12,-13,-7,-5],[23,-21,20,24,-38,-37,-36,39,17,-12,-11,-10,-5],[23,-21,-19,-2,-27,-26,-31,-30,-24,-12,-13,-7,-5],[23,-21,20,24,-38,-37,-36,39,17,-12,-13,-7,-5],[23,-28,27,2,-8,13,12,-17,-39,-35,15,-10,-5],[23,-21,-19,-8,13,12,24,-38,-37,-36,39,17,-12,-13,-7,-5],[23,-21,20,-12,-11,-15,35,39,17,-12,-13,-7,-5],[23,-28,27,2,19,20,-17,-39,-35,15,11,-13,-7,-5],[23,-28,27,2,-8,13,-11,-10,-5],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-10,-5],[23,-28,27,2,19,20,-17,-39,-35,15,-10,-5]],[[5,1],[29,-31,-30,-24,-12,-13,-7,-5],[29,26,28,-21,-19,-8,13,12,-20,-19,-8,-7,-5],[29,26,28,-21,20,-12,-11,-15,35,39,17,-12,-13,-7,-5],[29,-31,-33,-40,-37,-36,39,17,-20,-19,-8,-7,-5],[29,-31,-30,-38,-37,-36,-35,15,11,-13,8,19,20,-12,-13,-7,-5],[29,-31,-30,-24,-12,-11,-15,35,36,37,38,-24,-12,-13,-7,-5],[29,26,27,2,-8,13,-11,-15,35,39,17,-12,-13,-7,-5],[29,26,28,-21,-19,-2,-27,-26,-31,-30,-24,-12,-13,-7,-5],[29,-31,-30,-38,-37,-36,39,17,-12,-13,-7,-5],[29,-31,-30,-24,-20,21,-28,27,2,-8,-7,-5],[29,-31,-30,-38,-37,-36,39,17,-20,21,-28,27,-6,-5],[29,-31,-33,-40,38,-24,-12,-13,-7,-5],[29,-31,-33,-40,-37,-36,39,17,-20,-19,-2,-6,-5],[29,26,28,-21,20,-17,-39,-35,15,-10,-5],[29,26,27,2,19,20,-12,-11,-15,35,39,17,-12,-13,-7,-5]],[[6,1],[34,-40,38,-24,-12,-13,-7,-5],[34,33,31,26,27,2,-8,-7,-5],[34,33,31,26,28,-21,-19,-2,-6,-5],[34,-40,38,-24,-12,-13,8,19,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[34,33,-30,-38,40,33,-30,-24,-12,-13,-7,-5],[34,33,31,26,28,-21,-19,-2,-27,28,-21,20,-12,-13,-7,-5],[34,-40,38,30,31,26,28,-21,-19,-8,-7,-5],[34,-40,-37,-36,-35,15,11,12,-20,-19,-8,-7,-5],[34,-40,-37,-36,39,17,-20,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[34,33,31,26,28,-21,-19,-8,-7,-5],[34,33,31,26,27,-6,-5],[34,-40,38,30,31,26,27,-6,-5],[34,33,31,26,28,-21,-19,-2,-27,28,-21,-19,-8,-7,-5],[34,33,31,26,28,-21,20,24,-38,-37,-36,39,17,-12,-13,-7,-5],[34,-40,38,-24,-20,-19,-8,13,-11,-10,-5],[34,-40,-37,-36,39,17,-12,-11,-15,35,36,37,38,-24,-12,-13,-7,-5]],[[7,1],[41,37,38,-24,-12,-13,-7,-5],[41,-36,-35,15,11,-13,8,19,21,-28,27,-6,-5],[41,-36,39,17,-20,21,-28,27,2,-8,-7,-5],[41,37,38,-24,-12,-11,-15,35,39,17,-20,-19,-8,13,12,-20,-19,-8,-7,-5],[41,-36,-35,15,11,-13,8,19,20,-12,-13,-7,-5],[41,-36,39,17,-20,-19,-2,-27,-26,-31,-30,-24,-12,-13,-7,-5],[41,-36,39,17,-20,21,-28,27,-6,-5],[41,37,40,33,31,26,27,-6,-5],[41,37,40,33,-30,-24,-12,-13,-7,-5],[41,-36,39,17,-20,-19,-8,13,-11,-15,35,39,17,-12,-13,-7,-5],[41,37,38,30,31,26,28,-21,-19,-8,-7,-5],[41,-36,-35,15,11,-13,8,-2,-27,28,-21,-19,-8,-7,-5],[41,37,38,-24,-20,21,-28,-26,-31,-30,-24,-12,-13,-7,-5],[41,37,40,33,31,26,28,-21,-19,-8,-7,-5]],[[0,2],[1,-6,10,-15,-14],[1,-6,10,11,-13,8,-2,-27,28,-21,20,-12,-11,-15,-14],[1,-6,7,8,19,21,-28,27,2,-8,13,-11,-10,7,13,-11,-15,-14],[1,2,19,20,24,-38,-37,-36,39,17,-12,-11,-15,-14],[1,-27,28,-21,20,24,-38,-37,-36,39,17,-12,-11,-15,-14],[1,-27,28,-21,20,-17,-39,36,37,38,-24,-12,-11,-15,-14],[1,-27,-26,-31,-30,-24,-12,-11,-15,-14],[1,-27,-26,-31,-30,-24,-12,-11,-10,7,13,-11,-15,-14],[1,2,-8,-7,6,-27,28,-21,20,-12,-11,-15,-14],[1,-27,-26,-31,-30,-38,-37,-36,39,17,-12,-11,-15,-14],[1,2,-8,13,12,-17,-39,36,37,38,-24,-12,-11,-15,-14]],[[1,2],[5,10,-15,-14],[5,7,8,19,20,-12,-13,-7,6,2,-8,13,-11,-15,-14],[5,10,11,-13,8,-2,-6,7,13,-11,-15,-14],[5,10,11,-13,8,19,20,24,-38,-37,-36,-35,-14],[5,10,11,-13,-7,6,-27,28,-21,20,-12,-11,-15,-14],[5,6,-27,-26,-31,-30,-24,-12,-11,-15,-14],[5,6,2,-8,13,-11,-10,7,8,19,20,-12,-11,-15,-14],[5,10,11,12,-17,-39,-35,-14],[5,10,11,-13,8,-2,-6,10,-15,-14],[5,10,11,-13,-7,6,2,19,20,24,-38,-37,-36,-35,-14],[5,7,8,19,21,-28,27,-6,10,-15,-14],[5,6,-27,28,-21,20,-17,-39,-35,-14],[5,6,2,19,20,-12,-11,-10,7,13,-11,-15,-14]],[[3,2],[18,17,-12,-11,-15,-14],[18,17,-20,-19,-8,13,12,-17,-39,-35,-14],[18,17,-20,21,-28,-26,-31,-30,-24,-12,-11,-15,-14],[18,17,-20,-19,-2,-27,-26,-31,-30,-24,-12,-11,-15,-14],[18,17,-12,-11,-10,7,8,19,21,-28,27,-6,10,-15,-14],[18,17,-12,-11,-10,6,-27,28,-21,20,-12,-11,-15,-14],[18,17,-20,21,-28,27,2,-8,13,-11,-15,-14],[18,-39,36,37,40,33,-30,-24,-12,-11,-15,-14],[18,17,-12,-13,8,19,21,-28,27,-6,10,-15,-14],[18,-39,36,37,38,30,31,26,28,-21,20,-12,-11,-15,-14],[18,17,-12,-11,-10,7,13,12,24,-38,-37,-36,39,17,-12,-11,-15,-14]],[[4,2],[23,-21,20,-12,-11,-15,-14],[23,-28,27,-6,7,13,12,-20,-19,-8,-7,10,11,-13,-7,10,-15,-14],[23,-28,27,2,-8,13,12,24,-38,-37,-36,39,17,-12,-11,-15,-14],[23,-28,-26,-31,-30,-38,-37,-36,39,17,-12,-11,-15,-14],[23,-21,20,-12,-13,-7,6,2,-8,13,12,-17,-39,-35,-14],[23,-28,27,2,19,20,24,-38,-37,-36,-35,-14],[23,-28,-26,-31,-33,-40,-37,-36,-35,-14],[23,-28,27,2,-8,13,-11,-10,6,2,-8,13,-11,-15,-14],[23,-21,-19,-8,-7,10,11,-13,8,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-21,-19,-2,-6,10,11,12,-20,21,-28,27,-6,10,-15,-14],[23,-28,27,-6,7,8,-2,-27,28,-21,20,-12,-11,-15,-14],[23,-28,27,-6,10,11,12,-17,-39,-35,-14]],[[5,2],[29,-31,-30,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-2,-27,-26,-31,-30,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-8,13,-11,-15,-14],[29,26,27,2,19,20,-12,-11,-10,7,13,-11,-15,-14],[29,-31,-33,-40,38,-24,-12,-11,-10,6,2,-8,13,-11,-15,-14],[29,26,28,-21,-19,-2,-27,28,-21,20,-12,-11,-15,-14],[29,-31,-33,-40,-37,-36,39,17,-12,-11,-15,-14],[29,-31,-30,-24,-20,-19,-2,-6,10,11,-13,-7,10,-15,-14],[29,-31,-30,-38,-37,-36,39,17,-12,-11,-15,-14],[29,-31,-30,-38,40,33,-30,-24,-12,-11,-15,-14],[29,26,28,-21,-19,-8,13,12,-20,21,-28,27,-6,10,-15,-14],[29,26,28,-21,20,-17,-39,36,37,38,-24,-12,-11,-15,-14],[29,26,27,2,-8,-7,10,11,12,-20,-19,-8,13,-11,-15,-14],[29,26,27,-6,7,8,19,20,-12,-11,-15,-14]],[[6,2],[34,-40,-37,-36,-35,-14],[34,-40,38,-24,-12,-13,-7,6,2,19,20,-17,-39,-35,-14],[34,33,-30,-38,40,33,-30,-24,-12,-11,-15,-14],[34,-40,38,30,31,26,27,-6,10,-15,-14],[34,-40,-37,-36,39,17,-20,-19,-2,-6,10,-15,-14],[34,-40,38,30,-33,-40,-37,-36,-35,-14],[34,-40,-37,-36,39,17,-20,21,-28,27,-6,10,-15,-14],[34,-40,-37,-36,39,17,-12,-11,-10,6,2,-8,13,-11,-15,-14],[34,-40,-37,-36,39,17,-20,21,-28,27,2,-8,13,-11,-15,-14],[34,33,31,26,27,-6,10,-15,-14],[34,-40,-37,-36,39,17,-20,21,-28,27,-6,7,8,19,20,-12,-11,-15,-14],[34,-40,38,-24,-12,-11,-10,7,8,-2,-6,10,-15,-14]],[[7,2],[41,-36,-35,-14],[41,-36,39,17,-20,21,-28,-26,-31,-30,-24,-12,-11,-15,-14],[41,37,38,30,31,26,27,-6,10,-15,-14],[41,-36,39,17,-12,-11,-10,7,8,-2,-27,28,-21,20,-12,-11,-15,-14],[41,-36,39,17,-12,-13,8,19,20,-12,-11,-15,-14],[41,37,40,33,31,26,28,-21,20,-12,-11,-15,-14],[41,-36,39,17,-20,21,-28,27,-6,10,-15,-14],[41,-36,39,17,-20,-19,-2,-27,28,-21,20,-12,-11,-15,-14],[41,37,40,33,31,26,27,-6,10,-15,-14],[41,37,38,30,-33,-40,-37,-36,-35,-14],[41,37,38,-24,-20,-19,-2,-6,10,11,-13,-7,10,-15,-14],[41,-36,39,17,-20,-19,-8,13,-11,-10,7,13,-11,-15,-14]],[[0,3],[1,2,19,20,-17,-18],[1,2,-8,13,-11,-15,35,36,37,38,-24,-12,-11,-15,35,39,-18],[1,2,19,20,-12,-13,8,-2,-6,10,-15,35,39,-18],[1,2,19,20,-12,-13,-7,10,-15,35,39,-18],[1,-27,-26,-31,-33,-40,-37,-36,39,-18],[1,-6,10,-15,35,36,37,38,-24,-12,-11,-15,35,39,-18],[1,-27,-26,-31,-30,-38,-37,-36,39,-18],[1,-6,7,13,-11,-10,6,-27,28,-21,20,-17,-18],[1,-27,28,-21,20,24,-38,-37,-36,39,-18],[1,2,19,21,-28,27,-6,7,13,12,-17,-18],[1,-6,7,8,-2,-27,28,-21,20,-17,-18],[1,2,-8,13,12,24,-38,-37,-36,-35,15,-10,7,13,12,-17,-18],[1,-27,28,-21,-19,-2,-6,10,-15,35,39,-18]],[[1,3],[5,7,13,12,-17,-18],[5,6,-27,28,-21,20,-17,-18],[5,10,-15,35,36,37,38,-24,-20,-19,-8,13,12,-17,-18],[5,6,-27,-26,-31,-30,-38,-37,-36,39,-18],[5,6,-27,28,-21,-19,-2,-6,10,11,12,24,-38,-37,-36,39,-18],[5,10,11,-13,-7,6,2,-8,13,12,-17,-18],[5,10,-15,35,36,37,38,-24,-12,-11,-15,35,39,-18],[5,10,11,12,24,30,-33,-40,-37,-36,39,-18],[5,6,2,19,20,24,-38,-37,-36,39,-18],[5,10,11,-13,8,-2,-27,28,-21,-19,-8,-7,10,-15,35,39,-18],[5,6,2,19,20,24,30,-33,-40,-37,-36,39,-18]],[[2,3],[14,15,11,12,-17,-18],[14,35,36,37,38,-24,-20,-19,-2,-6,7,13,12,-17,-18],[14,15,-10,6,2,-8,13,-11,-15,35,39,-18],[14,15,11,12,24,30,-33,-40,-37,-36,39,-18],[14,15,11,12,-20,-19,-8,13,-11,-10,6,2,19,20,-17,-18],[14,35,36,37,38,-24,-20,-19,-8,13,12,-17,-18],[14,35,36,37,38,-24,-12,-11,-15,35,39,-18],[14,35,36,37,38,-24,-20,-19,-8,-7,10,11,12,-17,-18],[14,15,-10,6,-27,28,-21,-19,-8,13,12,-17,-18],[14,35,36,37,38,-24,-12,-13,8,19,20,-17,-18],[14,15,-10,7,13,-11,-15,35,39,-18],[14,15,11,-13,-7,6,2,19,20,-12,-11,-10,7,8,19,20,-17,-18]],[[4,3],[23,-21,20,-17,-18],[23,-28,-26,-31,-30,-38,-37,-36,39,-18],[23,-28,27,2,19,21,-28,-26,-31,-30,-38,-37,-36,39,-18],[23,-21,20,-12,-11,-10,7,13,12,24,-38,-37,-36,39,-18],[23,-21,20,24,30,-33,-40,-37,-36,39,-18],[23,-28,27,-6,7,13,-11,-10,6,2,19,20,-17,-18],[23,-28,27,-6,10,11,12,-17,-18],[23,-21,20,-12,-13,-7,10,11,12,24,-38,-37,-36,39,-18],[23,-21,-19,-2,-6,7,8,19,20,-17,-18],[23,-21,-19,-2,-6,10,11,12,24,-38,-37,-36,39,-18],[23,-28,27,-6,7,8,-2,-27,28,-21,20,-17,-18],[23,-28,-26,-31,-33,-40,-37,-36,39,-18],[23,-21,-19,-8,13,12,24,30,-33,-40,-37,-36,39,-18],[23,-21,-19,-2,-6,7,13,-11,-10,6,-27,28,-21,20,-17,-18],[23,-21,20,24,30,31,26,28,-21,20,-17,-18]],[[5,3],[29,-31,-30,-38,-37,-36,39,-18],[29,-31,-30,-24,-12,-13,-7,6,2,-8,13,-11,-15,35,39,-18],[29,26,28,-21,-19,-8,-7,10,11,12,24,-38,-37,-36,39,-18],[29,-31,-33,-40,38,30,31,26,28,-21,20,-17,-18],[29,26,28,-21,20,24,-38,-37,-36,-35,15,11,12,-17,-18],[29,26,27,-6,7,8,19,21,-28,27,2,19,20,-17,-18],[29,-31,-33,-40,-37,-36,-35,15,-10,7,8,19,20,-17,-18],[29,26,28,-21,20,-12,-11,-10,7,13,12,24,-38,-37,-36,39,-18],[29,26,28,-21,-19,-8,13,-11,-15,35,39,-18],[29,26,27,2,-8,13,-11,-10,7,13,12,-17,-18],[29,-31,-30,-38,40,33,-30,-38,-37,-36,39,-18],[29,26,27,2,-8,-7,10,11,-13,8,19,20,-12,-11,-15,35,39,-18],[29,26,27,2,-8,13,12,-20,-19,-8,13,12,-17,-18],[29,26,28,-21,-19,-2,-27,-26,-31,-30,-38,-37,-36,39,-18],[29,26,27,2,-8,13,12,-20,-19,-2,-6,7,13,12,-17,-18]],[[6,3],[34,-40,-37,-36,39,-18],[34,-40,-37,-36,-35,15,-10,7,8,19,20,-17,-18],[34,-40,38,30,-33,-40,-37,-36,39,-18],[34,-40,38,-24,-12,-11,-15,35,39,-18],[34,33,-30,-24,-12,-11,-10,6,2,19,20,-17,-18],[34,-40,38,-24,-20,-19,-8,13,12,-17,-18],[34,33,31,26,28,-21,20,24,-38,-37,-36,39,-18],[34,33,-30,-38,-37,-36,-35,15,11,12,-17,-18],[34,33,-30,-38,-37,-36,39,-18],[34,33,31,26,28,-21,20,-17,-18],[34,33,31,26,28,-21,-19,-8,-7,10,-15,35,39,-18],[34,33,31,26,27,-6,7,13,12,-17,-18],[34,33,-30,-24,-20,21,-28,27,2,19,20,-17,-18]],[[7,3],[41,-36,39,-18],[41,-36,-35,15,11,12,-17,-18],[41,-36,-35,15,-10,6,2,19,20,-17,-18],[41,-36,-35,15,11,12,-20,-19,-8,13,12,-17,-18],[41,37,40,33,-30,-38,-37,-36,39,-18],[41,-36,-35,15,11,12,24,-38,-37,-36,39,-18],[41,-36,-35,15,-10,6,2,-8,-7,10,11,12,-17,-18],[41,37,38,30,-33,-40,-37,-36,39,-18],[41,-36,-35,15,-10,7,13,12,-17,-18],[41,-36,-35,15,-10,6,-27,28,-21,20,-17,-18],[41,37,38,-24,-20,21,-28,27,2,19,20,-17,-18]],[[0,4],[1,2,19,21,-23],[1,2,-8,-7,10,-15,35,39,17,-20,21,-23],[1,2,-8,13,12,-17,-39,36,37,38,30,31,26,28,-23],[1,2,-8,13,12,-20,-19,-2,-6,7,8,19,21,-23],[1,-6,10,11,-13,8,19,21,-23],[1,-27,-26,-31,-30,-24,-20,21,-23],[1,-6,10,11,12,-17,-39,-35,15,11,12,-20,21,-23],[1,-6,10,11,12,-20,-19,-8,13,12,-20,21,-23],[1,-6,7,13,-11,-10,6,2,19,21,-23],[1,2,-8,-7,6,-27,-26,-31,-30,-24,-20,21,-23],[1,2,-8,13,12,24,-38,-37,-36,-35,15,11,12,-20,21,-23],[1,-6,10,-15,35,39,17,-20,21,-23],[1,-6,7,13,12,24,30,31,26,28,-23],[1,2,-8,13,12,-17,-39,-35,15,-10,7,8,19,21,-23]],[[1,4],[5,7,8,19,21,-23],[5,6,2,19,20,-12,-11,-15,35,39,17,-20,21,-23],[5,6,2,-8,13,-11,-10,7,8,-2,-27,28,-23],[5,7,8,-2,-27,-26,-31,-30,-24,-20,21,-23],[5,7,8,19,20,-12,-11,-10,6,-27,28,-23],[5,7,8,19,20,-17,-39,-35,15,-10,7,8,19,21,-23],[5,10,-15,35,36,37,38,30,31,26,28,-23],[5,7,13,12,24,-38,-37,-36,-35,15,11,12,-20,21,-23],[5,10,11,12,-20,-19,-2,-27,28,-23],[5,6,-27,-26,-31,-30,-24,-20,21,-23],[5,7,8,19,20,24,30,31,26,27,2,19,21,-23],[5,6,2,-8,13,-11,-15,35,39,17,-20,21,-23],[5,10,-15,35,39,17,-20,-19,-2,-27,28,-23],[5,7,13,-11,-10,6,2,19,21,-23],[5,10,11,-13,-7,6,-27,28,-23]],[[2,4],[14,15,11,12,-20,21,-23],[14,15,11,12,-20,-19,-2,-6,10,11,12,-20,21,-23],[14,15,11,12,24,-38,-37,-36,39,17,-12,-13,-7,10,11,12,-20,21,-23],[14,35,36,37,40,33,31,26,28,-23],[14,35,39,17,-12,-11,-10,6,2,19,21,-23],[14,15,11,-13,-7,6,-27,-26,-31,-30,-24,-20,21,-23],[14,15,11,12,-17,-39,36,37,38,-24,-12,-13,8,19,21,-23],[14,15,11,12,-17,-39,-35,15,-10,7,13,-11,-10,6,2,19,21,-23],[14,35,39,17,-12,-11,-10,7,13,12,-20,-19,-8,13,12,-20,21,-23],[14,15,-10,7,13,-11,-15,35,36,37,38,30,31,26,28,-23],[14,35,39,17,-20,-19,-2,-6,7,8,19,21,-23],[14,35,39,17,-12,-11,-10,6,-27,28,-23],[14,15,-10,6,-27,-26,-31,-30,-24,-12,-13,8,19,21,-23],[14,15,11,12,-20,-19,-8,-7,6,2,19,20,-12,-13,8,19,21,-23]],[[3,4],[18,17,-20,21,-23],[18,17,-20,-19,-2,-27,-26,-31,-30,-24,-20,21,-23],[18,-39,-35,15,-10,6,2,19,21,-23],[18,-39,36,37,40,33,-30,-24,-20,21,-23],[18,-39,-35,15,11,-13,-7,6,-27,28,-23],[18,-39,-35,15,11,12,-17,-39,36,37,38,-24,-20,21,-23],[18,-39,36,37,40,33,31,26,28,-23],[18,-39,36,37,38,-24,-12,-11,-10,7,8,19,21,-23],[18,17,-12,-11,-15,35,36,37,38,-24,-20,21,-23],[18,17,-20,-19,-8,-7,10,-15,35,39,17,-20,21,-23],[18,17,-12,-11,-15,35,39,17,-20,21,-23],[18,17,-12,-13,8,19,20,-12,-13,8,19,21,-23],[18,-39,-35,15,-10,6,-27,28,-23]],[[5,4],[29,26,28,-23],[29,-31,-33,-40,-37,-36,39,17,-12,-13,8,19,21,-23],[29,26,27,2,-8,-7,6,2,19,21,-23],[29,-31,-30,-38,-37,-36,-35,15,-10,7,13,12,-20,21,-23],[29,26,27,-6,7,13,-11,-15,35,39,17,-20,21,-23],[29,26,27,-6,7,8,19,21,-23],[29,26,27,2,19,20,24,30,31,26,28,-23],[29,-31,-30,-24,-20,-19,-8,13,-11,-15,35,39,17,-20,21,-23],[29,26,27,2,19,20,-17,-39,36,37,38,-24,-20,21,-23],[29,26,27,-6,7,8,-2,-27,28,-23],[29,-31,-30,-24,-12,-11,-10,6,-27,28,-23],[29,26,27,-6,10,-15,35,39,17,-20,21,-23],[29,-31,-30,-38,40,33,31,26,28,-23]],[[6,4],[34,-40,38,-24,-20,21,-23],[34,-40,-37,-36,39,17,-12,-11,-15,35,36,37,38,-24,-20,21,-23],[34,33,-30,-38,-37,-36,-35,15,-10,7,8,19,21,-23],[34,33,31,26,27,2,-8,-7,6,2,19,21,-23],[34,-40,38,30,-33,-40,-37,-36,39,17,-20,21,-23],[34,33,-30,-24,-20,-19,-2,-6,7,8,19,21,-23],[34,33,31,26,27,2,19,20,-12,-13,8,-2,-27,28,-23],[34,33,31,26,27,2,19,21,-23],[34,33,-30,-38,40,33,31,26,28,-23],[34,33,-30,-24,-12,-11,-15,35,39,17,-20,21,-23],[34,-40,-37,-36,39,17,-12,-13,-7,10,-15,35,36,37,38,-24,-20,21,-23],[34,-40,-37,-36,-35,15,-10,7,8,-2,-27,28,-23],[34,33,31,26,27,-6,7,8,19,21,-23],[34,-40,38,30,31,26,27,2,19,21,-23],[34,33,-30,-24,-20,-19,-8,-7,10,11,-13,8,19,21,-23]],[[7,4],[41,37,38,-24,-20,21,-23],[41,-36,39,17,-20,-19,-2,-6,10,11,-13,-7,6,2,19,21,-23],[41,37,38,-24,-20,-19,-8,-7,6,2,19,20,-12,-11,-10,7,8,19,21,-23],[41,-36,39,17,-20,-19,-2,-6,10,11,-13,8,19,21,-23],[41,37,38,30,-33,-40,38,-24,-20,21,-23],[41,37,38,-24,-12,-11,-15,35,36,37,38,-24,-20,21,-23],[41,37,38,-24,-20,-19,-2,-6,10,11,12,24,30,31,26,28,-23],[41,37,40,33,-30,-24,-20,21,-23],[41,37,40,33,31,26,27,2,19,21,-23],[41,-36,39,17,-12,-11,-10,6,-27,28,-23],[41,-36,39,17,-20,-19,-8,13,12,24,30,31,26,28,-23],[41,37,38,-24,-20,-19,-2,-27,-26,-31,-30,-24,-20,21,-23],[41,-36,39,17,-12,-13,8,19,20,24,-38,-37,-36,39,17,-20,21,-23],[41,-36,39,17,-12,-11,-10,7,8,-2,-6,10,-15,35,39,17,-20,21,-23]],[[0,5],[1,-27,-26,-29],[1,-27,28,-21,20,-17,-39,36,37,40,33,31,-29],[1,2,19,20,-12,-13,8,-2,-27,28,-21,-19,-8,13,12,24,30,31,-29],[1,-6,10,11,12,-17,-39,36,37,38,-24,-20,-19,-8,13,12,24,30,31,-29],[1,2,19,20,24,-38,40,33,31,-29],[1,-27,28,-21,20,24,30,31,-29],[1,2,19,20,-17,-39,-35,15,11,-13,8,-2,-6,7,13,12,24,30,31,-29],[1,-27,28,-21,20,-12,-13,8,-2,-6,7,13,12,24,30,31,-29],[1,-27,28,-21,-19,-8,13,12,-17,-39,36,37,38,30,31,-29],[1,-6,10,-15,35,36,37,40,33,31,-29],[1,-27,28,-21,-19,-2,-6,10,11,12,24,30,31,-29],[1,-27,28,-21,20,24,-38,40,33,31,-29],[1,-6,7,13,12,24,30,-33,-40,38,30,31,-29],[1,2,19,21,-28,27,-6,7,13,12,-20,21,-28,-26,-29]],[[1,5],[5,7,13,12,24,30,31,-29],[5,6,-27,28,-21,20,-12,-13,8,19,21,-28,-26,-29],[5,6,-27,28,-21,20,-12,-13,-7,10,11,12,24,30,31,-29],[5,7,13,-11,-10,6,-27,28,-21,-19,-2,-6,10,11,12,24,30,31,-29],[5,10,-15,35,39,17,-12,-11,-10,7,13,12,24,30,31,-29],[5,7,8,-2,-27,28,-21,20,24,30,31,-29],[5,7,8,-2,-6,10,11,12,-17,-39,36,37,38,30,31,-29],[5,7,13,12,-20,21,-28,27,2,19,20,-17,-39,36,37,38,30,31,-29],[5,10,-15,35,39,17,-20,-19,-2,-27,-26,-29],[5,10,-15,35,39,17,-12,-11,-10,6,2,-8,13,12,24,30,31,-29],[5,6,2,-8,13,-11,-15,35,36,37,38,30,31,-29],[5,6,2,19,20,24,-38,40,33,31,-29],[5,7,13,-11,-15,35,36,37,38,-24,-20,21,-28,-26,-29],[5,7,8,19,21,-28,27,-6,10,-15,35,36,37,38,30,31,-29],[5,10,-15,35,39,17,-20,-19,-8,13,12,24,30,31,-29]],[[2,5],[14,15,11,12,24,30,31,-29],[14,35,36,37,38,30,31,-29],[14,35,36,37,40,33,31,-29],[14,15,-10,7,13,-11,-15,35,36,37,38,30,31,-29],[14,15,11,-13,-7,6,2,19,21,-28,27,-6,10,11,12,24,30,31,-29],[14,15,11,12,24,-38,-37,-36,-35,15,-10,7,13,12,24,30,31,-29],[14,15,-10,6,2,19,20,-12,-13,8,-2,-27,-26,-29],[14,15,11,12,24,30,-33,-40,38,30,31,-29],[14,15,-10,6,-27,28,-21,-19,-8,-7,10,11,12,24,30,31,-29],[14,15,-10,7,8,19,21,-28,27,-6,10,11,12,24,30,31,-29],[14,15,11,-13,8,19,21,-28,27,-6,10,11,12,24,30,31,-29],[14,15,-10,7,13,-11,-15,35,39,17,-12,-13,8,19,20,24,30,31,-29]],[[3,5],[18,-39,36,37,38,30,31,-29],[18,17,-20,-19,-8,13,12,24,-38,-37,-36,39,17,-20,21,-28,-26,-29],[18,-39,-35,15,11,12,24,30,-33,-40,38,30,31,-29],[18,17,-12,-11,-10,7,8,-2,-27,28,-21,20,24,30,31,-29],[18,17,-12,-13,8,19,20,24,30,31,-29],[18,-39,-35,15,11,-13,-7,10,-15,35,39,17,-20,21,-28,-26,-29],[18,-39,36,37,40,33,-30,-38,40,33,31,-29],[18,17,-20,-19,-2,-27,28,-21,20,24,30,31,-29],[18,17,-20,-19,-8,-7,10,11,-13,8,-2,-6,7,13,12,24,30,31,-29],[18,17,-12,-13,-7,6,-27,28,-21,20,-17,-39,36,37,38,30,31,-29],[18,17,-20,21,-28,27,2,-8,-7,6,-27,-26,-29],[18,-39,-35,15,-10,6,2,19,21,-28,27,2,19,20,24,30,31,-29],[18,17,-20,21,-28,27,-6,10,11,-13,-7,6,-27,-26,-29],[18,-39,-35,15,11,-13,8,-2,-6,10,-15,35,36,37,38,30,31,-29],[18,17,-20,-19,-2,-6,10,11,12,24,30,31,-29],[18,17,-12,-11,-10,7,8,-2,-6,10,-15,35,36,37,38,30,31,-29]],[[4,5],[23,-28,-26,-29],[23,-28,27,-6,10,-15,35,36,37,38,30,31,-29],[23,-28,27,2,19,21,-28,-26,-29],[23,-28,27,-6,10,11,12,24,-38,40,33,31,-29],[23,-21,20,-12,-11,-10,7,13,12,24,30,31,-29],[23,-21,-19,-8,13,12,-17,-39,-35,15,11,12,24,30,31,-29],[23,-21,20,-12,-13,-7,6,-27,28,-21,20,24,30,31,-29],[23,-21,-19,-2,-27,28,-21,20,24,30,31,-29],[23,-21,-19,-2,-27,28,-21,20,-12,-11,-10,7,13,12,24,30,31,-29],[23,-28,27,2,-8,-7,6,-27,-26,-29],[23,-28,27,2,19,20,-12,-13,8,-2,-6,10,11,12,24,30,31,-29],[23,-28,27,-6,10,11,12,24,30,31,-29],[23,-21,-19,-8,-7,6,-27,28,-21,20,24,30,31,-29]],[[6,5],[34,33,31,-29],[34,-40,38,-24,-20,-19,-2,-6,7,13,12,24,30,31,-29],[34,33,-30,-38,-37,-36,-35,15,11,12,24,30,31,-29],[34,-40,38,30,-33,-40,38,30,31,-29],[34,33,-30,-24,-12,-11,-15,35,36,37,38,30,31,-29],[34,-40,-37,-36,-35,15,11,-13,8,19,21,-28,-26,-29],[34,33,-30,-24,-12,-13,-7,6,2,19,20,24,30,31,-29],[34,-40,38,-24,-12,-13,-7,10,11,12,24,30,31,-29],[34,-40,-37,-36,-35,15,11,12,24,30,31,-29],[34,-40,38,-24,-12,-11,-15,35,36,37,38,30,31,-29],[34,33,-30,-24,-12,-13,-7,10,11,12,24,30,31,-29]],[[7,5],[41,37,38,30,31,-29],[41,37,40,33,-30,-24,-20,21,-28,-26,-29],[41,-36,39,17,-12,-13,8,-2,-6,7,13,-11,-10,7,13,12,24,30,31,-29],[41,37,38,30,-33,-40,38,30,31,-29],[41,37,40,33,-30,-38,40,33,31,-29],[41,-36,39,17,-12,-13,-7,10,-15,35,36,37,38,30,31,-29],[41,-36,-35,15,-10,6,2,-8,13,-11,-10,7,13,12,24,30,31,-29],[41,-36,-35,15,-10,7,8,19,21,-28,-26,-29],[41,-36,-35,15,-10,7,8,-2,-27,28,-21,20,24,30,31,-29],[41,-36,39,17,-20,-19,-8,13,12,24,30,31,-29]],[[0,6],[1,2,19,20,24,-38,40,-34],[1,-6,10,-15,35,36,37,38,30,-33,-34],[1,-27,28,-21,20,-12,-13,-7,6,2,-8,13,-11,-15,35,36,37,40,-34],[1,-6,10,-15,35,39,17,-12,-11,-10,7,13,12,-17,-39,36,37,40,-34],[1,-27,28,-21,-19,-2,-6,10,11,-13,-7,6,2,-8,13,12,24,-38,40,-34],[1,-27,28,-21,20,-12,-13,-7,6,2,19,21,-28,-26,-31,-33,-34],[1,2,-8,-7,6,-27,-26,-31,-30,-38,40,-34],[1,-27,28,-21,-19,-2,-6,7,13,12,-20,21,-28,-26,-31,-33,-34],[1,2,-8,13,12,-17,-39,36,37,38,-24,-20,21,-28,-26,-31,-33,-34],[1,2,-8,13,12,-17,-39,-35,15,-10,6,2,19,20,24,-38,40,-34],[1,2,19,20,24,-38,-37,-36,39,17,-12,-11,-15,35,36,37,40,-34],[1,-6,10,-15,35,36,37,38,-24,-12,-11,-15,35,36,37,40,-34],[1,-6,10,11,12,24,30,31,26,28,-21,20,24,-38,40,-34],[1,2,19,21,-28,-26,-31,-30,-38,40,-34],[1,2,19,20,-12,-11,-10,7,8,-2,-6,10,-15,35,36,37,40,-34],[1,2,-8,13,12,-17,-39,36,37,38,30,-33,-34]],[[1,6],[5,7,13,12,24,-38,40,-34],[5,7,13,12,-17,-39,-35,15,11,-13,8,19,21,-28,-26,-31,-33,-34],[5,10,-15,35,36,37,38,-24,-20,-19,-8,-7,10,11,12,24,-38,40,-34],[5,6,-27,-26,-31,-30,-38,40,-34],[5,10,-15,35,39,17,-12,-13,-7,6,2,-8,13,12,24,-38,40,-34],[5,6,-27,-26,-31,-30,-24,-12,-11,-15,35,36,37,40,-34],[5,10,11,12,-17,-39,-35,15,-10,7,8,-2,-6,7,13,12,24,-38,40,-34],[5,7,13,12,24,30,31,26,28,-21,-19,-8,13,12,24,-38,40,-34],[5,7,8,19,20,-12,-13,-7,10,-15,35,36,37,38,30,-33,-34],[5,10,11,12,24,30,31,26,28,-21,20,24,-38,40,-34],[5,7,8,-2,-6,10,11,12,24,30,-33,-34],[5,7,8,-2,-6,10,11,-13,-7,6,-27,28,-21,20,24,-38,40,-34]],[[2,6],[14,35,36,37,40,-34],[14,35,36,37,38,30,-33,-34],[14,35,36,37,38,-24,-12,-13,8,-2,-6,7,13,12,24,-38,40,-34],[14,15,-10,6,2,-8,13,-11,-15,35,36,37,38,30,-33,-34],[14,35,39,17,-20,21,-28,-26,-31,-30,-38,40,-34],[14,15,11,-13,-7,10,-15,35,36,37,38,-24,-12,-11,-15,35,36,37,40,-34],[14,15,11,12,-20,-19,-2,-6,10,-15,35,36,37,40,-34],[14,35,36,37,38,-24,-20,21,-28,-26,-31,-33,-34],[14,35,39,17,-12,-11,-15,35,36,37,40,-34],[14,15,-10,6,2,-8,-7,10,11,12,24,-38,40,-34],[14,15,11,-13,8,-2,-27,-26,-31,-30,-38,40,-34],[14,35,39,17,-12,-13,8,-2,-27,-26,-31,-33,-34],[14,35,39,17,-20,-19,-8,13,-11,-10,7,8,19,20,24,-38,40,-34],[14,35,36,37,38,-24,-12,-11,-15,35,36,37,40,-34]],[[3,6],[18,-39,36,37,40,-34],[18,17,-12,-11,-15,35,36,37,38,30,-33,-34],[18,-39,36,37,38,-24,-12,-11,-10,6,2,19,20,24,-38,40,-34],[18,17,-20,-19,-8,13,-11,-10,7,8,19,20,24,-38,40,-34],[18,-39,-35,15,-10,7,8,-2,-6,10,11,12,24,-38,40,-34],[18,17,-12,-13,8,-2,-27,-26,-31,-33,-34],[18,-39,-35,15,11,-13,-7,10,-15,35,36,37,40,-34],[18,-39,36,37,38,30,-33,-34],[18,17,-12,-13,8,19,21,-28,-26,-31,-30,-38,40,-34],[18,17,-12,-11,-10,6,2,-8,-7,10,11,12,24,-38,40,-34],[18,17,-12,-11,-10,6,-27,28,-21,20,24,-38,40,-34],[18,17,-12,-13,-7,10,-15,35,36,37,38,30,-33,-34],[18,17,-20,21,-28,27,-6,7,13,12,24,-38,40,-34],[18,-39,-35,15,11,-13,8,-2,-6,7,13,12,24,-38,40,-34],[18,17,-20,-19,-2,-27,28,-21,20,24,-38,40,-34]],[[4,6],[23,-21,20,24,-38,40,-34],[23,-28,-26,-31,-30,-24,-20,21,-28,-26,-31,-33,-34],[23,-21,-19,-2,-6,10,11,12,24,30,-33,-34],[23,-21,-19,-2,-27,28,-21,20,24,-38,40,-34],[23,-28,-26,-31,-30,-24,-12,-11,-10,7,13,12,-17,-39,36,37,40,-34],[23,-28,27,-6,7,8,-2,-27,-26,-31,-33,-34],[23,-21,20,-17,-39,36,37,38,30,-33,-34],[23,-28,-26,-31,-30,-38,-37,-36,-35,15,11,12,24,-38,40,-34],[23,-28,27,2,19,21,-28,-26,-31,-30,-38,40,-34],[23,-21,20,24,-38,-37,-36,39,17,-12,-11,-10,7,13,12,24,-38,40,-34],[23,-21,20,-17,-39,-35,15,11,-13,-7,6,2,19,20,24,-38,40,-34],[23,-21,20,-17,-39,-35,15,-10,7,13,-11,-15,35,36,37,40,-34],[23,-28,-26,-31,-30,-24,-12,-11,-10,7,8,19,20,24,-38,40,-34],[23,-21,-19,-2,-27,28,-21,20,-17,-39,-35,15,11,12,24,-38,40,-34],[23,-21,20,24,30,31,26,28,-21,20,24,-38,40,-34]],[[5,6],[29,-31,-33,-34],[29,-31,-30,-38,-37,-36,-35,15,11,12,24,-38,40,-34],[29,-31,-30,-38,-37,-36,39,17,-12,-11,-15,35,36,37,40,-34],[29,-31,-30,-24,-20,21,-28,-26,-31,-33,-34],[29,26,28,-21,-19,-2,-27,-26,-31,-33,-34],[29,26,28,-21,20,-12,-13,-7,10,11,12,24,-38,40,-34],[29,26,27,2,-8,13,12,24,-38,40,-34],[29,26,28,-21,-19,-8,-7,6,2,19,20,24,-38,40,-34],[29,26,28,-21,-19,-8,-7,10,11,12,-17,-39,36,37,40,-34],[29,26,27,2,-8,13,-11,-15,35,36,37,40,-34],[29,-31,-30,-24,-12,-11,-15,35,36,37,40,-34],[29,26,27,2,19,20,24,-38,40,-34],[29,-31,-30,-38,-37,-36,-35,15,-10,7,13,12,24,-38,40,-34],[29,-31,-30,-24,-12,-11,-10,6,2,19,20,24,-38,40,-34]],[[7,6],[41,37,40,-34],[41,37,38,30,-33,-34],[41,-36,-35,15,-10,6,2,-8,13,12,24,-38,40,-34],[41,-36,39,17,-20,-19,-2,-6,7,13,12,24,-38,40,-34],[41,-36,39,17,-12,-13,8,19,20,24,-38,40,-34],[41,37,38,-24,-20,-19,-8,13,12,24,-38,40,-34],[41,-36,-35,15,11,-13,8,19,20,24,-38,40,-34],[41,-36,39,17,-20,21,-28,-26,-31,-33,-34],[41,-36,-35,15,-10,7,8,19,20,24,-38,40,-34],[41,37,38,-24,-12,-11,-10,6,2,-8,13,12,24,-38,40,-34],[41,-36,-35,15,11,12,-20,-19,-8,13,12,24,-38,40,-34],[41,-36,-35,15,-10,6,2,19,20,24,-38,40,-34],[41,37,38,-24,-12,-11,-10,6,2,19,20,24,-38,40,-34],[41,37,38,-24,-12,-11,-15,35,36,37,40,-34]],[[0,7],[1,2,19,20,24,-38,-37,-41],[1,-6,10,11,12,24,-38,40,33,-30,-38,-37,-41],[1,-6,10,11,-13,8,-2,-27,-26,-31,-30,-38,-37,-41],[1,2,-8,-7,6,-27,28,-21,-19,-8,13,12,24,-38,-37,-41],[1,-27,28,-21,20,-12,-13,8,19,21,-28,-26,-31,-30,-38,-37,-41],[1,-6,7,13,-11,-15,35,39,17,-12,-13,-7,10,11,12,24,-38,-37,-41],[1,-27,28,-21,20,-17,-39,-35,15,11,12,24,-38,-37,-41],[1,-6,10,11,-13,-7,6,2,-8,13,12,24,-38,-37,-41],[1,-27,28,-21,-19,-2,-6,10,11,-13,-7,10,11,12,24,-38,-37,-41],[1,-27,-26,-31,-33,-40,-37,-41],[1,-27,-26,-31,-30,-24,-20,-19,-8,13,12,24,-38,-37,-41],[1,-6,10,-15,35,39,17,-20,-19,-2,-6,7,13,12,24,-38,-37,-41],[1,2,-8,13,12,-20,21,-28,-26,-31,-33,-40,-37,-41],[1,-27,28,-21,-19,-2,-6,7,8,19,20,24,-38,-37,-41],[1,2,19,21,-28,27,-6,10,-15,35,36,-41],[1,-6,7,8,19,20,-17,-39,-35,15,11,12,24,-38,-37,-41]],[[1,7],[5,7,13,12,24,-38,-37,-41],[5,10,11,-13,8,-2,-6,7,13,12,24,-38,-37,-41],[5,6,-27,-26,-31,-30,-38,-37,-41],[5,10,-15,35,39,17,-12,-11,-10,7,13,12,24,-38,-37,-41],[5,7,13,-11,-10,6,2,-8,-7,10,11,12,24,-38,-37,-41],[5,6,-27,-26,-31,-33,-40,-37,-41],[5,10,-15,35,39,17,-20,-19,-8,13,12,24,-38,-37,-41],[5,7,13,-11,-10,6,-27,28,-21,-19,-8,13,12,24,-38,-37,-41],[5,10,11,12,24,30,31,26,28,-21,20,24,-38,-37,-41],[5,7,8,-2,-27,28,-21,20,-17,-39,-35,15,11,12,24,-38,-37,-41],[5,7,13,-11,-10,6,-27,-26,-31,-30,-38,-37,-41],[5,6,2,-8,-7,10,-15,35,39,17,-20,-19,-8,13,12,24,-38,-37,-41],[5,10,11,12,24,-38,40,33,-30,-38,-37,-41],[5,10,11,12,-17,-39,-35,15,-10,7,13,12,24,-38,-37,-41]],[[2,7],[14,35,36,-41],[14,15,11,-13,8,19,21,-28,27,2,19,20,24,-38,-37,-41],[14,15,11,12,-20,-19,-2,-6,7,8,19,20,24,-38,-37,-41],[14,15,11,-13,8,19,20,-12,-11,-10,6,2,-8,13,12,24,-38,-37,-41],[14,35,39,17,-20,-19,-2,-27,28,-21,20,24,-38,-37,-41],[14,35,39,17,-20,21,-28,-26,-31,-30,-38,-37,-41],[14,15,11,12,-20,-19,-2,-6,7,13,-11,-10,7,13,12,24,-38,-37,-41],[14,35,39,17,-12,-13,-7,6,2,19,20,24,-38,-37,-41],[14,15,-10,7,8,-2,-6,10,11,12,24,-38,-37,-41],[14,15,-10,7,13,-11,-15,35,39,17,-20,-19,-8,13,12,24,-38,-37,-41],[14,35,39,17,-12,-11,-10,6,2,-8,-7,10,-15,35,36,-41],[14,15,-10,6,-27,28,-21,-19,-8,13,12,24,-38,-37,-41],[14,35,39,17,-12,-11,-10,7,13,12,24,-38,-37,-41],[14,35,39,17,-20,-19,-8,13,12,24,-38,-37,-41],[14,15,11,-13,8,-2,-6,10,-15,35,36,-41]],[[3,7],[18,-39,36,-41],[18,17,-20,-19,-8,-7,6,2,19,20,24,-38,-37,-41],[18,-39,-35,15,-10,6,2,-8,13,12,24,-38,-37,-41],[18,-39,-35,15,11,12,24,-38,-37,-41],[18,-39,-35,15,11,-13,8,-2,-6,7,13,12,24,-38,-37,-41],[18,-39,-35,15,-10,6,2,19,20,24,-38,-37,-41],[18,17,-12,-11,-15,35,36,-41],[18,17,-20,-19,-2,-6,7,8,19,20,24,-38,-37,-41],[18,17,-12,-13,8,-2,-27,28,-21,20,24,-38,-37,-41],[18,-39,-35,15,-10,7,13,12,24,-38,-37,-41],[18,17,-12,-13,8,19,21,-28,-26,-31,-30,-38,-37,-41],[18,17,-12,-11,-15,35,39,17,-12,-11,-15,35,36,-41],[18,-39,-35,15,11,-13,-7,6,2,19,20,24,-38,-37,-41]],[[4,7],[23,-21,20,24,-38,-37,-41],[23,-28,-26,-31,-30,-38,-37,-41],[23,-21,-19,-8,13,-11,-10,7,8,-2,-6,10,11,12,24,-38,-37,-41],[23,-28,27,-6,7,8,-2,-27,28,-21,20,24,-38,-37,-41],[23,-28,27,2,-8,-7,10,-15,35,36,-41],[23,-21,20,-12,-11,-10,7,13,12,-17,-39,36,-41],[23,-21,-19,-8,13,12,-17,-39,-35,15,11,-13,-7,10,11,12,24,-38,-37,-41],[23,-28,-26,-31,-33,-40,-37,-41],[23,-21,-19,-8,-7,6,-27,28,-21,20,-17,-39,36,-41],[23,-28,27,-6,7,13,12,-17,-39,-35,15,11,12,24,-38,-37,-41],[23,-21,-19,-8,-7,6,-27,28,-21,20,-12,-11,-15,35,36,-41],[23,-28,-26,-31,-30,-24,-12,-11,-15,35,36,-41],[23,-21,-19,-8,-7,6,-27,28,-21,20,24,-38,-37,-41],[23,-21,-19,-8,13,12,-20,21,-28,-26,-31,-30,-38,-37,-41],[23,-21,20,-12,-13,-7,6,2,-8,13,-11,-15,35,36,-41]],[[5,7],[29,-31,-30,-38,-37,-41],[29,26,27,-6,10,-15,35,36,-41],[29,-31,-33,-40,38,30,-33,-40,-37,-41],[29,-31,-33,-40,38,-24,-12,-11,-15,35,36,-41],[29,26,27,2,-8,13,-11,-10,7,8,19,20,24,-38,-37,-41],[29,26,27,2,19,21,-28,-26,-31,-30,-38,-37,-41],[29,-31,-30,-38,40,33,-30,-38,-37,-41],[29,26,28,-21,-19,-2,-6,7,13,12,24,-38,-37,-41],[29,26,28,-21,-19,-2,-27,-26,-31,-30,-38,-37,-41],[29,26,27,2,19,20,24,-38,-37,-41],[29,-31,-33,-40,-37,-41],[29,26,28,-21,-19,-2,-27,28,-21,20,24,-38,-37,-41],[29,26,28,-21,-19,-8,-7,10,11,12,24,-38,-37,-41]],[[6,7],[34,-40,-37,-41],[34,33,31,26,28,-21,20,24,-38,-37,-41],[34,33,-30,-38,-37,-41],[34,33,-30,-24,-12,-11,-15,35,36,-41],[34,-40,38,-24,-20,-19,-2,-6,7,13,12,24,-38,-37,-41],[34,-40,38,30,-33,-40,-37,-41],[34,-40,38,-24,-12,-11,-10,6,2,19,20,24,-38,-37,-41],[34,33,-30,-24,-20,-19,-8,13,12,24,-38,-37,-41]],[[7,7],[41,-36,-35,15,11,12,24,-38,-37,-41],[41,37,38,30,31,26,27,-6,7,13,-11,-15,35,36,-41],[41,37,40,33,31,26,27,2,19,20,24,-38,-37,-41],[41,-36,-35,15,-10,7,8,-2,-27,-26,-31,-30,-38,-37,-41],[41,37,38,-24,-12,-11,-10,7,8,19,20,-17,-39,-35,15,11,12,24,-38,-37,-41],[41,37,38,-24,-20,21,-28,-26,-31,-33,-40,-37,-41],[41,-36,-35,15,-10,6,-27,28,-21,20,24,-38,-37,-41],[41,37,38,-24,-20,-19,-8,13,12,-17,-39,-35,15,11,-13,-7,10,11,12,24,-38,-37,-41],[41,37,38,-24,-20,-19,-8,-7,6,-27,-26,-31,-30,-38,-37,-41],[41,-36,-35,15,11,12,24,30,31,26,28,-21,20,24,-38,-37,-41],[41,37,40,33,31,26,28,-21,20,24,-38,-37,-41],[41,-36,39,17,-12,-13,8,19,20,24,-38,40,33,-30,-38,-37,-41],[41,-36,39,17,-20,-19,-8,-7,10,-15,35,36,-41],[41,-36,-35,15,11,-13,8,-2,-27,28,-21,20,24,-38,-37,-41],[41,37,40,33,31,26,27,2,-8,-7,10,11,12,24,-38,-37,-41],[41,-36,-35,15,-10,6,2,-8,13,-11,-15,35,39,17,-12,-11,-15,35,36,-41]]]];
+  const districts = ["school","university","academy","research","computing","science-city","accelerator","energy"];
+  function early(id, sheet, height, stridePixels, period, district, slot) {
+    const stride = height * stridePixels / 446;
+    return {id,sheet:sheet+"-walk",w:108*height/133.8,h:144*height/133.8,
+      ax:7/15,ay:0.05,cols:13,rows:4,stride,speed:stride/period,district,slot,weight:1,limit:100};
+  }
+  function late(id,n,w,h,ax,ay,stride,speed,district,slot,weight) {
+    return {id,sheet:"resident-"+String(n).padStart(2,"0"),w:w/8,h:h/8,ax,ay,cols:10,rows:10,
+      stride,speed,district,slot,weight,limit:weight===5?6:weight===2?28:100,shuttle:n===8};
+  }
+  const kinds = [
+    early("abacus","schoolboy",23,174,1.04,0,0),
+    early("algorithm","teacher",27,180,1.08,0,1),
+    early("calculator","student",26,188,1.02,1,0),
+    early("neuron","professor",27.5,168,1.12,1,1),
+    late("quantum",1,139,207,.5,.016156863,38,9.5,2,0,1),
+    late("singularity",2,271,278,.505846263,.011189166,40,10,2,1,2),
+    late("dimension",3,239,242,.5,.013343704,37,9.25,3,0,2),
+    late("universe",4,123,207,.509540402,.016156863,36,9,3,1,1),
+    late("multiverse",5,275,261,.505454545,.012094508,38,9.5,4,0,2),
+    late("superintelligence",6,113,207,.510324484,.016156863,38,9.5,4,1,1),
+    late("automaton",7,320,240,.505477528,.012565657,40,10,5,0,2),
+    late("navigator",8,327,216,.505480535,.013869732,24,18,5,1,5),
+    late("chronologist",9,298,236,.505467159,.013084746,37,9.25,6,0,2)
+  ];
+  // Unit weights and stable largest remainders reproduce the native 400-unit crowd budget.
+  function quotas(counts) {
+    const limits=kinds.map((k,i)=>Math.min(k.limit,counts[i]));
+    const weight=limits.reduce((t,v,i)=>t+v*kinds[i].weight,0);
+    if (weight<=400) return limits;
+    let used=kinds.reduce((t,k,i)=>t+(limits[i]>0?k.weight:0),0);
+    const fraction=(400-used)/(weight-used), order=[];
+    const result=limits.map((n,i)=>{
+      if (!n) return 0;
+      const exact=(n-1)*fraction, whole=Math.floor(exact);
+      used+=whole*kinds[i].weight;
+      if(exact>whole)order.push([i,exact-whole]);
+      return 1+whole;
+    });
+    order.sort((a,b)=>b[1]-a[1] || a[0]-b[0]);
+    for(const [i] of order) if(used+kinds[i].weight<=400){ result[i]++; used+=kinds[i].weight; }
+    return result;
+  }
+
+  const lines = roadLines.map(points=>{
+    const segments = [];
+    let total=0;
+    for(let i=0;i+3<points.length;i+=2) {
+      const x=points[i],y=points[i+1],dx=points[i+2]-x,dy=points[i+3]-y;
+      const length=Math.hypot(dx,dy);
+      segments.push({x,y,dx,dy,length});
+      total+=length;
+    }
+    return {segments,total};
+  });
+  const lineFor=id=>lines[Math.abs(id)-1];
+  function choose(arr){return arr[Math.floor(Math.random()*arr.length)];}
+
+  // Passage lists are shared per corridor. This is equivalent to recording a reference
+  // on every metre of every variant, but keeps stage 8's 744 variants compact.
+  function routeTable(groups,open,shuttle) {
+    const departures = Array.from({length:8},()=>new Map());
+    const slots = new Map(), allowLoop=open.filter(Boolean).length===1;
+    for(const group of groups) {
+      const [origin,target]=group[0];
+      if(!open[origin] || !open[target] || (origin===target && !allowLoop))continue;
+      const choices=[];
+      for (let i=1;i<group.length;i++) {
+        const ids=shuttle ? group[i].slice(1,-1) : group[i];
+        if(!ids.length)continue;
+        const route={ids,target};
+        choices.push(route);
+        ids.forEach((id,index)=>{
+          const physical=Math.abs(id);
+          if(!slots.has(physical))slots.set(physical,[]);
+          slots.get(physical).push({route,index});
+        });
+      }
+      if(choices.length)departures[origin].set(target,choices);
+    }
+    const byDoor=departures.map(d=>Array.from(d.values()));
+    let total=0;
+    const sections=Array.from(slots,([physical,passages])=>{
+      const line=lineFor(physical);
+      const start=total; total+=line.total;
+      return {line,start,end:total,passages};
+    });
+    return {
+      departure(door){const groups=byDoor[door];return groups.length?{route:choose(choose(groups)),corridor:0,seg:0,distance:0}:null;},
+      distribute(ordinal,offset){
+        if(!total)return null;
+        const at=total*((offset+ordinal*.6180339887498949)%1);
+        const section=sections.find(s=>s.end>at)||sections[sections.length-1];
+        const pass=choose(section.passages), id=pass.route.ids[pass.index];
+        let along=at-section.start, seg=0;
+        const segments=section.line.segments;
+        while(seg<segments.length-1 && along>=segments[seg].length){along-=segments[seg].length;seg++;}
+        return {route:pass.route,corridor:pass.index,seg:id>0?seg:segments.length-1-seg,
+          distance:id>0?along:segments[seg].length-along};
+      }
+    };
+  }
+  function segmentAt(a) {
+    const id=a.route.ids[a.corridor], segments=lineFor(id).segments;
+    return segments[id>0?a.seg:segments.length-1-a.seg];
+  }
+  function locate(a){
+    const id=a.route.ids[a.corridor], s=segmentAt(a);
+    const u=id>0?a.distance/s.length:1-a.distance/s.length;
+    a.x=s.x+u*s.dx; a.y=s.y+u*s.dy;
+    if(Math.abs(s.dx)>0.10*Math.abs(s.dy))a.face=(id>0?1:-1)*Math.sign(s.dx);
+  }
+  function advance(a,travel) {
+    while(travel>0) {
+      const s=segmentAt(a), remain=s.length-a.distance;
+      if(travel<remain){a.distance+=travel;locate(a);return;}
+      travel-=remain; a.distance=s.length;locate(a);
+      const id=a.route.ids[a.corridor];
+      if(++a.seg===lineFor(id).segments.length) {
+        a.seg=0;
+        if(++a.corridor===a.route.ids.length){ a.phase=a.kind.shuttle?"boarding":"arrived";a.timer=0;return; }
+      }
+      a.distance=0;
+    }
+  }
+  const phrases=["Мысль уже в пути!","Почти посчитали!","Ещё один интеграл!","А если через замену?","Идея пришла!","Сходимость — это важно.","Проверим ещё раз!","Бесконечность рядом.","Работаем в паре!","Красивое решение!","Кофе. Формула. Победа.","Сегодня всё сходится!","Передаю в центр!","Делюсь открытием!","Нашёл короткий путь!","Уравнение согласно."];
+  function create(onImageLoad) {
+    const sheets=new Map(), actors=new Map(), preferences=window.matchMedia("(prefers-reduced-motion: reduce)");
+    let signature=null,openMask=-1, tables=[],crowd=[],closed=false, reduced=preferences.matches;
+    let elapsed=0,nextSpeech=7, bubble=null, lastPhrase=-1;
+    const seed=Math.floor(Math.random()*100001), offsets=kinds.map(()=>Math.random());
+    function sheet(name) {
+      if(!sheets.has(name)) {
+        const img=new Image();
+        if(typeof onImageLoad==="function")img.onload=()=>{if(!closed)onImageLoad();};
+        img.src=window.duoArt("art/map/"+name+".webp"); sheets.set(name,img);
+      }
+      return sheets.get(name);
+    }
+    function start(a,path,onRoad) {
+      if(!path){a.phase="inside";a.timer=0;a.wait=2;return;}
+      Object.assign(a,path);
+      a.phase="walk";a.timer=onRoad?1:0;
+      a.wait=1.5+(a.trip++%9)*.35;
+      locate(a);
+    }
+    function sync(s) {
+      if(closed)return;
+      const owned=new Map(s.resources.map(r=>[r.id,r.owned]));
+      const open=districts.map(id=>s.pairs.some(p=>p.id===id && p.unlocked));
+      const mask=open.reduce((m,v,i)=>v?m | (1<<i):m,0), stopped=preferences.matches;
+      const counts=kinds.map(k=>open[k.district]?(owned.get(k.id)||0):0);
+      const key=mask+"|"+stopped+"|"+counts.join(",");
+      if(key===signature)return;
+      const first=signature===null, restart=!first && ((openMask&mask)!==openMask || stopped!==reduced);
+      reduced=stopped;signature=key;
+      if(mask!==openMask) {
+        const stage=open.lastIndexOf(true)+1, routes=stage?stageRoutes[stage-1]:[];
+        tables=[routeTable(routes,open,false),open[5]?routeTable(routes,open,true):null]; openMask=mask;
+      }
+      const keep=new Set(),keepSheets=new Set(),q=quotas(counts);
+      kinds.forEach((k,i)=>{
+        if(!q[i])return;
+        keepSheets.add(k.sheet);sheet(k.sheet);
+        if(k.shuttle){keepSheets.add(k.sheet+"-stop");sheet(k.sheet+"-stop");}
+        for(let j=0;j<q[i];j++) {
+          const key=k.id+"-"+j; keep.add(key);
+          let a=actors.get(key);
+          const isNew=!a;
+          if(isNew) {
+            const trip=seed+k.district*197+k.slot*67+j*31+13;
+            a={kind:k,trip,cycle:(trip%(k.cols*k.rows))/(k.cols*k.rows),face:1,x:0,y:0};actors.set(key,a);
+          }
+          if(isNew||restart) {
+            const onRoad=first||restart||reduced, table=tables[k.shuttle?1:0];
+            if(reduced)a.cycle=0;
+            start(a,onRoad?table.distribute(j,offsets[i]):table.departure(k.district),onRoad);
+          }
+        }
+      });
+      for(const key of actors.keys())if(!keep.has(key))actors.delete(key);
+      for(const name of sheets.keys())if(!keepSheets.has(name))sheets.delete(name);
+      crowd=Array.from(actors.values());
+      if(reduced || !crowd.length)bubble=null;
+    }
+    function update(a,dt){
+      if(reduced)return;
+      a.timer+=dt;
+      if(a.phase==="walk") {
+        const d=a.kind.speed*dt;
+        a.cycle=(a.cycle+d/a.kind.stride)%1;advance(a,d);
+      } else if (a.phase==="boarding" && a.timer>=4){a.phase="arrived";a.timer=0;}
+      else if(a.phase==="arrived" && a.timer>=.3){a.phase="inside";a.timer=0;}
+      else if(a.phase==="inside" && a.timer>=a.wait){
+        const t=tables[a.kind.shuttle?1:0];start(a,t?.departure(a.route?.target??a.kind.district),false);
+      }
+    }
+    function draw(ctx,dt,time,options={}) {
+      if(closed||!crowd.length)return;
+      dt=Math.min(.1,Math.max(0,dt||0));elapsed+=dt;
+      let bounds=options.bounds;
+      if(!bounds&&ctx.getTransform) {
+        const m=ctx.getTransform();
+        if(m.a>0&&m.d>0)bounds={left:-m.e/m.a,top:-m.f/m.d,right:(ctx.canvas.width-m.e)/m.a,bottom:(ctx.canvas.height-m.f)/m.d};
+      }
+      const visible=a=>!bounds||(a.x>=bounds.left-40&&a.x<=bounds.right+40&&a.y>=bounds.top-10&&a.y<=bounds.bottom+40);
+      for(const a of crowd)update(a,dt);
+      // Painter's order is determined by the world y position of the feet.
+      crowd.sort((a,b)=>a.y-b.y);
+      for(const a of crowd) {
+        if(a.phase==="inside"||!visible(a))continue;
+        const k=a.kind, boarding=k.shuttle&&(a.phase==="boarding"||a.phase==="arrived");
+        const img=sheets.get(k.sheet+(boarding?"-stop":""));
+        if(!img?.complete||!img.naturalWidth)continue;
+        const alpha=a.phase==="arrived"?Math.max(0,1-a.timer/.3):Math.min(1,a.timer/.28);
+        const s=.90+.10*alpha;
+        const n=k.cols*k.rows, frame=boarding?Math.min(n-1,Math.floor((a.phase==="arrived"?1:a.timer/4)*n)):Math.min(n-1,Math.floor(a.cycle*n));
+        const sw=img.naturalWidth/k.cols,sh=img.naturalHeight/k.rows;
+        ctx.save();ctx.translate(a.x,a.y);ctx.scale(s,s);ctx.globalAlpha*=alpha;
+        ctx.fillStyle="rgba(0,0,0,.24)";ctx.beginPath();ctx.ellipse(1,1,5.5,2,0,0,2*Math.PI);ctx.fill();
+        if(a.face<0)ctx.scale(-1,1);
+        ctx.drawImage(img,(frame%k.cols)*sw,Math.floor(frame/k.cols)*sh,sw,sh,-k.ax*k.w,-(1-k.ay)*k.h,k.w,k.h);ctx.restore();
+      }
+      if(options.focused||reduced){bubble=null;return;}
+      if(elapsed>=nextSpeech) {
+        nextSpeech=elapsed+7+4*Math.random();
+        const speakers=crowd.filter(a=>a.phase==="walk" && a.timer>.28 && visible(a));
+        if(speakers.length){
+          const a=choose(speakers);let phrase=Math.floor(Math.random()*phrases.length);
+          if(phrase===lastPhrase)phrase=(phrase+1)%phrases.length;
+          lastPhrase=phrase;bubble={x:a.x,y:a.y-55,start:elapsed,phrase};
+        }
+      }
+      if(!bubble)return;
+      const age=elapsed-bubble.start;
+      if(age>=3.68){bubble=null;return;}
+      ctx.save();ctx.translate(bubble.x,bubble.y);ctx.globalAlpha*=Math.min(1,age/.18,(3.68-age)/.3);
+      ctx.fillStyle="#071622";ctx.strokeStyle="#d5b363";ctx.lineWidth=1.5;ctx.beginPath();
+      if(ctx.roundRect)ctx.roundRect(-112,-24.5,224,49,15);else ctx.rect(-112,-24.5,224,49);
+      ctx.fill();ctx.stroke();ctx.beginPath();ctx.moveTo(-7,24);ctx.lineTo(1,33);ctx.lineTo(8,24);ctx.fill();
+      ctx.font="italic 17px Georgia,serif";ctx.fillStyle="#f2e8c2";ctx.textAlign="center";ctx.textBaseline="middle";
+      ctx.fillText(phrases[bubble.phrase],0,0,213);ctx.restore();
+    }
+    function close(){closed=true;for(const img of sheets.values())img.onload=null;sheets.clear();actors.clear();crowd=[];tables=[];bubble=null;}
+    return {sync,draw,close};
+  }
+  window.MapResidents={create};
+})();
+
+;
+// Original archived district paintings registered to the 1122 × 1402 atlas.
+window.DuoWorldDetails = [
+  {stage: 1, x: 36, y: 140, w: 724, h: 496, density: 2.5, file: "art/map/hd-school.webp"},
+  {stage: 2, x: 312, y: 112, w: 516, h: 572, density: 2.5, file: "art/map/hd-university.webp"},
+  {stage: 3, x: 616, y: 112, w: 504, h: 444, density: 2.5, file: "art/map/hd-academy.webp"},
+  {stage: 4, x: 696, y: 396, w: 426, h: 304, density: 2.5, file: "art/map/hd-research.webp"},
+  {stage: 5, x: 16, y: 364, w: 764, h: 292, density: 2.5, file: "art/map/hd-computing.webp"},
+  {stage: 6, x: 40, y: 576, w: 728, h: 384, density: 2.5, file: "art/map/hd-science-city.webp"},
+  {stage: 7, x: 412, y: 840, w: 700, h: 408, density: 2.5, file: "art/map/hd-accelerator.webp"},
+  {stage: 8, x: 636, y: 576, w: 486, h: 428, density: 2.5, file: "art/map/hd-energy.webp"},
+];
+
+;
+// All scene geometry uses the original painted atlas, measured in source pixels.
+window.DuoWorldMap = (() => {
+  "use strict";
+  const W=1122,H=1402,hub=[552,520],tau=2*Math.PI;
+  const districts=[{"id":"school","name":"Школа","rect":[119,157,254,230],"door":[281,384],"glow":[71,101,349,331]},{"id":"university","name":"Университет","rect":[462,139,318,216],"door":[585,350],"glow":[416,84,411,316]},{"id":"academy","name":"Академия наук","rect":[806,120,249,289],"door":[895,402],"glow":[746,67,365,389]},{"id":"research","name":"Исследовательский центр","rect":[794,446,269,179],"door":[908,621],"glow":[746,398,362,274]},{"id":"computing","name":"Вычислительный центр","rect":[108,409,230,184],"door":[275,594],"glow":[58,363,326,285]},{"id":"science-city","name":"Наукоград","rect":[129,635,408,251],"door":[349,855],"glow":[79,578,505,369]},{"id":"accelerator","name":"Ускорительный комплекс","rect":[608,948,402,197],"door":[897,1142],"glow":[558,898,501,308]},{"id":"energy","name":"Энергетическая станция","rect":[794,649,246,125],"door":[921,768],"glow":[750,598,339,207]}];
+  const installations=[{"id":"collider","resource":"oracle","x":634.0,"y":945.0,"w":294.0,"h":166.0,"cw":324,"ch":183},{"id":"fusion","resource":"architect","x":813.193906754,"y":666.392601047,"w":71.35466094026,"h":47.522919009433004,"cw":79,"ch":53},{"id":"gravity","resource":"nanoforge","x":958.344309141,"y":659.008561838,"w":84.311165163623,"h":73.083054731638,"cw":93,"ch":81}];
+  
+  const colors=["#ffe8a8","#adf0ff","#ffc770","#d6d4ff","#b5f7cc"];
+  const water=[
+    [[276,1255],[344,1257],[405,1290],[519,1332],[644,1358],[718,1390],[304,1390],[272,1353],[255,1310]],
+    [[850,1257],[922,1283],[970,1308],[951,1355],[874,1364],[845,1335],[830,1290]],
+    [[456,1067],[505,1095],[570,1128],[637,1157],[707,1187],[779,1216],[831,1242],[817,1256],[765,1230],[693,1202],[623,1172],[556,1142],[491,1110],[444,1080]],
+    [[331,948],[378,934],[416,945],[453,960],[420,978],[375,992],[333,991],[312,976]],[[655,768],[690,755],[713,770],[704,795],[680,807],[654,797]],[[652,865],[678,865],[667,888],[629,911],[590,922],[571,914],[613,898]]
+  ];
+  const clamp=(n,lo,hi)=>Math.min(hi,Math.max(lo,n));
+  function wet(x,y,poly) {
+    let inside=false;
+    for(let i=0,j=poly.length-1;i<poly.length;j=i++) {
+      const [a,b]=poly[i],[c,d]=poly[j];
+      if((b>y)!==(d>y) && x<(c-a)*(y-b)/(d-b)+a)inside=!inside;
+    }
+    return inside;
+  }
+  const ripples=water.flatMap((p,reg)=>{
+    const xs=p.map(v=>v[0]),ys=p.map(v=>v[1]),lo=Math.min(...xs),hi=Math.max(...ys),bottom=Math.max(...ys),top=Math.min(...ys),r=[];
+    for(let i=0;i<[12,6,15,7,4,5][reg];i++){
+      const w=7+i%5*2,margin=w/2+3;
+      for(let j=0;j<64;j++){
+        const x=lo+(hi-lo)*((i*71+j*47+reg*29)%997)/997,y=bottom-(bottom-top)*((i*137+j*163+reg*67)%991)/991;
+        if([-margin,0,margin].every(dx=>[-3,0,3].every(dy=>wet(x+dx,y+dy,p)))){r.push([x,y,w,i]);break;}
+      }
+    }return r;
+  });
+  function passage(ctx,g,i,clock) {
+    const pause=i*2.1+g.index%3*.35,cycle=clock%(4.3+pause)-pause;
+    if(cycle<0)return;
+    const t=cycle/4.3,u=1-t,[x,y]=districts[g.index].door;
+    ctx.globalAlpha=Math.min(.65,cycle/.4*.65,(4.3-cycle)*.65);
+    ctx.fillStyle=i%2?"#9bdde4":"#edcd87";
+    ctx.fillText(["∫","∑","π","√","Δ","λ"][(g.index+i)%6],u*u*x+2*u*t*((x+hub[0])/2)+t*t*hub[0],
+      u*u*y+2*u*t*(Math.min(y,hub[1])-50)+t*t*hub[1]);
+  }
+  function makeRing(amount,i) {
+    if(!amount)return null;
+    const radius=157+i*7.5,c=document.createElement("canvas"),side=Math.ceil((radius+7)*2);
+    c.width=c.height=side*2;
+    const g=c.getContext("2d");
+    g.scale(2,2);g.translate(side/2,side/2);
+    g.textAlign="center";g.textBaseline="middle";
+    g.font="bold "+Math.min(9,tau*radius/amount*1.22)+"px monospace";g.fillStyle=colors[i];g.shadowColor="#11232e";g.shadowBlur=1.4;
+    for(let j=0;j<amount;j++){g.save();g.rotate(-j*tau/amount);g.fillText((j+i)%2,0,-radius);g.restore();}
+    return {c,side};
+  }
+  function create(root,onDistrict) {
+    root.innerHTML='<div class="wm-surface"><div class="wm-ground"><img class="wm-terrain" alt="Карта научного города" draggable="false"><div class="wm-details" aria-hidden="true"></div></div><div class="wm-board"><div class="wm-halos"></div><div class="wm-hub" aria-hidden="true"><img alt="" draggable="false"></div></div><div class="wm-machines" aria-hidden="true"></div><canvas class="wm-actors" aria-hidden="true"></canvas><div class="wm-hits" role="group" aria-label="Районы города"></div></div>';
+    const surface=root.firstChild, board=root.querySelector(".wm-board"), ground=root.querySelector(".wm-ground"),
+      terrain=root.querySelector(".wm-terrain"),detailLayer=root.querySelector(".wm-details"),
+      halos=root.querySelector(".wm-halos"),hits=root.querySelector(".wm-hits"),canvas=root.querySelector("canvas"),ctx=canvas.getContext("2d");
+    const reduced=matchMedia("(prefers-reduced-motion:reduce)");
+    const hubDisk=board.querySelector(".wm-hub");
+    hubDisk.style.left=hub[0]+"px";hubDisk.style.top=hub[1]+"px";
+    hubDisk.firstChild.src=window.duoArt("art/formula.svg");
+    let px=1,w=0,h=0,fit=1,zoom=1,cx=W/2,cy=H/2,scale=1,ox=0,oy=0,focus=null,inset=0;
+    let stage=-1,groupKey="",groups=[],bitCount=-1,rings=[],fx=[],closed=false,paused=false;
+    let detailSources=[],physicalDensity=1,landscape=false;
+    const detailImages=new Map(),machineBases=new Map(),machineLayer=root.querySelector(".wm-machines");
+    let raf=0,prev=0,elapsed=0,dirty=true,tween=null;
+    const pointers=new Map(),images=new Map(), cleanup=[];
+    const residents=window.MapResidents.create(redraw);
+    function listen(target,event,fn,opts){target.addEventListener(event,fn,opts);cleanup.push(()=>target.removeEventListener(event,fn,opts));}
+    function redraw(){dirty=true;if(!closed&&!paused&&!raf&&!document.hidden)raf=requestAnimationFrame(frame);}
+    function img(path){
+      let im=images.get(path);
+      if(!im){im=new Image();im.onload=redraw;im.src=window.duoArt(path);images.set(path,im);}
+      return im.complete && im.naturalWidth?im:null;
+    }
+    function paint(){
+      if(!ctx||!w||!h)return;
+      ctx.setTransform(px,0,0,px,0,0);ctx.clearRect(0,0,w,h);
+      ctx.translate(ox,oy);ctx.scale(scale,scale);ctx.save();ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();
+      // The landscape is a compositor layer. Only moving or changing overlays reach this canvas.
+      ctx.strokeStyle="#a6dbf5";ctx.lineWidth=.7;
+      for(const [x,y,width,phase] of ripples){
+        const a=(elapsed-phase*.31)*tau/7.2,dx=Math.sin(a)*1.25;
+        ctx.globalAlpha=.06+.045*Math.sin(a);ctx.beginPath();ctx.moveTo(x-width/2+dx,y);
+        ctx.quadraticCurveTo(x+1+dx,y-1.4,x+width/2+dx,y);ctx.stroke();
+      }
+      for(let i=0;i<11;i++){
+        ctx.globalAlpha=reduced.matches?.15:.32+.25*Math.sin(elapsed*1.7+i);ctx.fillStyle="#c0e4f6";
+        ctx.fillRect(W*(.18+(i*7%73)/100),H*(.012+(i*13%49)/1000),i%4===0?2.2:1.4,i%4===0?2.2:1.4);
+      }
+      ctx.globalAlpha=1;
+      fx.forEach(({spec:d,strength})=>{
+        const motion=img("art/map/"+d.id+"-motion.webp");
+        if(!motion)return;
+        let f=reduced.matches?(d.id==="collider"?20:13.5):elapsed*9*(1+.6*strength)%72;
+        const first=Math.floor(f),blend=f-first,alpha=.56+.44*strength;
+        const draw=(n,a)=>{ctx.globalAlpha=a;ctx.drawImage(motion,n%8*d.cw,Math.floor(n/8)*d.ch,d.cw,d.ch,d.x,d.y,d.w,d.h);};
+        draw(first,alpha);if(blend>.01)draw((first+1)%72,alpha*blend);
+        ctx.globalAlpha=1;
+      });
+      // The rotating lanes and the stationary disk share the same ground projection.
+      ctx.save();ctx.translate(...hub);ctx.scale(1,.5);ctx.globalAlpha=1;
+      rings.forEach((r,i)=>{if(r){ctx.save();ctx.rotate(-i*Math.PI/11+(i%2?-1:1)*elapsed*tau/150);ctx.drawImage(r.c,-r.side/2,-r.side/2,r.side,r.side);ctx.restore();}});
+      ctx.restore();
+      residents.draw(ctx,delta,elapsed,{focused:focus!==null});ctx.globalAlpha=1;
+      if(!reduced.matches){ctx.font="italic 16px Georgia, serif";ctx.textAlign="center";groups.forEach(g=>{for(let i=0;i<g.tier;i++)passage(ctx,g,i,elapsed);});}
+      ctx.restore();ctx.globalAlpha=1;
+    }
+    let delta=0;
+    function syncAppearance(){
+      const selection=window.Appearance?.selection?.();
+      if(!selection)return;
+      const skin=Appearance.visual("skins",selection.skins);
+      hubDisk.style.setProperty("--wm-disk-color",skin.color);
+      hubDisk.classList.toggle("ap-dark-glyph",skin.dark);
+    }
+    // Keep detail textures at their native resolution. Their layout size follows the
+    // camera directly so a browser cannot cache the overview and enlarge that layer.
+    function positionGround(){
+      ground.style.left=ox+"px";ground.style.top=oy+"px";
+      ground.style.width=W*scale+"px";ground.style.height=H*scale+"px";
+      const needDetails=scale*physicalDensity>.9;
+      const margin=64, left=(-ox-margin)/scale,top=(-oy-margin)/scale;
+      const right=(w-ox+margin)/scale,bottom=(h-oy+margin)/scale;
+      let previous=null;
+      for(const part of detailSources){
+        const visible=needDetails&&part.x<right&&part.y<bottom&&part.x+part.w>left&&part.y+part.h>top;
+        let tile=detailImages.get(part);
+        if(!visible){
+          if(tile){tile.remove();detailImages.delete(part);}
+          continue;
+        }
+        if(!tile){
+          tile=new Image();tile.alt="";tile.draggable=false;tile.decoding="async";
+          Object.assign(tile.style,{left:part.x/W*100+"%",top:part.y/H*100+"%",width:part.w/W*100+"%",height:part.h/H*100+"%"});
+          tile.src=window.duoArt(part.file);
+          detailLayer.insertBefore(tile,previous?previous.nextSibling:detailLayer.firstChild);
+          detailImages.set(part,tile);
+          // Request a decode as soon as this region enters the viewport. WebKit can
+          // otherwise leave the overview painted until the next camera movement.
+          if(tile.decode)tile.decode().catch(()=>{});
+        }
+        previous=tile;
+      }
+    }
+    function positionMachines(){
+      for(const [spec,base] of machineBases){
+        base.style.left=(ox+spec.x*scale)+"px";base.style.top=(oy+spec.y*scale)+"px";
+        base.style.width=spec.w*scale+"px";base.style.height=spec.h*scale+"px";
+      }
+    }
+    function syncMachines(bought){
+      // Stationary installation art retains its full resolution independently of
+      // the smaller, frequently cleared canvas used by the animation sheets.
+      fx=[];
+      for(const spec of installations){
+        const amount=bought(spec.resource),existing=machineBases.get(spec);
+        if(amount<3){
+          if(existing){existing.remove();machineBases.delete(spec);}
+          continue;
+        }
+        if(!existing){
+          const base=new Image();base.alt="";base.draggable=false;
+          base.src=window.duoArt("art/map/"+spec.id+"-base.webp");
+          machineLayer.append(base);machineBases.set(spec,base);
+        }
+        const strength=Math.log1p(4*(Math.min(amount,100)-3)/97)/Math.log(5);
+        fx.push({spec,strength});
+      }
+      positionMachines();
+    }
+    function zoomLimit(x,y,manual){
+      if(!landscape)return 8;
+      let density=1;
+      for(const part of detailSources){
+        const district=districts[part.stage-1];
+        if(!district)continue;
+        const [left,top,width,height]=district.rect;
+        if(x>=left && x<=left+width && y>=top && y<=top+height){
+          density=Math.max(density,part.density);
+        }
+      }
+      const pixelsPerSource=manual?2:1.45;
+      return clamp(density*pixelsPerSource/(fit*physicalDensity),1,8);
+    }
+    function geometry() {
+      scale=fit*zoom;
+      // A focused edge building can extend past the atlas edge. Centre it in the
+      // unobstructed window. Keep normal pan and pinch inside the atlas bounds.
+      if(focus===null){
+        const halfW=w/scale/2,halfH=h/scale/2;
+        cx=2*halfW>=W?W/2:clamp(cx,halfW,W-halfW);
+        cy=2*halfH>=H?H/2:clamp(cy,halfH,H-halfH);
+      }
+      ox=w/2-cx*scale;oy=h/2-cy*scale;
+      positionGround();positionMachines();
+      const matrix="matrix("+scale+",0,0,"+scale+","+ox+","+oy+")";
+      board.style.transform=hits.style.transform=matrix;dirty=true;
+    }
+    const districtPanel=root.closest(".pg-pane")?.querySelector(".pg-overlay");
+    function resize() {
+      const width=surface.clientWidth,height=surface.clientHeight;
+      const bottom=bottomInset(),wide=matchMedia("(orientation: landscape)").matches;
+      // The Duo demo uses a 1920 CSS-pixel frame even on Retina displays.
+      // A WebView using density-independent pixels needs its actual screen ratio.
+      const density=Math.min(window.devicePixelRatio||1,Math.max(1,1920/Math.max(innerWidth,innerHeight)));
+      if(w===width && h===height && physicalDensity===density && landscape===wide){
+        if(focus!==null && bottom!==inset)frameDistrict(focus,bottom,false);
+        return;
+      }
+      w=width;h=height;physicalDensity=density;landscape=wide;
+      if(!w||!h)return;
+      const d=Math.min(window.devicePixelRatio||1,2,Math.sqrt(680000/(w*h)));
+      px=Math.max(.6,d);canvas.width=Math.round(w*px);canvas.height=Math.round(h*px);
+      fit=Math.min(w/W,Math.max(1,h-16)/H);
+      if(focus!==null)frameDistrict(focus,bottom,false);
+      else {zoom=Math.min(zoom,zoomLimit(cx,cy,true));geometry();}
+      redraw();
+    }
+    function frame(ts) {
+      raf=0;if(closed||paused||document.hidden)return;
+      if(tween){
+        const t=clamp((ts-tween.start)/tween.ms,0,1),e=t*t*(3-2*t);
+        cx=tween.cx+(tween.x-tween.cx)*e;cy=tween.cy+(tween.y-tween.cy)*e;zoom=tween.zoom+(tween.z-tween.zoom)*e;geometry();
+        if(t===1)tween=null;
+      }
+      if(dirty || (!reduced.matches&&(!prev||ts-prev>=1000/30-.7))){
+        delta=reduced.matches||!prev?0:Math.max(0,Math.min(.1,(ts-prev)/1000));elapsed+=delta;prev=ts;dirty=false;paint();
+      }
+      if(!reduced.matches||tween)raf=requestAnimationFrame(frame);
+    }
+    function pose(x,y,z,ms){
+      tween=null;
+      if(!ms||reduced.matches){cx=x;cy=y;zoom=z;geometry();}
+      else tween={start:performance.now(),ms,cx,cy,zoom,x,y,z};
+      redraw();
+    }
+    function reset(animated=true){focus=null;inset=0;pose(W/2,H/2,1,animated?280:0);}
+    function bottomInset(){
+      if(!districtPanel||districtPanel.hidden)return 0;
+      const panel= districtPanel.getBoundingClientRect(),view=surface.getBoundingClientRect();
+      // In portrait the sheet covers the bottom of the map. Landscape reserves
+      // a separate column for it, so the whole map pane remains available.
+      return panel.left < view.right-.5 && panel.right > view.left+.5 ? Math.ceil(Math.max(0,view.bottom-panel.top)) : 0;
+    }
+    function select(index){
+      resize();
+      frameDistrict(index,bottomInset(),true);
+    }
+    function frameDistrict(index,bottom,animated){
+      const d=districts[index];if(!d||w<=44||h<=132)return;
+      focus=index;inset=clamp(bottom,0,Math.max(0,h-156));
+      const title=surface.closest?.(".pg-pane")?.querySelector(".pg-head h2");
+      const titleEnd=title?title.getBoundingClientRect().bottom-surface.getBoundingClientRect().top:48;
+      const pad=Math.max(10,w*.025),upper=titleEnd+pad,lower=h-inset-pad;
+      const [x,y,width,height]=d.rect;
+      const z=clamp(Math.min((w-2*pad)/(width*1.18),Math.max(32,lower-upper)/(height*1.18))/fit,1,zoomLimit(x+width/2,y+height/2,false));
+      const visibleMid=(upper+lower)/2;
+      pose(x+width/2,y+height/2+(h/2-visibleMid)/(z*fit),z,animated?375:0);
+    }
+    function sync(s) {
+      const values=new Map(s.resources.map(r=>[r.id,r])),get=id=>values.get(id)?.owned||0;
+      const unlocked=districts.map((d,i)=>{const pair=s.pairs.find(p=>p.id===d.id);
+        if(!pair?.unlocked)return null;
+        const total=pair.resourceIDs.reduce((n,id)=>n+get(id),0);return {index:i,tier:total>=1000?4:total>=100?3:total>=10?2:1};}).filter(Boolean);
+      const bought=id=>values.get(id)?.purchasedThisRun??get(id);
+      const next=unlocked.length?unlocked[unlocked.length-1].index+1:0;
+      if(next!==stage){
+        stage=next;terrain.dataset.stage=String(stage);terrain.src=window.duoArt("art/world-"+String(stage).padStart(2,"0")+".webp");
+        detailSources=window.DuoWorldDetails.filter(part=>part.stage<=stage);
+        for(const [part,tile] of detailImages)if(part.stage>stage){tile.remove();detailImages.delete(part);}
+        positionGround();
+      }
+      const key=unlocked.map(g=>g.index).join(",");
+      if(groupKey!==key){
+        groupKey=key;halos.textContent="";hits.textContent="";
+        for(const g of unlocked){
+          const d=districts[g.index],[x,y,width,height]=d.glow,[hx,hy,hw,hh]=d.rect;
+          const halo=new Image();halo.src=window.duoArt("art/map/glow-"+d.id+".webp");halo.alt="";
+          Object.assign(halo.style,{left:x+"px",top:y+"px",width:width+"px",height:height+"px"});halos.append(halo);
+          const button=document.createElement("button");button.className="wm-target";button.dataset.index=g.index;
+          button.setAttribute("aria-label",d.name);Object.assign(button.style,{left:hx+"px",top:hy+"px",width:hw+"px",height:hh+"px"});
+          button.addEventListener("click",ev=>{if(ev.detail===0)onDistrict(g.index);});hits.append(button);
+        }
+      }
+      groups=unlocked;
+      const bits=get("autoclick");if(bits!==bitCount){
+        bitCount=bits; const extra=Math.max(0,bits-1250);
+        rings=colors.map((_,i)=>makeRing(Math.min(250,Math.max(0,bits-i*250))+Math.floor(extra/5)+(i<extra%5?1:0),i));
+      }
+      syncMachines(bought);
+      syncAppearance();
+      residents.sync(s);redraw();
+    }
+    function point(e){const r=surface.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top};}
+    function zoomAt(factor,from,to){
+      const bx=(from.x-ox)/scale,by=(from.y-oy)/scale;
+      const limit=zoomLimit(bx,by,true);
+      // Panning out of a high-detail district must not make the camera jump.
+      zoom=clamp(zoom*factor,1,Math.max(zoom,limit));
+      cx=bx-(to.x-w/2)/(fit*zoom);cy=by-(to.y-h/2)/(fit*zoom);geometry();redraw();
+    }
+    let moved=false,start=null;
+    const dist=a=>Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y),mid=a=>({x:(a[0].x+a[1].x)/2,y:(a[0].y+a[1].y)/2});
+    listen(surface,"pointerdown",e=>{
+      if(focus!==null||e.button!==0)return;tween=null;const p=point(e);if(!pointers.size){moved=false;start=p;}else moved=true;
+      pointers.set(e.pointerId,p);surface.setPointerCapture(e.pointerId);
+    });
+    listen(surface,"pointermove",e=>{
+      if(!pointers.has(e.pointerId))return;
+      const prevPoints=Array.from(pointers.values()),prev=pointers.get(e.pointerId),p=point(e);pointers.set(e.pointerId,p);
+      if(Math.hypot(p.x-start.x,p.y-start.y)>6)moved=true;
+      if(!moved)return;
+      if(pointers.size===2){const pts=Array.from(pointers.values());zoomAt(dist(pts)/Math.max(1,dist(prevPoints)),mid(prevPoints),mid(pts));}
+      else if(pointers.size===1){cx-=(p.x-prev.x)/scale;cy-=(p.y-prev.y)/scale;geometry();redraw();}
+    });
+    function finish(e){
+      if(!pointers.delete(e.pointerId)||moved||e.type!=="pointerup")return;
+      const p=point(e),x=(p.x-ox)/scale,y=(p.y-oy)/scale;
+      for(let k=groups.length-1;k>=0;k--){const index=groups[k].index,[a,b,c,d]=districts[index].rect;
+        if(x>=a&&x<=a+c&&y>=b&&y<=b+d){onDistrict(index);break;}}
+    }
+    listen(surface,"pointerup",finish);listen(surface,"pointercancel",finish);
+    listen(window,"duoappearancechange",syncAppearance);
+    listen(surface,"wheel",e=>{if(focus!==null)return;e.preventDefault();tween=null;const p=point(e);zoomAt(Math.exp(-e.deltaY*.002),p,p);},{passive:false});
+    function sleep(value){if(!!value===paused)return;paused=!!value;if(paused){cancelAnimationFrame(raf);raf=0;prev=0;}else redraw();}
+    listen(document,"visibilitychange",()=>{prev=0;if(document.hidden){cancelAnimationFrame(raf);raf=0;}else redraw();});
+    const obs=new ResizeObserver(resize);obs.observe(surface);if(districtPanel)obs.observe(districtPanel);resize();
+    return {sync,select,reset,sleep, close(){closed=true;cancelAnimationFrame(raf);obs.disconnect();cleanup.forEach(fn=>fn());residents.close();images.clear();}};
+  }
+  return {create,districts,size:[W,H]};
+})();
+
+;
+// ResidentsView and its shelves use the same owned resources and production as the shop.
+window.DuoResidents = (() => {
+  "use strict";
+  const {exact,rate}=window.IntegralNumbers;
+  let observed=null, observer=null;
+  const escape=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const number=(n,format=exact)=>escape(format(n));
+  function symbol(name){
+    const shapes={
+      bit:'<path d="m13 4-4 24m13-24-4 24M5 12h22M4 20h22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>',
+      team:'<g fill="currentColor"><circle cx="11.4" cy="10.3" r="4.9"/><circle cx="23.2" cy="11.4" r="3.9"/><path d="M1.9 26c0-6 3.9-9.3 9.5-9.3s9.5 3.3 9.5 9.3Zm17.5-7.8c1.1-.6 2.3-.9 3.8-.9 4.6 0 7.1 3.4 7.1 7.7h-7.6c-.2-2.6-1.4-5.1-3.3-6.8Z"/></g>'
+    };
+    return '<svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">'+shapes[name]+'</svg>';
+  }
+  function empty(title,text,icon){
+    return '<div class="rs-empty">'+symbol(icon)+'<h4>'+title+'</h4><p>'+text+'</p></div>';
+  }
+  function laboratory(s,portrait){
+    const owned=s.resources.filter(r=>r.owned>0);
+    let html='<div class="rs-summary"><h4>Всего в работе</h4><strong>'+number(s.totalHelpers)+'</strong></div>';
+    if(!owned.length)return html+empty("Большие открытия начинаются с малого","Накопите 15 интегралов и купите первый бит информации.","bit");
+    const strips=owned.map(r=>{
+      const id=escape(r.id),name=escape(r.name),count=number(r.owned);
+      const art=escape(window.duoArt('art/residents/'+r.id+'.jpg'));
+      return '<li class="rs-strip" data-resident="'+id+'">'+
+        '<img class="rs-panorama" src="'+art+'" alt="" loading="lazy" decoding="async">'+
+        '<h5>'+name+'<span class="rs-accessible">, '+count+' в работе</span></h5>'+
+        '<div class="rs-shelf" data-count="'+r.owned+'" aria-hidden="true"><div class="rs-figures">'+portrait(s,r)+'</div><b class="rs-rest" hidden></b></div></li>';
+    }).join("");
+    html+='<ul class="rs-grid rs-strips">'+strips+'</ul>';
+    if(owned.length===1 && owned[0].id==="autoclick")html+='<p class="rs-bit-note">'+symbol("bit")+'Биты информации работают вокруг интеграла</p>';
+    return html;
+  }
+  function gain(value){
+    if(value===0)return '0';
+    return value<0.01?'&lt;0,01':'+'+number(value,rate);
+  }
+  function team(s,portrait){
+    const byID=new Map(s.resources.filter(r=>r.owned>0).map(r=>[r.id,r]));
+    const pairs=s.pairs.filter(p=>p.matchedCount>0 && p.resourceIDs.every(id=>byID.has(id)));
+    let html='<div class="rs-summary rs-team-total"><h4>Общий прирост производства</h4>'+
+      '<strong class="rs-total-values"><span class="rs-total-percent">'+gain(s.teamGainFraction*100)+'%</span> '+
+      '<span class="rs-total-rate">'+gain(s.teamGainCps)+' ∫/с</span></strong>';
+    if(s.teamResearchFraction>0)html+='<p class="rs-team-research">Командные исследования дают '+gain(s.teamResearchFraction*100)+'% ко всему производству</p>';
+    html+='</div>';
+    if(!pairs.length)return html+empty("Вместе — сильнее","Совместный проект открывается, когда у вас есть оба ресурса пары.","team");
+    html+='<h4 class="rs-section-title">Совместные проекты</h4><ul class="rs-grid rs-team-list">';
+    for(const pair of pairs){
+      html+='<li class="rs-project" data-pair="'+escape(pair.id)+'"><div class="rs-project-line">'+
+        '<h5>'+escape(pair.name)+'</h5><strong class="rs-pair-bonus">+'+number(pair.bonusFraction*100)+'%</strong></div>'+
+        '<div class="rs-project-metrics"><span class="rs-pair-members"><span class="rs-pair-art" aria-hidden="true">'+
+        pair.resourceIDs.map(id=>portrait(s,byID.get(id))).join("")+'</span>'+
+        '<span class="rs-pair-count">Пар: '+number(pair.matchedCount)+'</span></span>'+
+        '<strong class="rs-pair-rate">+'+number(pair.extraCps,rate)+' ∫/с</strong></div></li>';
+    }
+    return html+'</ul>';
+  }
+  function render(s,tab,portrait){
+    const lab=tab!=="team";
+    return '<section class="rs-dialog" role="dialog" aria-modal="true" aria-labelledby="rs-title"><header class="rs-heading"><h3 id="rs-title">Жители</h3>'+
+      '<button type="button" class="rs-close pg-close nav-control" data-page-action="close" aria-label="Закрыть список жителей"><svg class="sheet-close-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M5 5 19 19M19 5 5 19"/></svg></button></header>'+
+      '<div class="rs-tab-wrap"><div class="rs-tabs" role="group" aria-label="Раздел жителей">'+
+      [["lab","Лаборатория"],["team","Сила команды"]].map(([key,label])=>'<button data-page-action="residents-tab" data-key="'+key+'" aria-pressed="'+(key===(lab?"lab":"team"))+'" aria-controls="rs-body">'+label+'</button>').join("")+
+      '</div></div><div id="rs-body" class="rs-scroll" data-section="'+(lab?"lab":"team")+'" role="region" aria-label="'+(lab?"Лаборатория":"Сила команды")+'"><div class="rs-content">'+
+      (lab?laboratory(s,portrait):team(s,portrait))+'</div></div></section>';
+  }
+  function fitShelves(scope){
+    for(const shelf of scope.querySelectorAll(".rs-shelf")){
+      const figures=shelf.firstElementChild, source=figures.firstElementChild, badge=shelf.lastElementChild;
+      const width=shelf.clientWidth, image=source.getBoundingClientRect().width, step=parseFloat(getComputedStyle(figures).gridAutoColumns);
+      if(!width||!image||!step)continue;
+      const count=Number(shelf.dataset.count);
+      const capacity=available=>Math.max(1,Math.floor((available-Math.max(0,image-step))/step));
+      let shown=Math.min(count,capacity(width));
+      if(shown<count){
+        // Reserve the measured width of the suffix, including its Russian digit grouping.
+        badge.hidden=false;badge.textContent="+"+exact(count-shown);
+        const gap=parseFloat(getComputedStyle(shelf).columnGap)||0;
+        shown=Math.min(shown,capacity(width-Math.max(step*48/36,badge.offsetWidth+gap)));
+        badge.textContent="+"+exact(count-shown);
+        // Crossing 9 → 10 or 99 → 100 can widen the suffix by a digit.
+        shown=Math.min(shown,capacity(width-Math.max(step*48/36,badge.offsetWidth+gap)));
+        badge.textContent="+"+exact(count-shown);
+      }else badge.hidden=true;
+      while(figures.childElementCount<shown)figures.append(source.cloneNode(false));
+      while(figures.childElementCount>shown)figures.lastElementChild.remove();
+    }
+  }
+  function sync(scope){
+    fitShelves(scope);
+    if(observed===scope)return;
+    disconnect();
+    if(window.ResizeObserver){
+      observed=scope;
+      observer=new ResizeObserver(()=>fitShelves(scope));observer.observe(scope);
+    }
+  }
+  function disconnect(){if(observer)observer.disconnect();observer=null;observed=null;}
+  return Object.freeze({render,sync,disconnect});
+})();
+
+;
+// Resource catalogue, research and the eight districts of the original city.
+(() => {
+  "use strict";
+  const districts = [
+    ["Школа","abacus","algorithm",119,157,254,230],
+    ["Университет","calculator","neuron",462,139,318,216],
+    ["Академия наук","quantum","singularity",806,120,249,289],
+    ["Исследовательский центр","dimension","universe",794,446,269,179],
+    ["Вычислительный центр","multiverse","superintelligence",108,409,230,184],
+    ["Наукоград","automaton","navigator",129,635,408,251],
+    ["Ускорительный комплекс","chronologist","oracle",608,948,402,197],
+    ["Энергетическая станция","architect","nanoforge",794,649,246,125]
+  ];
+  const districtIDs = ["school","university","academy","research","computing","science-city","accelerator","energy"];
+  let map=null, mapNativePaused=false, seenObserver=null, seenTimers=new Map(), worldSignature="", residentsTab="lab";
+  const fmt=IntegralNumbers.exact, catalog=IntegralNumbers.catalog, rate=IntegralNumbers.rate;
+  const smallGain=new Intl.NumberFormat("ru-RU",{maximumSignificantDigits:2});
+  function art(type, i) { return window.duoArt("art/" + type + "-" + String(i).padStart(2, "0") + ".webp"); }
+  function esc(s) { return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+  let resourceEntries=[], prestigeEntry=null;
+  let section, pane, list, details, balance, quantity = 1, selected = null, expanded = new Set(), signature, detailSignature;
+  const idAttr = (action,id) => 'data-page-action="'+action+'" data-key="'+esc(id)+'"';
+  function copyChanged(el, value) { if(el && el.textContent !== value) el.textContent=value; }
+  function updateBalance(value){
+    if(!balance || value==null)return;
+    // Break between thousands groups when a late-game amount needs several lines.
+    const amount=fmt(value).replace(/[\u00a0\u202f]/g," ")+" ∫";
+    const text=balance.firstChild;
+    if(!text)balance.textContent=amount;
+    else if(text.data!==amount)text.data=amount;
+  }
+  function resourceImage(s,r,expose=true) {
+    const i=s.resources.findIndex(v=>v.id===r.id);
+    return expose && i>=0 ? '<img class="pg-portrait" alt="" src="'+art("resource",i)+'">' : '<span class="pg-unknown" aria-hidden="true">?</span>';
+  }
+  function buyInfo(r,s) {
+    const limit=r.maximumCount-r.owned, qty=Economy.quantity(r.id,quantity===0 ? 0 : Math.min(limit,quantity));
+    const nominal=quantity===0 ? Math.max(1,qty) : Math.min(limit,quantity);
+    const cost=nominal>0 ? Economy.price(r.id,nominal) : Infinity;
+    return {cost,nominal,allowed:limit>0 && r.unlocked && s.balance>=cost && qty>0};
+  }
+  function resourceRow(s,r,index) {
+      const b=buyInfo(r,s), name=r.discovered?r.name:"Неизвестный ресурс", previous=s.resources[index-1];
+      const requirement=!r.unlocked ? (previous?.discovered ? "Сначала получите: "+previous.name : "Сначала откройте предыдущий ресурс") : "";
+      const description=requirement || (r.discovered? "+"+catalog(r.baseCps)+" ∫/с · базовая скорость" :
+        "Неизвестный ресурс");
+      const color=r.discovered?["#284052","#244637","#2b365e","#60482b","#173f4a","#3b3158","#45284d","#293f66","#273651","#512f45","#205257"][index%11]:"#25313a";
+      return '<article class="pg-resource pattern-'+index%3+' '+(b.allowed?"pg-ready":"")+'" data-row="'+r.id+'" style="--resource-color:'+color+'">'+
+        '<div class="pg-resource-heading"><strong>'+esc(r.discovered?r.name:"???")+'</strong><button class="pg-info" '+idAttr("resource",r.id)+' aria-label="Описание: '+esc(name)+'">ⓘ</button></div>'+
+        '<button class="pg-buy" '+idAttr("buy",r.id)+(b.allowed?'':' disabled')+' aria-label="Купить '+esc(name)+'">'+
+        '<span class="pg-art-box">'+resourceImage(s,r,r.discovered)+(r.unseen?'<b class="pg-new">!</b>':'')+'</span>'+
+        '<span class="pg-resource-copy"><small>'+esc(description)+'</small></span>'+
+        '<span class="pg-resource-facts"><span>'+fmt(r.owned)+' в работе</span><b>'+ (r.owned>=r.maximumCount?"MAX":'×'+fmt(b.nominal))+'</b></span>'+
+        '<em class="pg-resource-price">'+(r.owned>=r.maximumCount?"Лимит достигнут":catalog(b.cost)+' ∫')+'</em></button></article>';
+  }
+  function prestigeRow(s){
+    return '<button class="pg-resource pg-blackhole '+(s.canPrestige?'pg-ready':'')+'" data-page-action="prestige"><span class="pg-unknown">'+(s.prestigeDiscovered?'◉':'?')+'</span><span><strong>'+(s.prestigeDiscovered?'Чёрная дыра':'???')+'</strong><small>'+(s.prestigeDiscovered?'Цена перехода':'Сначала откройте предыдущий ресурс')+'</small><em>'+IntegralNumbers.prestigePrice+' ∫</em><small>Подробнее ›</small></span></button>';
+  }
+  // The shop is a stable list: purchases change numbers, thresholds change
+  // button state, and a discovery replaces just one hidden portrait.
+  function cacheEntry(row,r) {
+    return {row, button:row.querySelector(".pg-buy"), info:row.querySelector(".pg-info"),
+      strong:row.querySelector(".pg-resource-heading strong"), summary:row.querySelector(".pg-resource-copy small"),
+      art:row.querySelector(".pg-art-box"), owned:row.querySelector(".pg-resource-facts span"),
+      qty:row.querySelector(".pg-resource-facts b"), cost:row.querySelector(".pg-resource-price"),
+      discovered:r.discovered, staticKey:null, dynamicKey:null, badge:r.unseen};
+  }
+  function updateResources(s){
+    let watch=false;
+    if(!resourceEntries.length) {
+      list.innerHTML=s.resources.map((r,i)=>resourceRow(s,r,i)).join("")+prestigeRow(s);
+      resourceEntries=s.resources.map((r,i)=>cacheEntry(list.children[i],r));
+      prestigeEntry={node:list.lastElementChild,shown:s.prestigeDiscovered};
+      watch=true;
+    }
+    s.resources.forEach((r,i)=>{
+      const ent=resourceEntries[i], b=buyInfo(r,s), previous=s.resources[i-1];
+      const fixed=[r.discovered,r.unlocked,!!previous?.discovered].join("|");
+      const dynamic=[r.owned,b.allowed,b.nominal,b.cost,r.unseen].join("|");
+      if(ent.staticKey!==fixed){
+        if(ent.staticKey!==null){
+          const tpl=document.createElement("template");tpl.innerHTML=resourceRow(s,r,i);
+          const next=tpl.content.firstElementChild;
+          copyChanged(ent.strong,next.querySelector(".pg-resource-heading strong").textContent);
+          copyChanged(ent.summary,next.querySelector(".pg-resource-copy small").textContent);
+          ent.info.setAttribute("aria-label",next.querySelector(".pg-info").getAttribute("aria-label"));
+          ent.button.setAttribute("aria-label",next.querySelector(".pg-buy").getAttribute("aria-label"));
+          ent.row.style.setProperty("--resource-color",next.style.getPropertyValue("--resource-color"));
+          if(ent.discovered!==r.discovered){
+            const nextArt=next.querySelector(".pg-art-box");
+            ent.art.replaceChildren(...Array.from(nextArt.childNodes));ent.discovered=r.discovered;
+            ent.badge=r.unseen;watch=true;
+          }
+        }
+        ent.staticKey=fixed;
+      }
+      if(ent.dynamicKey===dynamic)return;
+      ent.dynamicKey=dynamic;
+      ent.button.disabled=!b.allowed;ent.row.classList.toggle("pg-ready",b.allowed);
+      copyChanged(ent.owned,fmt(r.owned)+" в работе");
+      copyChanged(ent.qty,r.owned>=r.maximumCount?"MAX":"×"+fmt(b.nominal));
+      copyChanged(ent.cost,r.owned>=r.maximumCount?"Лимит достигнут":catalog(b.cost)+" ∫");
+      if(ent.badge!==r.unseen){
+        if(r.unseen){const n=document.createElement("b");n.className="pg-new";n.textContent="!";ent.art.append(n);}
+        else ent.art.querySelector(".pg-new")?.remove();
+        ent.badge=r.unseen;watch=true;
+      }
+    });
+    if(prestigeEntry.shown!==s.prestigeDiscovered) {
+      const tpl=document.createElement("template");tpl.innerHTML=prestigeRow(s);
+      prestigeEntry.node.replaceChildren(...Array.from(tpl.content.firstElementChild.childNodes));
+      prestigeEntry.shown=s.prestigeDiscovered;
+    }
+    prestigeEntry.node.classList.toggle("pg-ready",s.canPrestige);
+    if(watch)observeNew(s);
+
+  }
+  const labels={ready:"Можно изучить",upcoming:"Следующие улучшения",studied:"Изученные улучшения"};
+  // System-icon equivalents, built as vectors so every WebView uses the same shapes.
+  const researchIcons = {
+    sparkle:'<path fill="currentColor" stroke="none" d="M20 2c1.6 8.7 3.3 10.6 9 12-5.7 1.9-7.6 3.5-9 12-1.8-8.4-3.4-10.4-9-12 6-1.6 7.2-3.6 9-12ZM8 16c.9 4.7 1.7 6 5 7-3.3 1-4.2 2.2-5 7-.8-4.7-1.8-6-5-7 3.2-.9 4.2-2.2 5-7ZM7.5 2 9 6l3.8 1.5L9 9 7.5 13 6 9 2 7.5 6 6Z"/>',
+    hourglass:'<path d="M8 3h16M8 29h16M9 4c0 6 1.4 7.8 7 12-5.6 4.2-7 6.2-7 12m14-24c0 6-1.4 7.8-7 12 5.6 4.2 7 6.2 7 12"/><path fill="currentColor" stroke="none" d="m11 8 10 .1c-1.3 2.8-3.5 4.3-5 5.7-2.2-1.8-3.8-3.1-5-5.8Zm5 13a17 17 0 0 1 4.8 5h-9.6a17 17 0 0 1 4.8-5Z"/>',
+    seal:'<path fill="currentColor" stroke="none" d="m16 1 3.4 2.7 4.1-.3 1.7 3.9 3.7 2.1-.7 4.2 1.9 3.8-2.8 3.1-.5 4.2-4.1 1.2-2.5 3.5-4.1-1.1-4.1 1.1-2.5-3.5-4.1-1.2-.5-4.2-2.8-3.1 1.9-3.8-.7-4.2L7 7.3l1.7-3.9 4.1.3Z"/><path stroke="#091824" stroke-width="2.7" d="m9.6 16 4.4 4.6 8.4-10"/>',
+    pencil:'<circle cx="16" cy="16" r="13.4"/><path d="m9.2 26.6 1.8-10.9 5-8.5 4.9 8.5 1.8 11M11.2 15.9l4.8 2.3 4.8-2.3M16 18.2v10"/><path fill="currentColor" stroke="none" d="m14 11 2-3.5 2 3.5Z"/>',
+    hand:'<path fill="currentColor" stroke="none" d="m5.5 15.8 3.5 2.7v-8a2.2 2.2 0 0 1 4.4 0v4l.7-9.1a2.1 2.1 0 0 1 4.2.1V15l.7-6a2 2 0 0 1 4 .4v7l.8-4.7a1.8 1.8 0 0 1 3.6.5l-.8 10.9c-.3 4.4-2.8 7.1-7.1 7.1h-3c-2.8 0-4.4-1.7-6-3.9l-7.4-8.1c-1.7-2 .5-4.1 2.4-2.4Z"/><path d="M3 11c-.2-3.9 1.7-6.3 5.1-8"/>',
+    scope:'<circle cx="16" cy="16" r="10.8"/><path d="M16 1v7m0 16v7M1 16h7m16 0h7"/><circle cx="16" cy="16" r="1.55" fill="currentColor"/>',
+    points:'<path stroke-dasharray=".5 3.7" d="m6.6 23.6 8.3-16 10.9 15.7Zm0 0"/><g fill="currentColor"><circle cx="5.4" cy="25.3" r="3.1"/><circle cx="15.8" cy="5.1" r="3.1"/><circle cx="26.7" cy="25.3" r="3.1"/></g>',
+    bulb:'<path d="M11.8 22c-.5-4.3-4.7-5.2-4.7-11a8.9 8.9 0 1 1 17.8 0c0 5.4-4.3 7.1-4.7 11Zm.8 3.4h6.8m-5.9 3h5M2 13h2M4 4l2 2m22-2-2 2m2 7h2"/>',
+    atom:'<ellipse cx="16" cy="16" rx="14.4" ry="5.6"/><ellipse cx="16" cy="16" rx="14.4" ry="5.6" transform="rotate(60 16 16)"/><ellipse cx="16" cy="16" rx="14.4" ry="5.6" transform="rotate(120 16 16)"/><circle cx="16" cy="16" r="1.8" fill="currentColor"/>',
+    globe:'<circle cx="16" cy="16" r="13.3"/><ellipse cx="16" cy="16" rx="6" ry="13.3"/><path d="M3.2 16h25.6M5.4 9.2c7.1 2.6 14.6 2.6 21.2 0M5.4 22.8c7.1-2.6 14.6-2.6 21.2 0"/>',
+    hex:'<g fill="currentColor" stroke="none"><circle cx="16" cy="16" r="4.2"/><circle cx="16" cy="6.5" r="4.2"/><circle cx="16" cy="25.5" r="4.2"/><circle cx="7.8" cy="11.3" r="4.2"/><circle cx="7.8" cy="20.7" r="4.2"/><circle cx="24.2" cy="11.3" r="4.2"/><circle cx="24.2" cy="20.7" r="4.2"/></g>',
+    infinity:'<path stroke-width="3.5" d="M16 16c-3.2-4.3-5.2-6.6-8.2-6.6C.2 9.4.2 22.6 7.8 22.6c3.3 0 5.5-2.7 8.2-6.6s5.1-6.6 8.2-6.6c7.6 0 7.6 13.2 0 13.2-3.3 0-5.3-3-8.2-6.6Z"/>',
+    cap:'<path fill="currentColor" stroke="none" d="M.5 11.7 16 5l15.5 6.7L16 19Zm5.3 4.7L16 20.8l10.2-4.4v5.8c-6.1 6-14.1 6-20.4 0Z"/><path d="M30 12v12"/>',
+    team:'<g fill="currentColor" stroke="none"><circle cx="11.3" cy="10.2" r="4.8"/><circle cx="22.7" cy="11" r="4.2"/><path d="M1.7 25.8c0-6 4.5-9 9.6-9s9.6 3 9.6 9c0 .6-.5 1.1-1.1 1.1H2.8c-.6 0-1.1-.5-1.1-1.1Zm18-7.8c1-.6 2.3-.8 3.4-.8 4 0 7.9 2.9 7.9 7.6 0 .6-.5 1-1 1h-7.2c0-3.2-1.1-5.7-3.1-7.8Z"/></g>',
+    pair:'<g fill="currentColor" stroke="none"><circle cx="12.4" cy="11.2" r="3.5"/><circle cx="21" cy="11.8" r="3"/><path d="M5.5 23.8c0-4.3 2.9-7.1 7-7.1s7 2.8 7 7.1ZM18.5 17.4c3.8-1.7 8 .8 8 6.4H21c0-2.9-.8-4.9-2.5-6.4Z"/></g><path d="M5.3 5A17 17 0 0 0 3.6 24M26.7 5a17 17 0 0 1 1.7 19"/>',
+    chevron:'<path stroke-width="4.2" d="m11 6 10 10-10 10"/>',
+    close:'<circle cx="16" cy="16" r="14.2" fill="currentColor" stroke="none"/><path d="m11.5 11.5 9 9m0-9-9 9" stroke="#091824" stroke-width="2.6"/>'
+  };
+  const sectionIcon={ready:"sparkle",upcoming:"hourglass",studied:"seal"};
+  const tierIcon=["cap","sparkle","scope","points","bulb","atom","cap","globe","hex","infinity"];
+  const studyPalette=["#284052","#244637","#2b365e","#60482b","#173f4a","#3b3158","#45284d","#293f66","#273651","#512f45","#205257"];
+  // Each icon paints in its own viewport. Shared SVG <use> instances corrupt
+  // large scroll-layer raster tiles on the Station's Android WebView.
+  function icon(key,css=""){
+    return '<svg class="pg-icon '+css+'" data-research-icon="'+key+'" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'+researchIcons[key]+'</svg>';
+  }
+  function tile(s,item,group){
+    const pair=item.pairID && s.pairs.find(p=>p.id===item.pairID);
+    const click=item.target==="click", ids=pair?pair.resourceIDs:[click?"autoclick":item.target];
+    const symbol=pair?"pair":item.teamwork?"team":click?(item.productionShare?"hand":"pencil"):tierIcon[Number(item.id.split("-").pop())]||"cap";
+    const mini=ids.map(id=>{const r=s.resources.find(x=>x.id===id);return r?resourceImage(s,r):"";}).join("");
+    return '<span class="pg-tile pg-tile-'+group+'" aria-hidden="true">'+icon(symbol,"pg-study-symbol")+'<span class="pg-mini '+(pair?"pair":click?"click":"")+'">'+mini+'</span>'+(item.studied?icon("seal","pg-studied-seal"):"")+'</span>';
+  }
+  function effect(item){
+    if(item.pairID)return "Усиливает бонус пары";
+    if(item.teamwork)return "Усиливает всю лабораторию";
+    if(item.productionShare)return "+"+rate(item.productionShare*100)+"% от ∫/с за клик";
+    return (item.target==="click"?"Сила клика ×":"Доход ресурса ×")+rate(item.multiplier);
+  }
+  function researchRows(s,onlyGroup) {
+    const groups={ready:[],upcoming:[],studied:[]};
+    for(const item of s.research){
+      if(item.visible||item.studied)groups[item.studied?"studied":item.canBuy?"ready":"upcoming"].push(item);
+    }
+    const order=new Map(s.resources.map((r,i)=>[r.id,i]));
+    const pairs=new Map(s.pairs.map(p=>[p.id,Math.max(...p.resourceIDs.map(id=>order.get(id)))]));
+    const index=i=>i.target==="click"?-1:i.pairID?pairs.get(i.pairID):order.get(i.target);
+    const byPrice=(a,b)=>a.price-b.price || (a.id<b.id?-1:a.id>b.id?1:0);
+    const byResource=(a,b)=>index(a)-index(b)||a.requiredAmount-b.requiredAmount||byPrice(a,b);
+    return Object.entries(groups).filter(([key])=>!onlyGroup||onlyGroup.has(key)).map(([key,items])=>{
+      const open=key==="ready"||expanded.has(key), highlighted=key==="ready"&&items.length>0;
+      const heading=icon(sectionIcon[key],"pg-group-symbol")+'<strong>'+labels[key]+'</strong><span class="pg-count">'+items.length+'</span>';
+      let contents="";
+      if(open && !items.length){
+        const empty=key==="studied"?"Пока нет изученных улучшений.":key==="upcoming"?"Следующих улучшений пока нет.":!groups.upcoming.length?"Все открытые улучшения изучены.":
+          s.clicks<25&&!groups.studied.length?"Чтобы изучить «Острый карандаш», нажмите на интеграл 25 раз и накопите 100 ∫.":"Условия открытия и цены можно посмотреть в следующих улучшениях.";
+        contents='<p class="pg-note">'+empty+'</p>';
+      }else if(open){
+        const card=key==="ready";
+        const buttons=items.sort(card?byPrice:byResource).map(item=>{
+          const price=catalog(item.price)+" ∫", badge=tile(s,item,key);
+          const attrs=idAttr("research",item.id)+' data-research-layout="'+(card?"card":"tile")+'" aria-pressed="'+(selected?.type==="research"&&selected.key===item.id)+'" aria-label="'+esc(item.name+". "+(item.studied?"Изучено":"Цена "+price))+'" title="'+esc(item.name)+'"';
+          if(!card)return '<button '+attrs+'>'+badge+'</button>';
+          const p=item.pairID&&s.pairs.find(p=>p.id===item.pairID);
+          const background=order.get(p?p.resourceIDs[0]:item.target)||0;
+          return '<button '+attrs+' class="pg-study-card pattern-'+background%3+'" style="--resource-color:'+studyPalette[background%studyPalette.length]+'">'+badge+
+            '<span class="pg-study-copy"><strong>'+esc(item.name)+'</strong><small>'+esc(effect(item))+'</small><em>'+esc(price)+'</em></span></button>';
+        }).join("");
+        contents='<div class="pg-research-items '+(card?"pg-available":"pg-tiles")+'">'+buttons+'</div>';
+      }
+      return '<section class="pg-group '+(highlighted?'highlighted':'')+'" data-group="'+key+'"><div class="pg-group-header">'+(key==="ready"?heading:
+        '<button '+idAttr("expand",key)+' aria-expanded="'+open+'">'+heading+icon("chevron","pg-chevron")+'</button>')+'</div>'+contents+'</section>';
+    }).join("");
+  }
+  function mapIcon(path){
+    return '<svg class="pg-map-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="'+path+'"/></svg>';
+  }
+  function buildWorld(){
+    const places=DuoWorldMap.districts.map((district,index)=>{
+      const [x,y,w,h]=district.rect, [atlasWidth,atlasHeight]=DuoWorldMap.size;
+      // Frame the same painted building as the map in a 4:3 thumbnail.
+      const width=Math.max(w,h*4/3)*1.16,height=width*3/4;
+      const left=-(x+(w-width)/2)/width*100,top=-(y+(h-height)/2)/height*100;
+      const crop='width:'+(atlasWidth/width*100)+'%;height:'+(atlasHeight/height*100)+'%;left:'+left+'%;top:'+top+'%';
+      return '<button hidden class="pg-place" '+idAttr("district",index)+'><span aria-hidden="true" class="pg-place-image"><img alt="" draggable="false" loading="lazy" style="'+crop+'"></span><strong>'+
+        esc(district.name)+'</strong><b class="pg-chevron" aria-hidden="true">›</b></button>';
+    }).join("");
+    list.innerHTML='<div class="pg-map-view"></div><div class="pg-city-footer"><strong>Открыто мест <b></b></strong><button class="pg-map-overview nav-control" aria-label="Показать всю карту" data-page-action="overview">'+mapIcon('M4 20 20 4M4 13v7h7M13 4h7v7')+'</button></div>'+
+      '<nav class="pg-places" aria-label="Районы города"><div class="pg-places-head"><h3>Районы города</h3><span class="pg-places-count"></span></div>'+
+      '<div class="pg-place-scroll"><div class="pg-place-list">'+places+'</div><div class="pg-place-start"><p class="pg-place-empty">Пригласите жителя из раздела «Ресурсы», чтобы открыть первый район.</p>'+
+      '<button class="nav-control" data-page-action="show-resources">К ресурсам</button></div></div></nav>';
+    map=DuoWorldMap.create(list.firstElementChild,(i)=>openDetail("district",String(i)));worldSignature="";
+  }
+  function updateWorld(s){
+    if(!map)buildWorld();
+    const key=s.resources.map(r=>r.owned+":"+r.purchasedThisRun).join(",")+(document.getElementById("integral-button")?.dataset.skin||"")+(window.Appearance?.selection?.().themes||"");
+    if(key!==worldSignature){
+      map.sync(s);worldSignature=key;
+      const places=list.querySelector(".pg-places"),open=new Set(s.pairs.filter(p=>p.unlocked).map(p=>p.id));
+      const count=open.size+" из "+DuoWorldMap.districts.length;
+      copyChanged(list.querySelector(".pg-city-footer b"),count);
+      copyChanged(places.querySelector(".pg-places-count"),count);
+      places.querySelector(".pg-place-start").hidden=open.size>0;
+      places.querySelector(".pg-place-list").hidden=open.size===0;
+      for(const button of places.querySelectorAll(".pg-place")){
+        button.hidden=!open.has(DuoWorldMap.districts[Number(button.dataset.key)].id);
+      }
+      const stage=list.querySelector(".wm-terrain").dataset.stage;
+      if(places.dataset.stage!==stage){
+        places.dataset.stage=stage;
+        const atlas=list.querySelector(".wm-terrain").src;
+        for(const image of places.querySelectorAll(".pg-place-image img"))image.src=atlas;
+      }
+    }
+    pauseWorld();
+  }
+  function pauseWorld(){map?.sleep(mapNativePaused || !!window.App?.sheet || selected?.type==="residents");}
+  window.addEventListener("duonavigation",pauseWorld);
+  window.addEventListener("duonavigation",updateDistrictButtons);
+  document.addEventListener("visibilitychange",updateDistrictButtons);
+  window.addEventListener("duopause",()=>{mapNativePaused=true;pauseWorld();updateDistrictButtons();});
+  window.addEventListener("duoresume",()=>{mapNativePaused=false;pauseWorld();updateDistrictButtons();});
+  function dw(label,value){return '<div><small>'+label+'</small><strong>'+esc(value)+'</strong></div>';}
+  function requirement(item,s) {
+    if(item.unlocked||item.studied)return "";
+    if(item.target==="click")return "Нужно нажатий: "+fmt(item.requiredAmount);
+    const pair=item.pairID && s.pairs.find(p=>p.id===item.pairID);
+    const names=(pair?pair.resourceIDs:[item.target]).map(id=>s.resources.find(r=>r.id===id)?.name||"помощников");
+    return "Нужно: "+names.map(name=>fmt(item.requiredAmount)+" × "+name).join(" и ");
+  }
+  function researchDetail(s,item){
+    const group=item.studied?"studied":item.canBuy?"ready":"upcoming";
+    const action=item.studied?"Изучено":item.canBuy?"Изучить":item.unlocked?"Копим интегралы":"Пока закрыто";
+    const need=requirement(item,s);
+    return '<section class="pg-study-panel" data-state="'+group+'" aria-labelledby="pg-dialog-title"><div class="pg-study-body"><div class="pg-study-panel-heading">'+tile(s,item,group)+
+      '<h3 id="pg-dialog-title">'+esc(item.name)+'</h3><button class="pg-close nav-control" data-page-action="close" aria-label="Закрыть описание улучшения">×</button></div>'+
+      '<p>'+esc(item.description)+'</p>'+(need?'<p class="pg-study-requirement">'+esc(need)+'</p>':'')+'</div>'+
+      '<button class="pg-study-action" '+idAttr("study",item.id)+(item.canBuy?'':' disabled')+'><span>'+action+'</span>'+
+      (item.studied?'':'<strong>'+esc(catalog(item.price))+' ∫</strong>')+'</button></section>';
+  }
+  function districtQuests(key){
+    const district=districtIDs[Number(key)],active=Quests.active()?.definition;
+    return Quests.definitions.filter(q=>q.district===district && (q.id===active || Economy.owned(q.resource)>0));
+  }
+  let districtTimer=0;
+  function updateDistrictButtons(){
+    clearTimeout(districtTimer);districtTimer=0;
+    if(selected?.type!=="district" || !details?.isConnected || document.hidden || mapNativePaused || window.App?.sheet)return;
+    const now=Date.now();let next=Infinity;
+    for(const button of details.querySelectorAll(".pg-challenge")){
+      const {kind,retryAt,countdown}=Quests.status(button.dataset.key,now);
+      const disabled=kind!=="ready" && kind!=="active";
+      if(button.disabled!==disabled)button.disabled=disabled;
+      if(button.dataset.state!==kind)button.dataset.state=kind;
+      const status=kind==="cooldown"?"Новая попытка через "+countdown:
+        kind==="active"?"Продолжить ›":kind==="ready"?"Условия и награда ›":
+        kind==="busy"?"Сначала завершите текущее задание":"Нужен житель";
+      copyChanged(button.querySelector(".pg-challenge-status"),status);
+      if(kind==="cooldown"){
+        // Align the next tick with this particular attempt's wall-clock deadline.
+        const remaining=retryAt-now;
+        next=Math.min(next,retryAt-(Math.ceil(remaining/1000)-1)*1000);
+      }
+    }
+    if(Number.isFinite(next))districtTimer=setTimeout(updateDistrictButtons,Math.max(0,next-Date.now()));
+  }
+  function detailHTML(s,quests) {
+    if (!selected) return "";
+    const {type,key}=selected;
+    let title, body;
+    if(type==="resource"){
+      const r=s.resources.find(a=>a.id===key);
+      if(!r)return "";
+      const b=buyInfo(r,s);
+      title=r.discovered?r.name:"Неизвестный ресурс";
+      const req=!r.unlocked?s.resources[s.resources.indexOf(r)-1]:null;
+      const hint=req?(req.discovered?"Сначала получите: "+req.name:"Сначала откройте предыдущий ресурс"):"Название откроется, когда вы накопите "+catalog(r.basePrice)+" ∫.";
+      const studied=s.research.filter(i=>i.studied&&i.target===r.id);
+      body='<div class="pg-intro"><div class="pg-detail-portrait">'+resourceImage(s,r,r.discovered)+'</div><p>'+esc(r.discovered?r.description:hint)+'</p></div>'+
+        (r.discovered?'<div class="pg-detail-facts">'+dw("В работе",fmt(r.owned))+dw("Базовое производство",catalog(r.baseCps)+" ∫/с")+dw("Суммарно с улучшениями и парами",rate(r.production)+" ∫/с")+dw("Лимит ресурса",fmt(r.maximumCount))+(r.owned<r.maximumCount?dw("Следующая покупка",catalog(r.price)+" ∫"):'')+'</div><p>После 100 экземпляров цена растёт медленнее.</p><h4>Изученные улучшения</h4>'+(studied.length?studied.map(i=>'<p>✓ '+esc(i.name)+'</p>').join(""):'<p>Для этого ресурса пока нет изученных улучшений.</p>'):'')+
+        '<button class="pg-cta" '+idAttr("buy-one",r.id)+(r.canBuy?'':' disabled')+'>'+ (r.owned>=r.maximumCount?"Лимит достигнут":"Купить · "+catalog(r.price)+" ∫")+'</button>';
+    }else if(type==="research"){
+      const item=s.research.find(a=>a.id===key);
+      return item?researchDetail(s,item):"";
+    }else if(type==="residents"){
+      return DuoResidents.render(s,residentsTab,resourceImage);
+    }else if(type==="mystery"){
+      title="Неизвестный ресурс";body='<p>Сначала откройте предыдущий ресурс.</p>';
+    }else{
+      title="Задания";
+      body=quests.length?quests.map(q=>{
+        const r=s.resources.find(r=>r.id===q.resource);
+        return '<button class="pg-challenge" '+idAttr("quests",q.id)+'>'+resourceImage(s,r)+'<span><strong>'+esc(q.title)+'</strong><small>'+esc(q.subtitle)+'</small><b class="pg-challenge-status"></b></span></button>';
+      }).join(""):'<p>Пока нет доступных заданий.</p>';
+    }
+    const closeGlyph=type==="district"?mapIcon('M5 5 19 19M19 5 5 19'):'×';
+    return '<div class="pg-dialog" role="dialog" aria-modal="true" aria-labelledby="pg-dialog-title"><div class="pg-dialog-header"><h3 id="pg-dialog-title">'+esc(title)+'</h3>'+
+      '<button class="pg-close nav-control" data-page-action="close" aria-label="Закрыть">'+closeGlyph+'</button></div>'+body+'</div>';
+  }
+  let researchGroups=new Map();
+  function childKey(node){
+    return node.nodeType===1 && node.dataset?.pageAction ? node.dataset.pageAction+":"+(node.dataset.key||"") : null;
+  }
+  // Reuse the existing section and keyed actions. Keep the scroller, keyboard
+  // focus and visible artwork across balance-driven price threshold changes.
+  function patchNode(old,next){
+    if(!old||old.nodeType!==next.nodeType||old.nodeName!==next.nodeName){old?.replaceWith(next);return;}
+    if(next.nodeType!==1){if(old.data!==next.data)old.data=next.data;return;}
+    for(const a of Array.from(old.attributes))if(!next.hasAttribute(a.name))old.removeAttribute(a.name);
+    for(const a of next.attributes)if(old.getAttribute(a.name)!==a.value)old.setAttribute(a.name,a.value);
+    const keys=new Map();
+    for(const n of old.children){const key=childKey(n);if(key)keys.set(key,n);}
+    const desired=Array.from(next.childNodes);
+    for(let i=0;i<desired.length;i++){
+      const candidate=desired[i],current=old.childNodes[i],key=childKey(candidate);
+      if(!current){old.append(candidate);continue;}
+      if(key&&childKey(current)!==key){
+        const match=keys.get(key);
+        if(match){old.insertBefore(match,current);patchNode(match,candidate);}
+        else old.insertBefore(candidate,current);
+      }else patchNode(current,candidate);
+    }
+    while(old.childNodes.length>desired.length)old.lastChild.remove();
+  }
+  function updateResearch(s){
+    const keys={ready:[],upcoming:[],studied:[]};
+    for(const item of s.research){
+      if(!item.visible&&!item.studied)continue;
+      keys[item.studied?"studied":item.canBuy?"ready":"upcoming"].push(item.id+"."+Number(item.unlocked));
+    }
+    const changed=new Set();
+    for(const key of Object.keys(keys)){
+      const next=[keys[key].join("|"),expanded.has(key),key==="ready"&&s.clicks<25].join("/");
+      if(researchGroups.get(key)!==next){changed.add(key);researchGroups.set(key,next);}
+    }
+    if(!changed.size)return;
+    if(!list.childElementCount){list.innerHTML=researchRows(s);return;}
+    const focused=list.contains(document.activeElement) ? document.activeElement.closest("[data-page-action=research]") : null;
+    const tpl=document.createElement("template");tpl.innerHTML=researchRows(s,changed);
+    for(const next of Array.from(tpl.content.children)){
+      const old=list.querySelector('[data-group="'+next.dataset.group+'"]');
+      if(old)patchNode(old,next);else list.append(next);
+    }
+    // An upgrade can move to a different group when passive income makes it affordable.
+    if(focused && !focused.isConnected){
+      const id=focused.dataset.key;
+      const replacement=list.querySelector('[data-page-action="research"][data-key="'+id+'"]');
+      const item=s.research.find(i=>i.id===id);
+      const disclosure=item && list.querySelector('[data-page-action="expand"][data-key="'+(item.studied?"studied":"upcoming")+'"]');
+      (replacement||disclosure)?.focus({preventScroll:true});
+    }
+  }
+  function refresh(snapshot) {
+    if(!pane || !pane.isConnected || pane.parentElement.hidden) return;
+    const source=snapshot||Economy.snapshot();
+    const s=Object.create(source);
+    Object.defineProperty(s,"resources",{value:source.resources});
+    let research;
+    Object.defineProperty(s,"research",{get(){return research||(research=source.research);}});
+    if(balance)updateBalance(window.LiveCounters?.balance() ?? s.balance);
+    let current;
+    if(section==="resources")current=updateResources(s);
+    else if(section==="research")current=s.research.map(r=>(r.studied?3:r.canBuy?2:r.visible?1:0)).join("")+(s.clicks<25?"/hint":"");
+    else {updateWorld(s);current="world";}
+    if(section==="research" && current!==signature) {
+      updateResearch(s);
+    }
+    signature=current;
+    if(selected){
+      // An unrelated affordability crossing must not replace an open description.
+      let relevant="",quests;
+      if(selected.type==="resource"){
+        const r=s.resources.find(x=>x.id===selected.key);
+        if(r)relevant=[r.discovered,r.unlocked,r.owned,r.canBuy,r.price,r.production,s.researchCount,s.totalHelpers];
+      } else if(selected.type==="research"){
+        const item=s.research.find(x=>x.id===selected.key);
+        if(item)relevant=[item.unlocked,item.studied,item.canBuy];
+      } else if(selected.type==="district"){
+        quests=districtQuests(selected.key);
+        relevant=quests.map(q=>q.id);
+      } else if(selected.type==="residents"){
+        relevant=[residentsTab,s.totalHelpers,s.cps,s.researchCount];
+      }
+      const detailKey=[section,selected.type,selected.key,relevant].join("|");
+      if(detailKey===detailSignature){
+        if(quests)updateDistrictButtons();
+        return;
+      }
+      const next=detailHTML(s,quests);
+      if(quests)details.toggleAttribute("data-many-quests",quests.length>2);
+      if(!details.firstElementChild || !detailSignature)details.innerHTML=next;
+      else {
+        const tpl=document.createElement("template");tpl.innerHTML=next;
+        if(tpl.content.firstElementChild)patchNode(details.firstElementChild,tpl.content.firstElementChild);
+      }
+      if(selected.type==="residents")DuoResidents.sync(details);
+      detailSignature=detailKey;
+      if(quests)updateDistrictButtons();
+    }
+  }
+  function clearSeen(){
+    if(seenObserver)seenObserver.disconnect();seenObserver=null;seenTimers.forEach(clearTimeout);seenTimers.clear();
+  }
+  function observeNew(s){
+    clearSeen();if(!window.IntersectionObserver||!Economy.markSeen||!s.resources.some(r=>r.unseen))return;
+    seenObserver=new IntersectionObserver(entries=>entries.forEach(entry=>{
+      const id=entry.target.dataset.row;
+      clearTimeout(seenTimers.get(id));seenTimers.delete(id);
+      if(entry.intersectionRatio>=.7)seenTimers.set(id,setTimeout(()=>{if(section==="resources"&&!selected&&!document.hidden)Economy.markSeen(id);},1200));
+    }),{root:list,threshold:[.7]});
+    list.querySelectorAll(".pg-new").forEach(b=>seenObserver.observe(b.closest("[data-row]")));
+  }
+  function openDetail(type,key,trigger){
+    if(type==="residents"){residentsTab="lab";pane.querySelector(".pg-head")?.setAttribute("inert","");}
+    if(type==="research"){
+      const previous=list.querySelector('[data-page-action="research"][aria-pressed="true"]');
+      if(previous)previous.setAttribute("aria-pressed","false");
+      const current=list.querySelector('[data-page-action="research"][data-key="'+key+'"]');
+      if(current)current.setAttribute("aria-pressed","true");
+    }
+    selected={type,key,trigger};detailSignature=null;details.hidden=false;details.dataset.kind=type;
+    pane.dataset.detail=type;
+    if(type==="research")list.removeAttribute("inert");else list.setAttribute("inert","");
+    if(type==="resource")Economy.markSeen?.(key);
+    refresh();
+    if(type==="district"){
+      const idx=Number(key);copyChanged(pane.querySelector("h2"),districts[idx][0]);map.select(idx);
+    }
+    if(type!=="research")details.querySelector(".pg-close")?.focus({preventScroll:true});
+  }
+  function close() {
+    if(!selected || !details || !details.isConnected)return false;
+    clearTimeout(districtTimer);
+    const last=selected;
+    if(last.type==="residents"){DuoResidents.disconnect();pane.querySelector(".pg-head")?.removeAttribute("inert");}
+    selected=null;delete pane.dataset.detail;delete details.dataset.kind;if(map){map.reset();pauseWorld();copyChanged(pane.querySelector("h2"),"Научный город");}detailSignature=null;details.hidden=true;details.innerHTML="";
+    list.removeAttribute("inert");
+    const returnTargets={residents:".pg-citizens",district:'.wm-target[data-index="'+last.key+'"]',mystery:'[data-page-action="prestige"]'};
+    const button=last.trigger?.getClientRects().length ? last.trigger : pane.querySelector(returnTargets[last.type] || '[data-page-action="'+last.type+'"][data-key="'+last.key+'"]');
+    if(button){if(last.type==="research")button.setAttribute("aria-pressed","false");button.focus({preventScroll:true});}
+    return true;
+  }
+  function purchaseGain(before,after,button,event){
+    const perSecond=after.cps-before.cps;
+    const production=Number.isFinite(perSecond)&&perSecond>0;
+    const gain=production?perSecond:after.clickPower-before.clickPower;
+    if(!Number.isFinite(gain)||gain<=0)return;
+    const bounds=pane.getBoundingClientRect(),source=button.getBoundingClientRect();
+    const x=event.detail>0?event.clientX:source.left+source.width/2;
+    const y=event.detail>0?event.clientY:source.top+source.height/2;
+    const layer=pane.querySelector(".pg-purchase-gains");
+    if(layer.childElementCount>=10)layer.firstElementChild.remove();
+    const number=document.createElement("span");
+    number.className="fx-tap-value pg-purchase-gain";
+    number.textContent="+"+(gain<.01?smallGain.format(gain):rate(gain))+(production?" ∫/с":" ∫/клик");
+    number.style.setProperty("--gain-x",(x-bounds.left)+"px");
+    number.style.setProperty("--gain-y",(y-bounds.top)+"px");
+    layer.append(number);
+    setTimeout(()=>number.remove(),1650);
+  }
+  function handle(e){
+    const button=e.target.closest("[data-page-action]");
+    if(!button){
+      if(e.target===details)close();
+      else e.target.closest(".pg-resource-heading")?.parentElement?.querySelector(".pg-buy:not(:disabled)")?.click();
+      return;
+    }
+    if(button.disabled)return;
+    const key=button.dataset.key, action=button.dataset.pageAction;
+    if(action==="close"){ close();return; }
+    if(action==="overview"){map?.reset();return;}
+    if(action==="district"){openDetail("district",key,button);return;}
+    if(action==="show-resources"){window.App.route("resources");return;}
+    if(action==="quests"){
+      const kind=Quests.status(key)?.kind;
+      if(kind==="ready" || kind==="active")window.App?.openSheet?.("challenges",{districtID:key});
+      else updateDistrictButtons();
+      return;
+    }
+    if(action==="residents-tab"){
+      if(key!==residentsTab && (key==="team"||key==="lab")){
+        residentsTab=key;refresh();
+        const scroller=details.querySelector(".rs-scroll");if(scroller)scroller.scrollTop=0;
+      }
+      return;
+    }
+    if(action==="prestige"){
+      if(Economy.snapshot().prestigeDiscovered)window.Extras?.openPrestige?.();
+      else openDetail("mystery","");
+      return;
+    }
+    if(action==="expand"){
+      if(expanded.has(key))expanded.delete(key);else expanded.add(key);
+      signature=null;
+    }else if(action==="quantity"){
+      quantity=Number(key);signature=null;
+      pane.querySelectorAll("[data-page-action=quantity]").forEach(b=>b.setAttribute("aria-pressed",String(b===button)));
+    }else if(action==="buy" || action==="buy-one" || action==="study"){
+      const selectedResource=action==="buy" && Economy.snapshot().resources.find(r=>r.id===key);
+      const order=selectedResource && quantity!==0 ? Math.min(quantity,selectedResource.maximumCount-selectedResource.owned) : quantity;
+      const before=action==="study"?null:Economy.hud();
+      const success=action==="study"?Economy.study(key):Economy.buy(key,action==="buy-one"?1:order);
+      if(success) {
+        if(before)purchaseGain(before,Economy.hud(),button,e);
+        window.dispatchEvent(new Event("duocounterview"));
+        window.DuoAudio?.play("purchase");
+        if(selected)close();
+        if(action==="study"){
+          const message=pane.querySelector(".pg-feedback");
+          message.textContent="Улучшение изучено";
+          message.classList.add("pg-visible");clearTimeout(message._timer);
+          message._timer=setTimeout(()=>message.classList.remove("pg-visible"),1300);
+        }
+      }
+    }else{
+      openDetail(action,key);
+      return;
+    }
+    refresh();
+  }
+  function render(name, container){
+    clearTimeout(districtTimer);
+    if(selected?.type==="residents")DuoResidents.disconnect();
+    if(map)map.close();map=null;clearSeen();
+    if(pane)pane.removeEventListener("click",handle);
+    selected=null;signature=null;detailSignature=null;pane=null;balance=null;resourceEntries=[];prestigeEntry=null;researchGroups=new Map();
+    if(!container || !["resources","research","world"].includes(name))return;
+    section=name;
+    const title={resources:"Ресурсы",research:"Улучшения",world:"Научный город"}[section];
+    container.innerHTML='<section class="pg-pane pg-'+name+'"><div class="pg-head'+(name==="world"?'':' pg-catalog-head')+'"><h2>'+title+'</h2>'+
+      (name==="world"?'<button class="pg-citizens" data-page-action="residents">'+icon("team")+'Жители</button>':'<span class="pg-balance"></span>')+'</div><div class="pg-list"></div>'+
+      (name==="resources"?'<div class="pg-quantity"><strong>Размер покупки</strong><div>'+[1,50,100,0].map(n=>'<button '+idAttr("quantity",n)+' aria-pressed="'+(n===quantity)+'">'+(n?"×"+n:"MAX")+'</button>').join("")+'</div></div>':'')+
+      (name==="resources"?'<div class="pg-purchase-gains" aria-live="polite" aria-relevant="additions"></div>':'<div class="pg-feedback" role="status"></div>')+
+      '<div class="pg-overlay" hidden></div></section>';
+    pane=container.firstElementChild;list=pane.querySelector(".pg-list");details=pane.querySelector(".pg-overlay");balance=pane.querySelector(".pg-balance");
+    pane.addEventListener("click",handle);refresh();
+  }
+  window.Pages={render,refresh,updateBalance,back:close};
+})();
+
+;
+// Paint ambient laboratory effects behind the actual, independently visible button.
+window.ClickFX=(()=>{
+  'use strict';
+  const serif='Georgia,"Laboratory Serif","Times New Roman",serif';
+  const tau=Math.PI*2,rand=(lo,hi)=>lo+Math.random()*(hi-lo);
+  const formulae=['∫ x² dx','∫ sin x dx','∫ eˣ dx','∫ f(x) dx','∫₀¹ x dx','∫ cos x dx','∫ dx/x','∫ √x dx'];
+  const ringColors=['#ffe38a','#99e8ed','#ffba57','#bfc7ff','#b3f2c4'];
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)');
+  let scene,button,station,canvas,ctx,blueTile,bg,rays=[],rings=[],particles=[],rewards=[],sprites=[];
+  let w=0,h=0,cx=0,cy=0,r=0,u=1,geometry='',signature='',styleDirty=true,owned=0,cropTop=0,cropHeight=1,bgArt;
+  let requested=true,active=false,layout=0,frame=0,timer=0,elapsed=0,last=0,ambient=1.6,energy=0,speed=1,rainTime=0;
+  let budget=320000,hz=30,slowTime=0,fastTime=0,scheduledAt=0;
+  const scaled=document.createElement.bind(document,'canvas');
+  function bitmap(width,height){
+    const image=scaled();image.width=Math.max(1,Math.ceil(width));image.height=Math.max(1,Math.ceil(height));return image;
+  }
+  function ringCount(index,total){
+    const count=Math.min(2500,Math.max(0,Math.floor(total))),extra=Math.max(0,count-1250);
+    return Math.min(250,Math.max(0,count-index*250))+Math.floor(extra/5)+(index<extra%5?1:0);
+  }
+  function rebuildRings(force){
+    if(!r)return;
+    const side=2*(r+37*u);
+    for(let i=0;i<5;i++){
+      const count=ringCount(i,owned);
+      if(!count){rings.length=i;break;}
+      if(!force&&rings[i]&&rings[i].count===count)continue;
+      const image=bitmap(Math.min(side,640),Math.min(side,640)),c=image.getContext('2d');
+      c.scale(image.width/side,image.height/side);c.translate(side/2,side/2);
+      const radius=r+(7+6*i)*u,fs=Math.min(5.1*u,tau*radius/count*1.26);
+      c.fillStyle=ringColors[i];c.font='bold '+fs+'px '+serif;c.textAlign='center';c.textBaseline='middle';
+      for(let j=0;j<count;j++){c.save();c.rotate(-j*tau/count);c.fillText(String((j+i)%2),0,-radius);c.restore();}
+      rings[i]={count,image,side};
+    }
+  }
+  function textSprite(txt,font,color,stroke){
+    const tmp=bitmap(1,1),g=tmp.getContext('2d');g.font=font;
+    const width=Math.ceil(g.measureText(txt).width+8),height=42;
+    tmp.width=width*2;tmp.height=height*2;g.scale(2,2);g.font=font;g.fillStyle=color;
+    g.textAlign='center';g.textBaseline='middle';
+    if(stroke){g.strokeStyle=stroke;g.lineWidth=1.15;g.strokeText(txt,width/2,height/2);}
+    g.fillText(txt,width/2,height/2);
+    return {image:tmp,w:width,h:height};
+  }
+  function buildRays(){
+    const reach=Math.hypot(w,h)*1.15;
+    rays=[new Path2D(),new Path2D()];
+    for(let i=0;i<16;i++){
+      const a=i*tau/16,s=Math.sin(a),c=Math.cos(a),path=rays[i%2];
+      const root=r*.075,tip=reach*.075,lo=-r*.40,hi=-reach;
+      path.moveTo(-root*c-lo*s,-root*s+lo*c);path.lineTo(-tip*c-hi*s,-tip*s+hi*c);
+      path.lineTo(tip*c-hi*s,tip*s+hi*c);path.lineTo(root*c-lo*s,root*s+lo*c);path.closePath();
+    }
+  }
+  function buildStyle(){
+    const outer=station.getBoundingClientRect(),sr=scene.getBoundingClientRect(),st=getComputedStyle(station);
+    const top=sr.top-outer.top,left=sr.left-outer.left,rootFont=parseFloat(getComputedStyle(document.documentElement).fontSize)||16;
+    cropTop=Math.max(0,top/Math.max(1,outer.height));cropHeight=h/Math.max(1,outer.height);
+    const lab=st.getPropertyValue('--lab-theme').trim()||'#1a4761';
+    const opacity=Number(st.getPropertyValue('--texture-opacity').trim()||.54);
+    bgArt=station.querySelector('.ap-background');
+    const key=[canvas.width,canvas.height,top,left,outer.height,lab,opacity,blueTile.complete].join(':');
+    if(key===signature&&!styleDirty)return;
+    signature=key;styleDirty=false;
+    bg=bitmap(canvas.width,canvas.height);
+    const c=bg.getContext('2d',{alpha:false});c.scale(bg.width/w,bg.height/h);
+    c.fillStyle=lab;c.fillRect(0,0,w,h);
+    if(blueTile.complete&&blueTile.naturalWidth){
+      const tile=rootFont*37.5,offX=-(left%tile),offY=-(top%tile);
+      c.globalAlpha=opacity;
+      for(let y=offY;y<h;y+=tile)for(let x=offX;x<w;x+=tile)c.drawImage(blueTile,x,y,tile,tile);
+      c.globalAlpha=1;
+    }
+    const grad=c.createLinearGradient(0,-top,0,Math.max(1,outer.height)-top);
+    grad.addColorStop(0,'rgba(9,24,36,0)');grad.addColorStop(1,'rgba(9,24,36,.65)');
+    c.fillStyle=grad;c.fillRect(0,0,w,h);
+  }
+  function resizeSurface(){
+    const scale=Math.min(window.devicePixelRatio||1,Math.sqrt(budget/(w*h)));
+    canvas.width=Math.max(1,Math.ceil(w*scale));canvas.height=Math.max(1,Math.ceil(h*scale));
+    ctx.setTransform(canvas.width/w,0,0,canvas.height/h,0,0);styleDirty=true;
+  }
+  function measure(){
+    layout=0;if(!active||!ctx)return;
+    const sr=scene.getBoundingClientRect(),br=button.getBoundingClientRect(),size=button.offsetWidth;
+    if(!sr.width||!sr.height||!size)return;
+    const key=[sr.width,sr.height,br.left-sr.left,br.top-sr.top,size].join(':');
+    if(key!==geometry){
+      geometry=key;w=sr.width;h=sr.height;r=size/2;cx=br.left-sr.left+br.width/2;cy=br.top-sr.top+br.height/2;
+      u=Math.max(.65,Math.min(w/390,h/510,3.2));resizeSurface();rebuildRings(true);buildRays();
+    }
+    buildStyle();paint();wake();
+  }
+  function relayout(){if(active&&!layout)layout=requestAnimationFrame(measure);}
+  function particle(ambient,across=Math.random()){
+    if(!sprites.length)return;
+    const start=-rand(18,48)*u;
+    const margin=18*u,x=margin+across*Math.max(1,w-2*margin);
+    particles.push({sprite:sprites[Math.floor(Math.random()*sprites.length)],x,y:start,dx:rand(-24,24)*u,
+      angle:rand(-.22,.22),size:(ambient?rand(16,22):rand(19,29))*u/28,duration:ambient?rand(7,10):rand(3.8,5.6),age:0,alpha:ambient?.17:.46});
+  }
+  // Other pages share the home screen's cached equation sprites and have their own backdrop clock.
+  function paintAmbientEquations(context,width,height,seconds){
+    const size=Math.max(.55,Math.min(2.1,Math.min(width,height)/580));
+    context.save();
+    context.globalAlpha=.25;
+    sprites.forEach((sprite,index)=>{
+      const duration=15+index%4;
+      const phase=(seconds/duration+index*.618)%1;
+      const x=width*((index+.45)/sprites.length+.012*Math.sin(phase*tau+index));
+      const y=(height+sprite.h*size)*phase;
+      context.drawImage(sprite.image,x-sprite.w*size/2,y-sprite.h*size,sprite.w*size,sprite.h*size);
+    });
+    context.restore();
+  }
+  function paint(){
+    if(!bg||!ctx)return;
+    ctx.drawImage(bg,0,0,w,h);
+    if(bgArt&&!bgArt.hidden&&bgArt.width>0){
+      // The decor canvas spans the whole station. Map just the part behind the laboratory.
+      const sy=cropTop*bgArt.height,sh=Math.min(bgArt.height-sy,cropHeight*bgArt.height);
+      if(sh>0)ctx.drawImage(bgArt,0,sy,bgArt.width,sh,0,0,w,h);
+    }
+    ctx.save();ctx.translate(cx,cy);ctx.rotate(-elapsed*tau/95);
+    ctx.fillStyle='rgba(255,255,255,.065)';ctx.fill(rays[0]);ctx.fillStyle='rgba(255,255,255,.025)';ctx.fill(rays[1]);ctx.restore();
+    for(const p of particles){
+      const t=p.age/p.duration,y=p.y+(h+45*u-p.y)*t;
+      ctx.save();ctx.translate(p.x+p.dx*t,y);ctx.rotate(p.angle);ctx.globalAlpha=p.alpha*Math.min(1,p.age/.20,(p.duration-p.age)/.45);
+      const width=p.sprite.w*p.size,height=p.sprite.h*p.size;
+      ctx.drawImage(p.sprite.image,-width/2,-height/2,width,height);ctx.restore();
+    }
+    for(let i=0;i<rings.length;i++){const ring=rings[i];ctx.save();ctx.translate(cx,cy);ctx.rotate((i%2?-1:1)*elapsed*tau/150);ctx.drawImage(ring.image,-ring.side/2,-ring.side/2,ring.side,ring.side);ctx.restore();}
+    ctx.globalAlpha=1;
+  }
+  function advance(list,dt){
+    let n=0;for(const p of list){p.age+=dt;if(p.age<p.duration)list[n++]=p;}list.length=n;
+  }
+  function adapt(now,dt){
+    // Compare compositor lateness with the actual scheduled wake-up (not idle
+    // sampling frequency). Hysteresis avoids a feedback oscillation on emulators.
+    const lateness=scheduledAt?now-scheduledAt:0;scheduledAt=0;
+    slowTime=lateness>25?slowTime+dt:Math.max(0,slowTime-dt*.2);
+    fastTime=lateness<10?fastTime+dt:0;
+    if(slowTime<.6&&fastTime<10)return;
+    const low=slowTime>=.6;
+    const next=low?155000:320000;
+    slowTime=0;fastTime=0;hz=low?16:30;
+    if(next!==budget){budget=next;resizeSurface();buildStyle();}
+  }
+  function draw(now){
+    frame=0;if(!active||!w)return;
+    const dt=last?Math.min(.18,Math.max(0,(now-last)/1000)):0;last=now;
+    adapt(now,dt);
+    if(!reduce.matches){
+      elapsed+=dt;ambient-=dt;if(ambient<=0){particle(true);ambient=rand(1.2,2);}
+      energy*=Math.exp(-dt/1.4);speed+=(1+energy*.15+particles.length/100-speed)*(1-Math.exp(-dt*6));
+      const rainStep=dt*speed;
+      rainTime+=rainStep;advance(particles,rainStep);
+    }
+    paint();
+    if(reduce.matches){last=0;return;}
+    const target=(!particles.length&&!rings.length)?Math.min(10,hz):hz;
+    const delay=Math.max(0,1000/target-8-(performance.now()-now));scheduledAt=performance.now()+delay+8;
+    timer=setTimeout(()=>{timer=0;wake();},delay);
+  }
+  function wake(){if(active&&!frame&&!timer&&w)frame=requestAnimationFrame(draw);}
+  function cancel(){
+    cancelAnimationFrame(layout);cancelAnimationFrame(frame);clearTimeout(timer);layout=frame=timer=0;last=scheduledAt=0;
+  }
+  function visibility(){
+    if(!scene)return;
+    active=requested&&!document.hidden;cancel();particles.length=0;for(const item of rewards){clearTimeout(item.timer);item.node.remove();}rewards.length=0;energy=0;speed=1;
+    if(active)relayout();
+  }
+  function init(options){
+    if(scene)return;scene=options.scene;button=options.button;station=document.getElementById('station');
+    canvas=document.createElement('canvas');canvas.className='fx-scene';canvas.setAttribute('aria-hidden','true');scene.prepend(canvas);
+    ctx=canvas.getContext('2d',{alpha:false,desynchronized:true});if(!ctx)return;
+    blueTile=new Image();
+    const refresh=()=>{styleDirty=true;relayout();};
+    blueTile.onload=refresh;blueTile.src=window.duoArt('art/bgBlue.jpg');
+    function loadGlyphs(){sprites=formulae.map(t=>textSprite(t,'italic 28px "Times New Roman","Laboratory Serif",serif','#ffe8a8'));rebuildRings(true);relayout();}
+    loadGlyphs();
+    if(document.fonts)document.fonts.ready.then(loadGlyphs);
+    if(window.ResizeObserver){const ro=new ResizeObserver(relayout);ro.observe(scene);ro.observe(button);}
+    const mo=new MutationObserver(refresh);mo.observe(station,{attributes:true,attributeFilter:['style']});
+    window.addEventListener('resize',relayout);document.addEventListener('visibilitychange',visibility);
+    if(reduce.addEventListener)reduce.addEventListener('change',visibility);else reduce.addListener(visibility);
+    visibility();
+  }
+  function visible(value){value=Boolean(value);if(requested!==value){requested=value;visibility();}}
+  function update(state){
+    const count=state.resources?.[0]?.owned||0;
+    if(count!==owned){owned=count;if(scene){rebuildRings(false);if(active&&reduce.matches)paint();}}
+  }
+  function showReward(earned){
+    if(rewards.length===10){const old=rewards.shift();clearTimeout(old.timer);old.node.remove();}
+    const node=document.createElement('span');
+    node.className='fx-tap-value';node.setAttribute('aria-hidden','true');
+    node.textContent='+'+IntegralNumbers.exact(earned);
+    const offset=reduce.matches?0:rand(-r*.38,r*.38);
+    node.style.left=(cx+offset)+'px';node.style.top=Math.max(0,cy-r*.76)+'px';
+    scene.append(node);
+    const entry={node,timer:0};rewards.push(entry);
+    entry.timer=setTimeout(()=>{
+      node.remove();const index=rewards.indexOf(entry);if(index>=0)rewards.splice(index,1);
+    },820);
+  }
+  function tap(event,earned){
+    if(!active||!(earned>0)||!ctx)return;if(!w)measure();if(!w)return;
+    showReward(earned);
+    if(!reduce.matches){
+      energy++;
+      // Distribute the five falling equations across the scene. The Station's
+      // central disk can otherwise hide an entire randomly clustered burst.
+      for(let i=0;i<5;i++)particle(false,(i+Math.random())/5);
+    }
+    // Record only successful visual feedback for the device smoke test.
+    canvas.dataset.taps=String((Number(canvas.dataset.taps)||0)+1);
+    clearTimeout(timer);timer=0;scheduledAt=0;wake();
+  }
+  return Object.freeze({
+    paintAmbientEquations,
+    init,update,tap,visible,
+    get rainTime(){return rainTime;},
+    get rainActivity(){return energy<.05?0:Math.min(1,energy/14);}
+  });
+})();
+
+;
+// Exported in iPhone AppIconCatalog.items order. Unlock keys match Honors.
+window.LauncherIcons = (() => {
+  const catalog = [
+  {
+    "condition": "",
+    "description": "Кремовый диск с формулой на сине-бирюзовом фоне.",
+    "id": "default",
+    "name": "Основная",
+    "requiredAchievementID": null,
+    "skinID": "classic",
+    "themeID": "emerald",
+    "drawable": "launcher_default",
+    "image": "art/launcher/default.webp"
+  },
+  {
+    "condition": "Достигните престижа III.",
+    "description": "Фон «III · Кузница звёзд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prestige3",
+    "name": "III · Звёздный реактор",
+    "requiredAchievementID": "prestige-3",
+    "skinID": "prestige3",
+    "themeID": "prestige3",
+    "drawable": "launcher_prestige3",
+    "image": "art/launcher/prestige3.webp"
+  },
+  {
+    "condition": "Достигните престижа IV.",
+    "description": "Фон «IV · Храм времени». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prestige4",
+    "name": "IV · Хронометр вечности",
+    "requiredAchievementID": "prestige-4",
+    "skinID": "prestige4",
+    "themeID": "prestige4",
+    "drawable": "launcher_prestige4",
+    "image": "art/launcher/prestige4.webp"
+  },
+  {
+    "condition": "Достигните престижа V.",
+    "description": "Фон «V · Кристальный сад». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prestige5",
+    "name": "V · Алмазная мысль",
+    "requiredAchievementID": "prestige-5",
+    "skinID": "prestige5",
+    "themeID": "prestige5",
+    "drawable": "launcher_prestige5",
+    "image": "art/launcher/prestige5.webp"
+  },
+  {
+    "condition": "Достигните престижа VI.",
+    "description": "Фон «VI · Нейронная вселенная». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prestige6",
+    "name": "VI · Живое сознание",
+    "requiredAchievementID": "prestige-6",
+    "skinID": "prestige6",
+    "themeID": "prestige6",
+    "drawable": "launcher_prestige6",
+    "image": "art/launcher/prestige6.webp"
+  },
+  {
+    "condition": "Достигните престижа VII.",
+    "description": "Фон «VII · Океан бесконечности». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prestige7",
+    "name": "VII · Прилив миров",
+    "requiredAchievementID": "prestige-7",
+    "skinID": "prestige7",
+    "themeID": "prestige7",
+    "drawable": "launcher_prestige7",
+    "image": "art/launcher/prestige7.webp"
+  },
+  {
+    "condition": "Достигните престижа VIII.",
+    "description": "Фон «VIII · Двойная бесконечность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prestige8",
+    "name": "VIII · Узел бесконечности",
+    "requiredAchievementID": "prestige-8",
+    "skinID": "prestige8",
+    "themeID": "prestige8",
+    "drawable": "launcher_prestige8",
+    "image": "art/launcher/prestige8.webp"
+  },
+  {
+    "condition": "Достигните престижа IX.",
+    "description": "Фон «IX · Сердце сверхновой». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prestige9",
+    "name": "IX · Ядро сверхновой",
+    "requiredAchievementID": "prestige-9",
+    "skinID": "prestige9",
+    "themeID": "prestige9",
+    "drawable": "launcher_prestige9",
+    "image": "art/launcher/prestige9.webp"
+  },
+  {
+    "condition": "Достигните престижа X.",
+    "description": "Фон «X · Владыка сингулярности». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prestige10",
+    "name": "X · Абсолютный горизонт",
+    "requiredAchievementID": "prestige-10",
+    "skinID": "prestige10",
+    "themeID": "prestige10",
+    "drawable": "launcher_prestige10",
+    "image": "art/launcher/prestige10.webp"
+  },
+  {
+    "condition": "Изучите 10 улучшений в одной эпохе.",
+    "description": "Фон «Электрическое небо». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "tesla",
+    "name": "Катушка Теслы",
+    "requiredAchievementID": "research-10",
+    "skinID": "tesla",
+    "themeID": "electricstorm",
+    "drawable": "launcher_tesla",
+    "image": "art/launcher/tesla.webp"
+  },
+  {
+    "condition": "Сделайте 1 000 ручных нажатий.",
+    "description": "Фон «Пергамент». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "runes",
+    "name": "Руны открытий",
+    "requiredAchievementID": "clicks-1000",
+    "skinID": "runes",
+    "themeID": "parchment",
+    "drawable": "launcher_runes",
+    "image": "art/launcher/runes.webp"
+  },
+  {
+    "condition": "Победите в первом испытании.",
+    "description": "Фон «Тёплый ливень». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "ripple",
+    "name": "Живая вода",
+    "requiredAchievementID": "challenges-1",
+    "skinID": "ripple",
+    "themeID": "monsoon",
+    "drawable": "launcher_ripple",
+    "image": "art/launcher/ripple.webp"
+  },
+  {
+    "condition": "Произведите 1 000 000 интегралов.",
+    "description": "Фон «Туманность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "galaxy",
+    "name": "Спиральная галактика",
+    "requiredAchievementID": "earned-1000000",
+    "skinID": "galaxy",
+    "themeID": "nebula",
+    "drawable": "launcher_galaxy",
+    "image": "art/launcher/galaxy.webp"
+  },
+  {
+    "condition": "Соберите 100 ресурсов одновременно.",
+    "description": "Фон «Медный век». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "clockwork",
+    "name": "Часовой механизм",
+    "requiredAchievementID": "helpers-100",
+    "skinID": "clockwork",
+    "themeID": "copper",
+    "drawable": "launcher_clockwork",
+    "image": "art/launcher/clockwork.webp"
+  },
+  {
+    "condition": "Изучите 25 улучшений в одной эпохе.",
+    "description": "Фон «Поток формул». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "hologram",
+    "name": "Голограмма",
+    "requiredAchievementID": "research-25",
+    "skinID": "hologram",
+    "themeID": "matrix",
+    "drawable": "launcher_hologram",
+    "image": "art/launcher/hologram.webp"
+  },
+  {
+    "condition": "Достигните производства 10 000 интегралов в секунду.",
+    "description": "Фон «Угли рассвета». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "magma",
+    "name": "Магматическое сердце",
+    "requiredAchievementID": "production-10000",
+    "skinID": "magma",
+    "themeID": "emberfire",
+    "drawable": "launcher_magma",
+    "image": "art/launcher/magma.webp"
+  },
+  {
+    "condition": "Соберите 25 ресурсов одновременно.",
+    "description": "Фон «Светлячки». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "jade",
+    "name": "Нефритовый талисман",
+    "requiredAchievementID": "helpers-25",
+    "skinID": "jade",
+    "themeID": "enchanted",
+    "drawable": "launcher_jade",
+    "image": "art/launcher/jade.webp"
+  },
+  {
+    "condition": "Победите в 10 испытаниях.",
+    "description": "Фон «Сад сакуры». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "pearlmoon",
+    "name": "Перламутровая луна",
+    "requiredAchievementID": "challenges-10",
+    "skinID": "pearlmoon",
+    "themeID": "sakura",
+    "drawable": "launcher_pearlmoon",
+    "image": "art/launcher/pearlmoon.webp"
+  },
+  {
+    "condition": "Достигните производства 100 интегралов в секунду.",
+    "description": "Фон «Последний луч». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "sundial",
+    "name": "Солнечные часы",
+    "requiredAchievementID": "production-100",
+    "skinID": "sundial",
+    "themeID": "sunset",
+    "drawable": "launcher_sundial",
+    "image": "art/launcher/sundial.webp"
+  },
+  {
+    "condition": "Достигните престижа I.",
+    "description": "Фон «I · Корона света». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "eventide",
+    "name": "I · Золотое ядро",
+    "requiredAchievementID": "prestige-1",
+    "skinID": "eventide",
+    "themeID": "midnightgold",
+    "drawable": "launcher_eventide",
+    "image": "art/launcher/eventide.webp"
+  },
+  {
+    "condition": "Достигните престижа II.",
+    "description": "Фон «II · Разлом пространства». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "fractal",
+    "name": "II · Зеркало измерений",
+    "requiredAchievementID": "prestige-2",
+    "skinID": "fractal",
+    "themeID": "deeprift",
+    "drawable": "launcher_fractal",
+    "image": "art/launcher/fractal.webp"
+  },
+  {
+    "condition": "Пройдите через чёрную дыру после престижа X и создайте новую вселенную.",
+    "description": "Фон «За гранью бесконечности». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "quasar",
+    "name": "Квазар",
+    "requiredAchievementID": "cosmic-1",
+    "skinID": "quasar",
+    "themeID": "cosmic",
+    "drawable": "launcher_quasar",
+    "image": "art/launcher/quasar.webp"
+  },
+  {
+    "condition": "",
+    "description": "Фон «Глубокий океан». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "ocean",
+    "name": "Прилив",
+    "requiredAchievementID": null,
+    "skinID": "ocean",
+    "themeID": "ocean",
+    "drawable": "launcher_ocean",
+    "image": "art/launcher/ocean.webp"
+  },
+  {
+    "condition": "Произведите 1 000 интегралов.",
+    "description": "Фон «Багровый рассвет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "ruby",
+    "name": "Рубиновая грань",
+    "requiredAchievementID": "earned-1000",
+    "skinID": "ruby",
+    "themeID": "crimson",
+    "drawable": "launcher_ruby",
+    "image": "art/launcher/ruby.webp"
+  },
+  {
+    "condition": "Соберите 25 ресурсов одновременно.",
+    "description": "Фон «Изумруд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "emerald",
+    "name": "Изумрудное ядро",
+    "requiredAchievementID": "helpers-25",
+    "skinID": "emerald",
+    "themeID": "emerald",
+    "drawable": "launcher_emerald",
+    "image": "art/launcher/emerald.webp"
+  },
+  {
+    "condition": "Достигните производства 100 интегралов в секунду.",
+    "description": "Фон «Медный век». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "copper",
+    "name": "Медная орбита",
+    "requiredAchievementID": "production-100",
+    "skinID": "copper",
+    "themeID": "copper",
+    "drawable": "launcher_copper",
+    "image": "art/launcher/copper.webp"
+  },
+  {
+    "condition": "Сделайте 1 000 ручных нажатий.",
+    "description": "Фон «Лотос». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "pearl",
+    "name": "Жемчужина",
+    "requiredAchievementID": "clicks-1000",
+    "skinID": "pearl",
+    "themeID": "lotus",
+    "drawable": "launcher_pearl",
+    "image": "art/launcher/pearl.webp"
+  },
+  {
+    "condition": "Изучите 10 улучшений в одной эпохе.",
+    "description": "Фон «Аметистовая ночь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "neon",
+    "name": "Неоновый контур",
+    "requiredAchievementID": "research-10",
+    "skinID": "neon",
+    "themeID": "violet",
+    "drawable": "launcher_neon",
+    "image": "art/launcher/neon.webp"
+  },
+  {
+    "condition": "Изучите одно улучшение.",
+    "description": "Фон «Классика». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "blueprint",
+    "name": "Чертёж бесконечности",
+    "requiredAchievementID": "research-1",
+    "skinID": "blueprint",
+    "themeID": "classic",
+    "drawable": "launcher_blueprint",
+    "image": "art/launcher/blueprint.webp"
+  },
+  {
+    "condition": "Произведите 1 000 000 000 интегралов.",
+    "description": "Фон «Последний луч». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "solar",
+    "name": "Солнечный диск",
+    "requiredAchievementID": "earned-1000000000",
+    "skinID": "solar",
+    "themeID": "sunset",
+    "drawable": "launcher_solar",
+    "image": "art/launcher/solar.webp"
+  },
+  {
+    "condition": "Победите в первом испытании.",
+    "description": "Фон «Космос». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "lunar",
+    "name": "Лунная поверхность",
+    "requiredAchievementID": "challenges-1",
+    "skinID": "lunar",
+    "themeID": "night",
+    "drawable": "launcher_lunar",
+    "image": "art/launcher/lunar.webp"
+  },
+  {
+    "condition": "Соберите 100 ресурсов одновременно.",
+    "description": "Фон «Северное сияние». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "prism",
+    "name": "Призма",
+    "requiredAchievementID": "helpers-100",
+    "skinID": "prism",
+    "themeID": "aurora",
+    "drawable": "launcher_prism",
+    "image": "art/launcher/prism.webp"
+  },
+  {
+    "condition": "Достигните престижа II.",
+    "description": "Фон «Графитовая мастерская». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "obsidian",
+    "name": "Обсидиан",
+    "requiredAchievementID": "prestige-2",
+    "skinID": "obsidian",
+    "themeID": "graphite",
+    "drawable": "launcher_obsidian",
+    "image": "art/launcher/obsidian.webp"
+  },
+  {
+    "condition": "",
+    "description": "Фон «Изумруд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "classic",
+    "name": "Классический интеграл",
+    "requiredAchievementID": null,
+    "skinID": "classic",
+    "themeID": "emerald",
+    "drawable": "launcher_classic",
+    "image": "art/launcher/classic.webp"
+  },
+  {
+    "condition": "Сделайте 50 ручных нажатий.",
+    "description": "Фон «Графитовая мастерская». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "chalk",
+    "name": "Меловая доска",
+    "requiredAchievementID": "clicks-50",
+    "skinID": "chalk",
+    "themeID": "graphite",
+    "drawable": "launcher_chalk",
+    "image": "art/launcher/chalk.webp"
+  },
+  {
+    "condition": "Произведите 1 000 000 интегралов.",
+    "description": "Фон «I · Корона света». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "gold",
+    "name": "Золотое сечение",
+    "requiredAchievementID": "earned-1000000",
+    "skinID": "gold",
+    "themeID": "midnightgold",
+    "drawable": "launcher_gold",
+    "image": "art/launcher/gold.webp"
+  },
+  {
+    "condition": "Изучите 25 улучшений в одной эпохе.",
+    "description": "Фон «Ледяная обсерватория». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "crystal",
+    "name": "Кристальная мысль",
+    "requiredAchievementID": "research-25",
+    "skinID": "crystal",
+    "themeID": "glacier",
+    "drawable": "launcher_crystal",
+    "image": "art/launcher/crystal.webp"
+  },
+  {
+    "condition": "Достигните престижа I.",
+    "description": "Фон «II · Разлом пространства». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "blackhole",
+    "name": "Горизонт событий",
+    "requiredAchievementID": "prestige-1",
+    "skinID": "blackhole",
+    "themeID": "deeprift",
+    "drawable": "launcher_blackhole",
+    "image": "art/launcher/blackhole.webp"
+  },
+  {
+    "condition": "Пройдите через чёрную дыру после престижа X и создайте новую вселенную.",
+    "description": "Фон «За гранью бесконечности». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "cosmic",
+    "name": "Сердце новой вселенной",
+    "requiredAchievementID": "cosmic-1",
+    "skinID": "cosmic",
+    "themeID": "cosmic",
+    "drawable": "launcher_cosmic",
+    "image": "art/launcher/cosmic.webp"
+  },
+  {
+    "condition": "С престижа I: успешно завершите 3 заданий за один мир.",
+    "description": "Фон «Янтарные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula1",
+    "name": "∫ · Янтарные формулы",
+    "requiredAchievementID": "epoch-1-formulas",
+    "skinID": "formula1",
+    "themeID": "formula1",
+    "drawable": "launcher_formula1",
+    "image": "art/launcher/formula1.webp"
+  },
+  {
+    "condition": "С престижа I: сделайте 100 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Ледяные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula1a",
+    "name": "∫ · Ледяные формулы",
+    "requiredAchievementID": "epoch-1-touches",
+    "skinID": "formula1a",
+    "themeID": "formula1a",
+    "drawable": "launcher_formula1a",
+    "image": "art/launcher/formula1a.webp"
+  },
+  {
+    "condition": "С престижа I: купите суммарно 3000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Лаймовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula1b",
+    "name": "∫ · Лаймовые формулы",
+    "requiredAchievementID": "epoch-1-bits",
+    "skinID": "formula1b",
+    "themeID": "formula1b",
+    "drawable": "launcher_formula1b",
+    "image": "art/launcher/formula1b.webp"
+  },
+  {
+    "condition": "С престижа I: заработайте 10¹² ∫ за один мир.",
+    "description": "Фон «Золотые орбиты». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance1",
+    "name": "∫ · Золотые орбиты",
+    "requiredAchievementID": "epoch-1-earned",
+    "skinID": "resonance1",
+    "themeID": "resonance1",
+    "drawable": "launcher_resonance1",
+    "image": "art/launcher/resonance1.webp"
+  },
+  {
+    "condition": "С престижа I: достигните производства 10⁵ ∫ в секунду.",
+    "description": "Фон «Плазменный поток · нефрит». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance1a",
+    "name": "∫ · Плазменный поток · нефрит",
+    "requiredAchievementID": "epoch-1-production",
+    "skinID": "resonance1a",
+    "themeID": "resonance1a",
+    "drawable": "launcher_resonance1a",
+    "image": "art/launcher/resonance1a.webp"
+  },
+  {
+    "condition": "С престижа I: соберите 250 ресурсов одновременно.",
+    "description": "Фон «Неоновый город · затмение». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance1b",
+    "name": "∫ · Неоновый город · затмение",
+    "requiredAchievementID": "epoch-1-population",
+    "skinID": "resonance1b",
+    "themeID": "resonance1b",
+    "drawable": "launcher_resonance1b",
+    "image": "art/launcher/resonance1b.webp"
+  },
+  {
+    "condition": "С престижа I: изучите 12 улучшений в одном мире.",
+    "description": "Фон «Кристальная решётка · квазар». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance1c",
+    "name": "∫ · Кристальная решётка · квазар",
+    "requiredAchievementID": "epoch-1-research",
+    "skinID": "resonance1c",
+    "themeID": "resonance1c",
+    "drawable": "launcher_resonance1c",
+    "image": "art/launcher/resonance1c.webp"
+  },
+  {
+    "condition": "С престижа I: соберите 2 работающих пар ресурсов одновременно.",
+    "description": "Фон «Живая туманность · фуксия». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance1d",
+    "name": "∫ · Живая туманность · фуксия",
+    "requiredAchievementID": "epoch-1-pairs",
+    "skinID": "resonance1d",
+    "themeID": "resonance1d",
+    "drawable": "launcher_resonance1d",
+    "image": "art/launcher/resonance1d.webp"
+  },
+  {
+    "condition": "С престижа I: купите суммарно 500 ресурсов «Студент» за все миры.",
+    "description": "Фон «Линза бездны · полярность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance1f",
+    "name": "∫ · Линза бездны · полярность",
+    "requiredAchievementID": "epoch-1-students",
+    "skinID": "resonance1f",
+    "themeID": "resonance1f",
+    "drawable": "launcher_resonance1f",
+    "image": "art/launcher/resonance1f.webp"
+  },
+  {
+    "condition": "С престижа I: купите суммарно 500 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Магнитные полюса · звёздный свет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance1g",
+    "name": "∫ · Магнитные полюса · звёздный свет",
+    "requiredAchievementID": "epoch-1-teachers",
+    "skinID": "resonance1g",
+    "themeID": "resonance1g",
+    "drawable": "launcher_resonance1g",
+    "image": "art/launcher/resonance1g.webp"
+  },
+  {
+    "condition": "С престижа I: купите суммарно 3000 ресурсов любых видов за все миры.",
+    "description": "Фон «Призменный свет · лазурь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance1h",
+    "name": "∫ · Призменный свет · лазурь",
+    "requiredAchievementID": "epoch-1-all-purchases",
+    "skinID": "resonance1h",
+    "themeID": "resonance1h",
+    "drawable": "launcher_resonance1h",
+    "image": "art/launcher/resonance1h.webp"
+  },
+  {
+    "condition": "С престижа II: успешно завершите 4 заданий за один мир.",
+    "description": "Фон «Лазурные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula2",
+    "name": "∫ · Лазурные формулы",
+    "requiredAchievementID": "epoch-2-formulas",
+    "skinID": "formula2",
+    "themeID": "formula2",
+    "drawable": "launcher_formula2",
+    "image": "art/launcher/formula2.webp"
+  },
+  {
+    "condition": "С престижа II: сделайте 150 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Аметистовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula2a",
+    "name": "∫ · Аметистовые формулы",
+    "requiredAchievementID": "epoch-2-touches",
+    "skinID": "formula2a",
+    "themeID": "formula2a",
+    "drawable": "launcher_formula2a",
+    "image": "art/launcher/formula2a.webp"
+  },
+  {
+    "condition": "С престижа II: купите суммарно 5000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Серебряные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula2b",
+    "name": "∫ · Серебряные формулы",
+    "requiredAchievementID": "epoch-2-bits",
+    "skinID": "formula2b",
+    "themeID": "formula2b",
+    "drawable": "launcher_formula2b",
+    "image": "art/launcher/formula2b.webp"
+  },
+  {
+    "condition": "С престижа II: заработайте 10¹³ ∫ за один мир.",
+    "description": "Фон «Плазменный поток». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance2",
+    "name": "∫ · Плазменный поток",
+    "requiredAchievementID": "epoch-2-earned",
+    "skinID": "resonance2",
+    "themeID": "resonance2",
+    "drawable": "launcher_resonance2",
+    "image": "art/launcher/resonance2.webp"
+  },
+  {
+    "condition": "С престижа II: достигните производства 10⁶ ∫ в секунду.",
+    "description": "Фон «Неоновый город · аметист». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance2a",
+    "name": "∫ · Неоновый город · аметист",
+    "requiredAchievementID": "epoch-2-production",
+    "skinID": "resonance2a",
+    "themeID": "resonance2a",
+    "drawable": "launcher_resonance2a",
+    "image": "art/launcher/resonance2a.webp"
+  },
+  {
+    "condition": "С престижа II: соберите 500 ресурсов одновременно.",
+    "description": "Фон «Кристальная решётка · полярность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance2b",
+    "name": "∫ · Кристальная решётка · полярность",
+    "requiredAchievementID": "epoch-2-population",
+    "skinID": "resonance2b",
+    "themeID": "resonance2b",
+    "drawable": "launcher_resonance2b",
+    "image": "art/launcher/resonance2b.webp"
+  },
+  {
+    "condition": "С престижа II: изучите 18 улучшений в одном мире.",
+    "description": "Фон «Живая туманность · звёздный свет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance2c",
+    "name": "∫ · Живая туманность · звёздный свет",
+    "requiredAchievementID": "epoch-2-research",
+    "skinID": "resonance2c",
+    "themeID": "resonance2c",
+    "drawable": "launcher_resonance2c",
+    "image": "art/launcher/resonance2c.webp"
+  },
+  {
+    "condition": "С престижа II: соберите 3 работающих пар ресурсов одновременно.",
+    "description": "Фон «Гравитационные волны · лазурь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance2d",
+    "name": "∫ · Гравитационные волны · лазурь",
+    "requiredAchievementID": "epoch-2-pairs",
+    "skinID": "resonance2d",
+    "themeID": "resonance2d",
+    "drawable": "launcher_resonance2d",
+    "image": "art/launcher/resonance2d.webp"
+  },
+  {
+    "condition": "С престижа II: купите суммарно 1000 ресурсов «Студент» за все миры.",
+    "description": "Фон «Магнитные полюса · перламутр». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance2f",
+    "name": "∫ · Магнитные полюса · перламутр",
+    "requiredAchievementID": "epoch-2-students",
+    "skinID": "resonance2f",
+    "themeID": "resonance2f",
+    "drawable": "launcher_resonance2f",
+    "image": "art/launcher/resonance2f.webp"
+  },
+  {
+    "condition": "С престижа II: купите суммарно 1000 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Призменный свет · янтарь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance2g",
+    "name": "∫ · Призменный свет · янтарь",
+    "requiredAchievementID": "epoch-2-teachers",
+    "skinID": "resonance2g",
+    "themeID": "resonance2g",
+    "drawable": "launcher_resonance2g",
+    "image": "art/launcher/resonance2g.webp"
+  },
+  {
+    "condition": "С престижа II: купите суммарно 6000 ресурсов любых видов за все миры.",
+    "description": "Фон «Сердце квазара · нефрит». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance2h",
+    "name": "∫ · Сердце квазара · нефрит",
+    "requiredAchievementID": "epoch-2-all-purchases",
+    "skinID": "resonance2h",
+    "themeID": "resonance2h",
+    "drawable": "launcher_resonance2h",
+    "image": "art/launcher/resonance2h.webp"
+  },
+  {
+    "condition": "С престижа III: успешно завершите 5 заданий за один мир.",
+    "description": "Фон «Розовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula3",
+    "name": "∫ · Розовые формулы",
+    "requiredAchievementID": "epoch-3-formulas",
+    "skinID": "formula3",
+    "themeID": "formula3",
+    "drawable": "launcher_formula3",
+    "image": "art/launcher/formula3.webp"
+  },
+  {
+    "condition": "С престижа III: сделайте 200 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Коралловые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula3a",
+    "name": "∫ · Коралловые формулы",
+    "requiredAchievementID": "epoch-3-touches",
+    "skinID": "formula3a",
+    "themeID": "formula3a",
+    "drawable": "launcher_formula3a",
+    "image": "art/launcher/formula3a.webp"
+  },
+  {
+    "condition": "С престижа III: купите суммарно 7500 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Солнечные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula3b",
+    "name": "∫ · Солнечные формулы",
+    "requiredAchievementID": "epoch-3-bits",
+    "skinID": "formula3b",
+    "themeID": "formula3b",
+    "drawable": "launcher_formula3b",
+    "image": "art/launcher/formula3b.webp"
+  },
+  {
+    "condition": "С престижа III: заработайте 10¹⁴ ∫ за один мир.",
+    "description": "Фон «Неоновый город». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance3",
+    "name": "∫ · Неоновый город",
+    "requiredAchievementID": "epoch-3-earned",
+    "skinID": "resonance3",
+    "themeID": "resonance3",
+    "drawable": "launcher_resonance3",
+    "image": "art/launcher/resonance3.webp"
+  },
+  {
+    "condition": "С престижа III: достигните производства 10⁷ ∫ в секунду.",
+    "description": "Фон «Кристальная решётка · лёд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance3a",
+    "name": "∫ · Кристальная решётка · лёд",
+    "requiredAchievementID": "epoch-3-production",
+    "skinID": "resonance3a",
+    "themeID": "resonance3a",
+    "drawable": "launcher_resonance3a",
+    "image": "art/launcher/resonance3a.webp"
+  },
+  {
+    "condition": "С престижа III: соберите 750 ресурсов одновременно.",
+    "description": "Фон «Живая туманность · перламутр». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance3b",
+    "name": "∫ · Живая туманность · перламутр",
+    "requiredAchievementID": "epoch-3-population",
+    "skinID": "resonance3b",
+    "themeID": "resonance3b",
+    "drawable": "launcher_resonance3b",
+    "image": "art/launcher/resonance3b.webp"
+  },
+  {
+    "condition": "С престижа III: изучите 24 улучшений в одном мире.",
+    "description": "Фон «Гравитационные волны · янтарь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance3c",
+    "name": "∫ · Гравитационные волны · янтарь",
+    "requiredAchievementID": "epoch-3-research",
+    "skinID": "resonance3c",
+    "themeID": "resonance3c",
+    "drawable": "launcher_resonance3c",
+    "image": "art/launcher/resonance3c.webp"
+  },
+  {
+    "condition": "С престижа III: соберите 4 работающих пар ресурсов одновременно.",
+    "description": "Фон «Линза бездны · нефрит». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance3d",
+    "name": "∫ · Линза бездны · нефрит",
+    "requiredAchievementID": "epoch-3-pairs",
+    "skinID": "resonance3d",
+    "themeID": "resonance3d",
+    "drawable": "launcher_resonance3d",
+    "image": "art/launcher/resonance3d.webp"
+  },
+  {
+    "condition": "С престижа III: купите суммарно 2000 ресурсов «Студент» за все миры.",
+    "description": "Фон «Призменный свет · квазар». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance3f",
+    "name": "∫ · Призменный свет · квазар",
+    "requiredAchievementID": "epoch-3-students",
+    "skinID": "resonance3f",
+    "themeID": "resonance3f",
+    "drawable": "launcher_resonance3f",
+    "image": "art/launcher/resonance3f.webp"
+  },
+  {
+    "condition": "С престижа III: купите суммарно 1500 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Сердце квазара · фуксия». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance3g",
+    "name": "∫ · Сердце квазара · фуксия",
+    "requiredAchievementID": "epoch-3-teachers",
+    "skinID": "resonance3g",
+    "themeID": "resonance3g",
+    "drawable": "launcher_resonance3g",
+    "image": "art/launcher/resonance3g.webp"
+  },
+  {
+    "condition": "С престижа III: купите суммарно 10000 ресурсов любых видов за все миры.",
+    "description": "Фон «Созвездие вечности · аметист». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance3h",
+    "name": "∫ · Созвездие вечности · аметист",
+    "requiredAchievementID": "epoch-3-all-purchases",
+    "skinID": "resonance3h",
+    "themeID": "resonance3h",
+    "drawable": "launcher_resonance3h",
+    "image": "art/launcher/resonance3h.webp"
+  },
+  {
+    "condition": "С престижа IV: успешно завершите 6 заданий за один мир.",
+    "description": "Фон «Ледяные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula4",
+    "name": "∫ · Ледяные формулы",
+    "requiredAchievementID": "epoch-4-formulas",
+    "skinID": "formula4",
+    "themeID": "formula4",
+    "drawable": "launcher_formula4",
+    "image": "art/launcher/formula4.webp"
+  },
+  {
+    "condition": "С престижа IV: сделайте 250 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Лаймовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula4a",
+    "name": "∫ · Лаймовые формулы",
+    "requiredAchievementID": "epoch-4-touches",
+    "skinID": "formula4a",
+    "themeID": "formula4a",
+    "drawable": "launcher_formula4a",
+    "image": "art/launcher/formula4a.webp"
+  },
+  {
+    "condition": "С престижа IV: купите суммарно 10000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Радужные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula4b",
+    "name": "∫ · Радужные формулы",
+    "requiredAchievementID": "epoch-4-bits",
+    "skinID": "formula4b",
+    "themeID": "formula4b",
+    "drawable": "launcher_formula4b",
+    "image": "art/launcher/formula4b.webp"
+  },
+  {
+    "condition": "С престижа IV: заработайте 10¹⁵ ∫ за один мир.",
+    "description": "Фон «Кристальная решётка». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance4",
+    "name": "∫ · Кристальная решётка",
+    "requiredAchievementID": "epoch-4-earned",
+    "skinID": "resonance4",
+    "themeID": "resonance4",
+    "drawable": "launcher_resonance4",
+    "image": "art/launcher/resonance4.webp"
+  },
+  {
+    "condition": "С престижа IV: достигните производства 10⁸ ∫ в секунду.",
+    "description": "Фон «Живая туманность · затмение». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance4a",
+    "name": "∫ · Живая туманность · затмение",
+    "requiredAchievementID": "epoch-4-production",
+    "skinID": "resonance4a",
+    "themeID": "resonance4a",
+    "drawable": "launcher_resonance4a",
+    "image": "art/launcher/resonance4a.webp"
+  },
+  {
+    "condition": "С престижа IV: соберите 1000 ресурсов одновременно.",
+    "description": "Фон «Гравитационные волны · квазар». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance4b",
+    "name": "∫ · Гравитационные волны · квазар",
+    "requiredAchievementID": "epoch-4-population",
+    "skinID": "resonance4b",
+    "themeID": "resonance4b",
+    "drawable": "launcher_resonance4b",
+    "image": "art/launcher/resonance4b.webp"
+  },
+  {
+    "condition": "С престижа IV: изучите 30 улучшений в одном мире.",
+    "description": "Фон «Линза бездны · фуксия». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance4c",
+    "name": "∫ · Линза бездны · фуксия",
+    "requiredAchievementID": "epoch-4-research",
+    "skinID": "resonance4c",
+    "themeID": "resonance4c",
+    "drawable": "launcher_resonance4c",
+    "image": "art/launcher/resonance4c.webp"
+  },
+  {
+    "condition": "С престижа IV: соберите 5 работающих пар ресурсов одновременно.",
+    "description": "Фон «Магнитные полюса · аметист». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance4d",
+    "name": "∫ · Магнитные полюса · аметист",
+    "requiredAchievementID": "epoch-4-pairs",
+    "skinID": "resonance4d",
+    "themeID": "resonance4d",
+    "drawable": "launcher_resonance4d",
+    "image": "art/launcher/resonance4d.webp"
+  },
+  {
+    "condition": "С престижа IV: купите суммарно 3000 ресурсов «Студент» за все миры.",
+    "description": "Фон «Сердце квазара · звёздный свет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance4f",
+    "name": "∫ · Сердце квазара · звёздный свет",
+    "requiredAchievementID": "epoch-4-students",
+    "skinID": "resonance4f",
+    "themeID": "resonance4f",
+    "drawable": "launcher_resonance4f",
+    "image": "art/launcher/resonance4f.webp"
+  },
+  {
+    "condition": "С престижа IV: купите суммарно 2500 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Созвездие вечности · лазурь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance4g",
+    "name": "∫ · Созвездие вечности · лазурь",
+    "requiredAchievementID": "epoch-4-teachers",
+    "skinID": "resonance4g",
+    "themeID": "resonance4g",
+    "drawable": "launcher_resonance4g",
+    "image": "art/launcher/resonance4g.webp"
+  },
+  {
+    "condition": "С престижа IV: купите суммарно 15000 ресурсов любых видов за все миры.",
+    "description": "Фон «Световые орбиты · лёд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance4h",
+    "name": "∫ · Световые орбиты · лёд",
+    "requiredAchievementID": "epoch-4-all-purchases",
+    "skinID": "resonance4h",
+    "themeID": "resonance4h",
+    "drawable": "launcher_resonance4h",
+    "image": "art/launcher/resonance4h.webp"
+  },
+  {
+    "condition": "С престижа V: успешно завершите 8 заданий за один мир.",
+    "description": "Фон «Аметистовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula5",
+    "name": "∫ · Аметистовые формулы",
+    "requiredAchievementID": "epoch-5-formulas",
+    "skinID": "formula5",
+    "themeID": "formula5",
+    "drawable": "launcher_formula5",
+    "image": "art/launcher/formula5.webp"
+  },
+  {
+    "condition": "С престижа V: сделайте 300 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Серебряные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula5a",
+    "name": "∫ · Серебряные формулы",
+    "requiredAchievementID": "epoch-5-touches",
+    "skinID": "formula5a",
+    "themeID": "formula5a",
+    "drawable": "launcher_formula5a",
+    "image": "art/launcher/formula5a.webp"
+  },
+  {
+    "condition": "С престижа V: купите суммарно 12500 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Бесконечные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula5b",
+    "name": "∫ · Бесконечные формулы",
+    "requiredAchievementID": "epoch-5-bits",
+    "skinID": "formula5b",
+    "themeID": "formula5b",
+    "drawable": "launcher_formula5b",
+    "image": "art/launcher/formula5b.webp"
+  },
+  {
+    "condition": "С престижа V: заработайте 10¹⁶ ∫ за один мир.",
+    "description": "Фон «Живая туманность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance5",
+    "name": "∫ · Живая туманность",
+    "requiredAchievementID": "epoch-5-earned",
+    "skinID": "resonance5",
+    "themeID": "resonance5",
+    "drawable": "launcher_resonance5",
+    "image": "art/launcher/resonance5.webp"
+  },
+  {
+    "condition": "С престижа V: достигните производства 10⁹ ∫ в секунду.",
+    "description": "Фон «Гравитационные волны · полярность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance5a",
+    "name": "∫ · Гравитационные волны · полярность",
+    "requiredAchievementID": "epoch-5-production",
+    "skinID": "resonance5a",
+    "themeID": "resonance5a",
+    "drawable": "launcher_resonance5a",
+    "image": "art/launcher/resonance5a.webp"
+  },
+  {
+    "condition": "С престижа V: соберите 1500 ресурсов одновременно.",
+    "description": "Фон «Линза бездны · звёздный свет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance5b",
+    "name": "∫ · Линза бездны · звёздный свет",
+    "requiredAchievementID": "epoch-5-population",
+    "skinID": "resonance5b",
+    "themeID": "resonance5b",
+    "drawable": "launcher_resonance5b",
+    "image": "art/launcher/resonance5b.webp"
+  },
+  {
+    "condition": "С престижа V: изучите 36 улучшений в одном мире.",
+    "description": "Фон «Магнитные полюса · лазурь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance5c",
+    "name": "∫ · Магнитные полюса · лазурь",
+    "requiredAchievementID": "epoch-5-research",
+    "skinID": "resonance5c",
+    "themeID": "resonance5c",
+    "drawable": "launcher_resonance5c",
+    "image": "art/launcher/resonance5c.webp"
+  },
+  {
+    "condition": "С престижа V: соберите 6 работающих пар ресурсов одновременно.",
+    "description": "Фон «Призменный свет · лёд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance5d",
+    "name": "∫ · Призменный свет · лёд",
+    "requiredAchievementID": "epoch-5-pairs",
+    "skinID": "resonance5d",
+    "themeID": "resonance5d",
+    "drawable": "launcher_resonance5d",
+    "image": "art/launcher/resonance5d.webp"
+  },
+  {
+    "condition": "С престижа V: купите суммарно 4000 ресурсов «Студент» за все миры.",
+    "description": "Фон «Созвездие вечности · янтарь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance5f",
+    "name": "∫ · Созвездие вечности · янтарь",
+    "requiredAchievementID": "epoch-5-students",
+    "skinID": "resonance5f",
+    "themeID": "resonance5f",
+    "drawable": "launcher_resonance5f",
+    "image": "art/launcher/resonance5f.webp"
+  },
+  {
+    "condition": "С престижа V: купите суммарно 3500 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Световые орбиты · нефрит». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance5g",
+    "name": "∫ · Световые орбиты · нефрит",
+    "requiredAchievementID": "epoch-5-teachers",
+    "skinID": "resonance5g",
+    "themeID": "resonance5g",
+    "drawable": "launcher_resonance5g",
+    "image": "art/launcher/resonance5g.webp"
+  },
+  {
+    "condition": "С престижа V: купите суммарно 22000 ресурсов любых видов за все миры.",
+    "description": "Фон «Плазменный поток · затмение». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance5h",
+    "name": "∫ · Плазменный поток · затмение",
+    "requiredAchievementID": "epoch-5-all-purchases",
+    "skinID": "resonance5h",
+    "themeID": "resonance5h",
+    "drawable": "launcher_resonance5h",
+    "image": "art/launcher/resonance5h.webp"
+  },
+  {
+    "condition": "С престижа VI: успешно завершите 10 заданий за один мир.",
+    "description": "Фон «Коралловые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula6",
+    "name": "∫ · Коралловые формулы",
+    "requiredAchievementID": "epoch-6-formulas",
+    "skinID": "formula6",
+    "themeID": "formula6",
+    "drawable": "launcher_formula6",
+    "image": "art/launcher/formula6.webp"
+  },
+  {
+    "condition": "С престижа VI: сделайте 400 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Солнечные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula6a",
+    "name": "∫ · Солнечные формулы",
+    "requiredAchievementID": "epoch-6-touches",
+    "skinID": "formula6a",
+    "themeID": "formula6a",
+    "drawable": "launcher_formula6a",
+    "image": "art/launcher/formula6a.webp"
+  },
+  {
+    "condition": "С престижа VI: купите суммарно 15000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Янтарные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula6b",
+    "name": "∫ · Янтарные формулы",
+    "requiredAchievementID": "epoch-6-bits",
+    "skinID": "formula6b",
+    "themeID": "formula6b",
+    "drawable": "launcher_formula6b",
+    "image": "art/launcher/formula6b.webp"
+  },
+  {
+    "condition": "С престижа VI: заработайте 10¹⁷ ∫ за один мир.",
+    "description": "Фон «Гравитационные волны». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance6",
+    "name": "∫ · Гравитационные волны",
+    "requiredAchievementID": "epoch-6-earned",
+    "skinID": "resonance6",
+    "themeID": "resonance6",
+    "drawable": "launcher_resonance6",
+    "image": "art/launcher/resonance6.webp"
+  },
+  {
+    "condition": "С престижа VI: достигните производства 10¹⁰ ∫ в секунду.",
+    "description": "Фон «Линза бездны · перламутр». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance6a",
+    "name": "∫ · Линза бездны · перламутр",
+    "requiredAchievementID": "epoch-6-production",
+    "skinID": "resonance6a",
+    "themeID": "resonance6a",
+    "drawable": "launcher_resonance6a",
+    "image": "art/launcher/resonance6a.webp"
+  },
+  {
+    "condition": "С престижа VI: соберите 2000 ресурсов одновременно.",
+    "description": "Фон «Магнитные полюса · янтарь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance6b",
+    "name": "∫ · Магнитные полюса · янтарь",
+    "requiredAchievementID": "epoch-6-population",
+    "skinID": "resonance6b",
+    "themeID": "resonance6b",
+    "drawable": "launcher_resonance6b",
+    "image": "art/launcher/resonance6b.webp"
+  },
+  {
+    "condition": "С престижа VI: изучите 42 улучшений в одном мире.",
+    "description": "Фон «Призменный свет · нефрит». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance6c",
+    "name": "∫ · Призменный свет · нефрит",
+    "requiredAchievementID": "epoch-6-research",
+    "skinID": "resonance6c",
+    "themeID": "resonance6c",
+    "drawable": "launcher_resonance6c",
+    "image": "art/launcher/resonance6c.webp"
+  },
+  {
+    "condition": "С престижа VI: соберите 7 работающих пар ресурсов одновременно.",
+    "description": "Фон «Сердце квазара · затмение». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance6d",
+    "name": "∫ · Сердце квазара · затмение",
+    "requiredAchievementID": "epoch-6-pairs",
+    "skinID": "resonance6d",
+    "themeID": "resonance6d",
+    "drawable": "launcher_resonance6d",
+    "image": "art/launcher/resonance6d.webp"
+  },
+  {
+    "condition": "С престижа VI: купите суммарно 5000 ресурсов «Студент» за все миры.",
+    "description": "Фон «Световые орбиты · фуксия». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance6f",
+    "name": "∫ · Световые орбиты · фуксия",
+    "requiredAchievementID": "epoch-6-students",
+    "skinID": "resonance6f",
+    "themeID": "resonance6f",
+    "drawable": "launcher_resonance6f",
+    "image": "art/launcher/resonance6f.webp"
+  },
+  {
+    "condition": "С престижа VI: купите суммарно 5000 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Плазменный поток · аметист». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance6g",
+    "name": "∫ · Плазменный поток · аметист",
+    "requiredAchievementID": "epoch-6-teachers",
+    "skinID": "resonance6g",
+    "themeID": "resonance6g",
+    "drawable": "launcher_resonance6g",
+    "image": "art/launcher/resonance6g.webp"
+  },
+  {
+    "condition": "С престижа VI: купите суммарно 30000 ресурсов любых видов за все миры.",
+    "description": "Фон «Неоновый город · полярность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance6h",
+    "name": "∫ · Неоновый город · полярность",
+    "requiredAchievementID": "epoch-6-all-purchases",
+    "skinID": "resonance6h",
+    "themeID": "resonance6h",
+    "drawable": "launcher_resonance6h",
+    "image": "art/launcher/resonance6h.webp"
+  },
+  {
+    "condition": "С престижа VII: успешно завершите 12 заданий за один мир.",
+    "description": "Фон «Лаймовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula7",
+    "name": "∫ · Лаймовые формулы",
+    "requiredAchievementID": "epoch-7-formulas",
+    "skinID": "formula7",
+    "themeID": "formula7",
+    "drawable": "launcher_formula7",
+    "image": "art/launcher/formula7.webp"
+  },
+  {
+    "condition": "С престижа VII: сделайте 500 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Радужные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula7a",
+    "name": "∫ · Радужные формулы",
+    "requiredAchievementID": "epoch-7-touches",
+    "skinID": "formula7a",
+    "themeID": "formula7a",
+    "drawable": "launcher_formula7a",
+    "image": "art/launcher/formula7a.webp"
+  },
+  {
+    "condition": "С престижа VII: купите суммарно 17500 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Лазурные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula7b",
+    "name": "∫ · Лазурные формулы",
+    "requiredAchievementID": "epoch-7-bits",
+    "skinID": "formula7b",
+    "themeID": "formula7b",
+    "drawable": "launcher_formula7b",
+    "image": "art/launcher/formula7b.webp"
+  },
+  {
+    "condition": "С престижа VII: заработайте 10¹⁸ ∫ за один мир.",
+    "description": "Фон «Линза бездны». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance7",
+    "name": "∫ · Линза бездны",
+    "requiredAchievementID": "epoch-7-earned",
+    "skinID": "resonance7",
+    "themeID": "resonance7",
+    "drawable": "launcher_resonance7",
+    "image": "art/launcher/resonance7.webp"
+  },
+  {
+    "condition": "С престижа VII: достигните производства 10¹¹ ∫ в секунду.",
+    "description": "Фон «Магнитные полюса · квазар». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance7a",
+    "name": "∫ · Магнитные полюса · квазар",
+    "requiredAchievementID": "epoch-7-production",
+    "skinID": "resonance7a",
+    "themeID": "resonance7a",
+    "drawable": "launcher_resonance7a",
+    "image": "art/launcher/resonance7a.webp"
+  },
+  {
+    "condition": "С престижа VII: соберите 2500 ресурсов одновременно.",
+    "description": "Фон «Призменный свет · фуксия». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance7b",
+    "name": "∫ · Призменный свет · фуксия",
+    "requiredAchievementID": "epoch-7-population",
+    "skinID": "resonance7b",
+    "themeID": "resonance7b",
+    "drawable": "launcher_resonance7b",
+    "image": "art/launcher/resonance7b.webp"
+  },
+  {
+    "condition": "С престижа VII: изучите 48 улучшений в одном мире.",
+    "description": "Фон «Сердце квазара · аметист». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance7c",
+    "name": "∫ · Сердце квазара · аметист",
+    "requiredAchievementID": "epoch-7-research",
+    "skinID": "resonance7c",
+    "themeID": "resonance7c",
+    "drawable": "launcher_resonance7c",
+    "image": "art/launcher/resonance7c.webp"
+  },
+  {
+    "condition": "С престижа VII: соберите 8 работающих пар ресурсов одновременно.",
+    "description": "Фон «Созвездие вечности · полярность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance7d",
+    "name": "∫ · Созвездие вечности · полярность",
+    "requiredAchievementID": "epoch-7-pairs",
+    "skinID": "resonance7d",
+    "themeID": "resonance7d",
+    "drawable": "launcher_resonance7d",
+    "image": "art/launcher/resonance7d.webp"
+  },
+  {
+    "condition": "С престижа VII: купите суммарно 6500 ресурсов «Студент» за все миры.",
+    "description": "Фон «Плазменный поток · лазурь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance7f",
+    "name": "∫ · Плазменный поток · лазурь",
+    "requiredAchievementID": "epoch-7-students",
+    "skinID": "resonance7f",
+    "themeID": "resonance7f",
+    "drawable": "launcher_resonance7f",
+    "image": "art/launcher/resonance7f.webp"
+  },
+  {
+    "condition": "С престижа VII: купите суммарно 6500 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Неоновый город · лёд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance7g",
+    "name": "∫ · Неоновый город · лёд",
+    "requiredAchievementID": "epoch-7-teachers",
+    "skinID": "resonance7g",
+    "themeID": "resonance7g",
+    "drawable": "launcher_resonance7g",
+    "image": "art/launcher/resonance7g.webp"
+  },
+  {
+    "condition": "С престижа VII: купите суммарно 40000 ресурсов любых видов за все миры.",
+    "description": "Фон «Кристальная решётка · перламутр». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance7h",
+    "name": "∫ · Кристальная решётка · перламутр",
+    "requiredAchievementID": "epoch-7-all-purchases",
+    "skinID": "resonance7h",
+    "themeID": "resonance7h",
+    "drawable": "launcher_resonance7h",
+    "image": "art/launcher/resonance7h.webp"
+  },
+  {
+    "condition": "С престижа VIII: успешно завершите 15 заданий за один мир.",
+    "description": "Фон «Серебряные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula8",
+    "name": "∫ · Серебряные формулы",
+    "requiredAchievementID": "epoch-8-formulas",
+    "skinID": "formula8",
+    "themeID": "formula8",
+    "drawable": "launcher_formula8",
+    "image": "art/launcher/formula8.webp"
+  },
+  {
+    "condition": "С престижа VIII: сделайте 650 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Бесконечные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula8a",
+    "name": "∫ · Бесконечные формулы",
+    "requiredAchievementID": "epoch-8-touches",
+    "skinID": "formula8a",
+    "themeID": "formula8a",
+    "drawable": "launcher_formula8a",
+    "image": "art/launcher/formula8a.webp"
+  },
+  {
+    "condition": "С престижа VIII: купите суммарно 20000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Розовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula8b",
+    "name": "∫ · Розовые формулы",
+    "requiredAchievementID": "epoch-8-bits",
+    "skinID": "formula8b",
+    "themeID": "formula8b",
+    "drawable": "launcher_formula8b",
+    "image": "art/launcher/formula8b.webp"
+  },
+  {
+    "condition": "С престижа VIII: заработайте 10¹⁹ ∫ за один мир.",
+    "description": "Фон «Магнитные полюса». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance8",
+    "name": "∫ · Магнитные полюса",
+    "requiredAchievementID": "epoch-8-earned",
+    "skinID": "resonance8",
+    "themeID": "resonance8",
+    "drawable": "launcher_resonance8",
+    "image": "art/launcher/resonance8.webp"
+  },
+  {
+    "condition": "С престижа VIII: достигните производства 10¹² ∫ в секунду.",
+    "description": "Фон «Призменный свет · звёздный свет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance8a",
+    "name": "∫ · Призменный свет · звёздный свет",
+    "requiredAchievementID": "epoch-8-production",
+    "skinID": "resonance8a",
+    "themeID": "resonance8a",
+    "drawable": "launcher_resonance8a",
+    "image": "art/launcher/resonance8a.webp"
+  },
+  {
+    "condition": "С престижа VIII: соберите 3500 ресурсов одновременно.",
+    "description": "Фон «Сердце квазара · лазурь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance8b",
+    "name": "∫ · Сердце квазара · лазурь",
+    "requiredAchievementID": "epoch-8-population",
+    "skinID": "resonance8b",
+    "themeID": "resonance8b",
+    "drawable": "launcher_resonance8b",
+    "image": "art/launcher/resonance8b.webp"
+  },
+  {
+    "condition": "С престижа VIII: изучите 54 улучшений в одном мире.",
+    "description": "Фон «Созвездие вечности · лёд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance8c",
+    "name": "∫ · Созвездие вечности · лёд",
+    "requiredAchievementID": "epoch-8-research",
+    "skinID": "resonance8c",
+    "themeID": "resonance8c",
+    "drawable": "launcher_resonance8c",
+    "image": "art/launcher/resonance8c.webp"
+  },
+  {
+    "condition": "С престижа VIII: соберите 8 работающих пар ресурсов одновременно.",
+    "description": "Фон «Световые орбиты · перламутр». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance8d",
+    "name": "∫ · Световые орбиты · перламутр",
+    "requiredAchievementID": "epoch-8-pairs",
+    "skinID": "resonance8d",
+    "themeID": "resonance8d",
+    "drawable": "launcher_resonance8d",
+    "image": "art/launcher/resonance8d.webp"
+  },
+  {
+    "condition": "С престижа VIII: купите суммарно 8000 ресурсов «Студент» за все миры.",
+    "description": "Фон «Неоновый город · нефрит». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance8f",
+    "name": "∫ · Неоновый город · нефрит",
+    "requiredAchievementID": "epoch-8-students",
+    "skinID": "resonance8f",
+    "themeID": "resonance8f",
+    "drawable": "launcher_resonance8f",
+    "image": "art/launcher/resonance8f.webp"
+  },
+  {
+    "condition": "С престижа VIII: купите суммарно 8000 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Кристальная решётка · затмение». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance8g",
+    "name": "∫ · Кристальная решётка · затмение",
+    "requiredAchievementID": "epoch-8-teachers",
+    "skinID": "resonance8g",
+    "themeID": "resonance8g",
+    "drawable": "launcher_resonance8g",
+    "image": "art/launcher/resonance8g.webp"
+  },
+  {
+    "condition": "С престижа VIII: купите суммарно 55000 ресурсов любых видов за все миры.",
+    "description": "Фон «Живая туманность · квазар». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance8h",
+    "name": "∫ · Живая туманность · квазар",
+    "requiredAchievementID": "epoch-8-all-purchases",
+    "skinID": "resonance8h",
+    "themeID": "resonance8h",
+    "drawable": "launcher_resonance8h",
+    "image": "art/launcher/resonance8h.webp"
+  },
+  {
+    "condition": "С престижа IX: успешно завершите 18 заданий за один мир.",
+    "description": "Фон «Солнечные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula9",
+    "name": "∫ · Солнечные формулы",
+    "requiredAchievementID": "epoch-9-formulas",
+    "skinID": "formula9",
+    "themeID": "formula9",
+    "drawable": "launcher_formula9",
+    "image": "art/launcher/formula9.webp"
+  },
+  {
+    "condition": "С престижа IX: сделайте 800 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Янтарные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula9a",
+    "name": "∫ · Янтарные формулы",
+    "requiredAchievementID": "epoch-9-touches",
+    "skinID": "formula9a",
+    "themeID": "formula9a",
+    "drawable": "launcher_formula9a",
+    "image": "art/launcher/formula9a.webp"
+  },
+  {
+    "condition": "С престижа IX: купите суммарно 22500 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Ледяные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula9b",
+    "name": "∫ · Ледяные формулы",
+    "requiredAchievementID": "epoch-9-bits",
+    "skinID": "formula9b",
+    "themeID": "formula9b",
+    "drawable": "launcher_formula9b",
+    "image": "art/launcher/formula9b.webp"
+  },
+  {
+    "condition": "С престижа IX: заработайте 10²⁰ ∫ за один мир.",
+    "description": "Фон «Призменный свет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance9",
+    "name": "∫ · Призменный свет",
+    "requiredAchievementID": "epoch-9-earned",
+    "skinID": "resonance9",
+    "themeID": "resonance9",
+    "drawable": "launcher_resonance9",
+    "image": "art/launcher/resonance9.webp"
+  },
+  {
+    "condition": "С престижа IX: достигните производства 10¹³ ∫ в секунду.",
+    "description": "Фон «Сердце квазара · янтарь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance9a",
+    "name": "∫ · Сердце квазара · янтарь",
+    "requiredAchievementID": "epoch-9-production",
+    "skinID": "resonance9a",
+    "themeID": "resonance9a",
+    "drawable": "launcher_resonance9a",
+    "image": "art/launcher/resonance9a.webp"
+  },
+  {
+    "condition": "С престижа IX: соберите 5000 ресурсов одновременно.",
+    "description": "Фон «Созвездие вечности · нефрит». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance9b",
+    "name": "∫ · Созвездие вечности · нефрит",
+    "requiredAchievementID": "epoch-9-population",
+    "skinID": "resonance9b",
+    "themeID": "resonance9b",
+    "drawable": "launcher_resonance9b",
+    "image": "art/launcher/resonance9b.webp"
+  },
+  {
+    "condition": "С престижа IX: изучите 60 улучшений в одном мире.",
+    "description": "Фон «Световые орбиты · затмение». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance9c",
+    "name": "∫ · Световые орбиты · затмение",
+    "requiredAchievementID": "epoch-9-research",
+    "skinID": "resonance9c",
+    "themeID": "resonance9c",
+    "drawable": "launcher_resonance9c",
+    "image": "art/launcher/resonance9c.webp"
+  },
+  {
+    "condition": "С престижа IX: соберите 8 работающих пар ресурсов одновременно.",
+    "description": "Фон «Плазменный поток · квазар». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance9d",
+    "name": "∫ · Плазменный поток · квазар",
+    "requiredAchievementID": "epoch-9-pairs",
+    "skinID": "resonance9d",
+    "themeID": "resonance9d",
+    "drawable": "launcher_resonance9d",
+    "image": "art/launcher/resonance9d.webp"
+  },
+  {
+    "condition": "С престижа IX: купите суммарно 10000 ресурсов «Студент» за все миры.",
+    "description": "Фон «Кристальная решётка · аметист». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance9f",
+    "name": "∫ · Кристальная решётка · аметист",
+    "requiredAchievementID": "epoch-9-students",
+    "skinID": "resonance9f",
+    "themeID": "resonance9f",
+    "drawable": "launcher_resonance9f",
+    "image": "art/launcher/resonance9f.webp"
+  },
+  {
+    "condition": "С престижа IX: купите суммарно 10000 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Живая туманность · полярность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance9g",
+    "name": "∫ · Живая туманность · полярность",
+    "requiredAchievementID": "epoch-9-teachers",
+    "skinID": "resonance9g",
+    "themeID": "resonance9g",
+    "drawable": "launcher_resonance9g",
+    "image": "art/launcher/resonance9g.webp"
+  },
+  {
+    "condition": "С престижа IX: купите суммарно 75000 ресурсов любых видов за все миры.",
+    "description": "Фон «Гравитационные волны · звёздный свет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance9h",
+    "name": "∫ · Гравитационные волны · звёздный свет",
+    "requiredAchievementID": "epoch-9-all-purchases",
+    "skinID": "resonance9h",
+    "themeID": "resonance9h",
+    "drawable": "launcher_resonance9h",
+    "image": "art/launcher/resonance9h.webp"
+  },
+  {
+    "condition": "С престижа X: успешно завершите 20 заданий за один мир.",
+    "description": "Фон «Радужные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula10",
+    "name": "∫ · Радужные формулы",
+    "requiredAchievementID": "epoch-10-formulas",
+    "skinID": "formula10",
+    "themeID": "formula10",
+    "drawable": "launcher_formula10",
+    "image": "art/launcher/formula10.webp"
+  },
+  {
+    "condition": "С престижа X: сделайте 1000 ручных нажатий за один мир. Нажатия на часах тоже считаются.",
+    "description": "Фон «Лазурные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula10a",
+    "name": "∫ · Лазурные формулы",
+    "requiredAchievementID": "epoch-10-touches",
+    "skinID": "formula10a",
+    "themeID": "formula10a",
+    "drawable": "launcher_formula10a",
+    "image": "art/launcher/formula10a.webp"
+  },
+  {
+    "condition": "С престижа X: купите суммарно 25000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.",
+    "description": "Фон «Аметистовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formula10b",
+    "name": "∫ · Аметистовые формулы",
+    "requiredAchievementID": "epoch-10-bits",
+    "skinID": "formula10b",
+    "themeID": "formula10b",
+    "drawable": "launcher_formula10b",
+    "image": "art/launcher/formula10b.webp"
+  },
+  {
+    "condition": "С престижа X: заработайте 10²¹ ∫ за один мир.",
+    "description": "Фон «Сердце квазара». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance10",
+    "name": "∫ · Сердце квазара",
+    "requiredAchievementID": "epoch-10-earned",
+    "skinID": "resonance10",
+    "themeID": "resonance10",
+    "drawable": "launcher_resonance10",
+    "image": "art/launcher/resonance10.webp"
+  },
+  {
+    "condition": "С престижа X: достигните производства 10¹⁴ ∫ в секунду.",
+    "description": "Фон «Созвездие вечности · фуксия». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance10a",
+    "name": "∫ · Созвездие вечности · фуксия",
+    "requiredAchievementID": "epoch-10-production",
+    "skinID": "resonance10a",
+    "themeID": "resonance10a",
+    "drawable": "launcher_resonance10a",
+    "image": "art/launcher/resonance10a.webp"
+  },
+  {
+    "condition": "С престижа X: соберите 7500 ресурсов одновременно.",
+    "description": "Фон «Световые орбиты · аметист». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance10b",
+    "name": "∫ · Световые орбиты · аметист",
+    "requiredAchievementID": "epoch-10-population",
+    "skinID": "resonance10b",
+    "themeID": "resonance10b",
+    "drawable": "launcher_resonance10b",
+    "image": "art/launcher/resonance10b.webp"
+  },
+  {
+    "condition": "С престижа X: изучите 70 улучшений в одном мире.",
+    "description": "Фон «Плазменный поток · полярность». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance10c",
+    "name": "∫ · Плазменный поток · полярность",
+    "requiredAchievementID": "epoch-10-research",
+    "skinID": "resonance10c",
+    "themeID": "resonance10c",
+    "drawable": "launcher_resonance10c",
+    "image": "art/launcher/resonance10c.webp"
+  },
+  {
+    "condition": "С престижа X: соберите 8 работающих пар ресурсов одновременно.",
+    "description": "Фон «Неоновый город · звёздный свет». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance10d",
+    "name": "∫ · Неоновый город · звёздный свет",
+    "requiredAchievementID": "epoch-10-pairs",
+    "skinID": "resonance10d",
+    "themeID": "resonance10d",
+    "drawable": "launcher_resonance10d",
+    "image": "art/launcher/resonance10d.webp"
+  },
+  {
+    "condition": "С престижа X: купите суммарно 12500 ресурсов «Студент» за все миры.",
+    "description": "Фон «Живая туманность · лёд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance10f",
+    "name": "∫ · Живая туманность · лёд",
+    "requiredAchievementID": "epoch-10-students",
+    "skinID": "resonance10f",
+    "themeID": "resonance10f",
+    "drawable": "launcher_resonance10f",
+    "image": "art/launcher/resonance10f.webp"
+  },
+  {
+    "condition": "С престижа X: купите суммарно 12500 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Гравитационные волны · перламутр». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance10g",
+    "name": "∫ · Гравитационные волны · перламутр",
+    "requiredAchievementID": "epoch-10-teachers",
+    "skinID": "resonance10g",
+    "themeID": "resonance10g",
+    "drawable": "launcher_resonance10g",
+    "image": "art/launcher/resonance10g.webp"
+  },
+  {
+    "condition": "С престижа X: купите суммарно 100000 ресурсов любых видов за все миры.",
+    "description": "Фон «Линза бездны · янтарь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonance10h",
+    "name": "∫ · Линза бездны · янтарь",
+    "requiredAchievementID": "epoch-10-all-purchases",
+    "skinID": "resonance10h",
+    "themeID": "resonance10h",
+    "drawable": "launcher_resonance10h",
+    "image": "art/launcher/resonance10h.webp"
+  },
+  {
+    "condition": "Создайте новую вселенную после престижа X 3 раз.",
+    "description": "Фон «Бесконечные формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formulaBeyond",
+    "name": "∫ · Бесконечные формулы",
+    "requiredAchievementID": "cosmic-3",
+    "skinID": "formulaBeyond",
+    "themeID": "formulaBeyond",
+    "drawable": "launcher_formulabeyond",
+    "image": "art/launcher/formulabeyond.webp"
+  },
+  {
+    "condition": "После первого прохождения престижа X успешно завершите 25 заданий за один мир.",
+    "description": "Фон «Розовые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formulaBeyonda",
+    "name": "∫ · Розовые формулы",
+    "requiredAchievementID": "beyond-formulas",
+    "skinID": "formulaBeyonda",
+    "themeID": "formulaBeyonda",
+    "drawable": "launcher_formulabeyonda",
+    "image": "art/launcher/formulabeyonda.webp"
+  },
+  {
+    "condition": "После первого прохождения престижа X купите суммарно 50 000 бит информации за все миры.",
+    "description": "Фон «Коралловые формулы». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "formulaBeyondb",
+    "name": "∫ · Коралловые формулы",
+    "requiredAchievementID": "beyond-bits",
+    "skinID": "formulaBeyondb",
+    "themeID": "formulaBeyondb",
+    "drawable": "launcher_formulabeyondb",
+    "image": "art/launcher/formulabeyondb.webp"
+  },
+  {
+    "condition": "После первого прохождения престижа X заработайте 10²² ∫ за один мир.",
+    "description": "Фон «Созвездие вечности». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonanceBeyond",
+    "name": "∫ · Созвездие вечности",
+    "requiredAchievementID": "beyond-earned",
+    "skinID": "resonanceBeyond",
+    "themeID": "resonanceBeyond",
+    "drawable": "launcher_resonancebeyond",
+    "image": "art/launcher/resonancebeyond.webp"
+  },
+  {
+    "condition": "Создайте новую вселенную после престижа X 2 раз.",
+    "description": "Фон «Световые орбиты · лазурь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonanceBeyonda",
+    "name": "∫ · Световые орбиты · лазурь",
+    "requiredAchievementID": "cosmic-2",
+    "skinID": "resonanceBeyonda",
+    "themeID": "resonanceBeyonda",
+    "drawable": "launcher_resonancebeyonda",
+    "image": "art/launcher/resonancebeyonda.webp"
+  },
+  {
+    "condition": "Создайте новую вселенную после престижа X 5 раз.",
+    "description": "Фон «Плазменный поток · лёд». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonanceBeyondb",
+    "name": "∫ · Плазменный поток · лёд",
+    "requiredAchievementID": "cosmic-5",
+    "skinID": "resonanceBeyondb",
+    "themeID": "resonanceBeyondb",
+    "drawable": "launcher_resonancebeyondb",
+    "image": "art/launcher/resonancebeyondb.webp"
+  },
+  {
+    "condition": "Создайте новую вселенную после престижа X 10 раз.",
+    "description": "Фон «Неоновый город · перламутр». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonanceBeyondc",
+    "name": "∫ · Неоновый город · перламутр",
+    "requiredAchievementID": "cosmic-10",
+    "skinID": "resonanceBeyondc",
+    "themeID": "resonanceBeyondc",
+    "drawable": "launcher_resonancebeyondc",
+    "image": "art/launcher/resonancebeyondc.webp"
+  },
+  {
+    "condition": "После первого прохождения престижа X купите суммарно 25 000 ресурсов «Студент» за все миры.",
+    "description": "Фон «Кристальная решётка · янтарь». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonanceBeyondd",
+    "name": "∫ · Кристальная решётка · янтарь",
+    "requiredAchievementID": "beyond-students",
+    "skinID": "resonanceBeyondd",
+    "themeID": "resonanceBeyondd",
+    "drawable": "launcher_resonancebeyondd",
+    "image": "art/launcher/resonancebeyondd.webp"
+  },
+  {
+    "condition": "После первого прохождения престижа X купите суммарно 25 000 ресурсов «Преподаватель» за все миры.",
+    "description": "Фон «Живая туманность · нефрит». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonanceBeyonde",
+    "name": "∫ · Живая туманность · нефрит",
+    "requiredAchievementID": "beyond-teachers",
+    "skinID": "resonanceBeyonde",
+    "themeID": "resonanceBeyonde",
+    "drawable": "launcher_resonancebeyonde",
+    "image": "art/launcher/resonancebeyonde.webp"
+  },
+  {
+    "condition": "После первого прохождения престижа X купите суммарно 250 000 ресурсов за все миры.",
+    "description": "Фон «Гравитационные волны · затмение». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonanceBeyondf",
+    "name": "∫ · Гравитационные волны · затмение",
+    "requiredAchievementID": "beyond-all-purchases",
+    "skinID": "resonanceBeyondf",
+    "themeID": "resonanceBeyondf",
+    "drawable": "launcher_resonancebeyondf",
+    "image": "art/launcher/resonancebeyondf.webp"
+  },
+  {
+    "condition": "Пройдите престиж X и накопите 1 000 000 ручных нажатий за всё время. Нажатия на часах тоже считаются.",
+    "description": "Фон «Линза бездны · квазар». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "resonanceBeyondg",
+    "name": "∫ · Линза бездны · квазар",
+    "requiredAchievementID": "beyond-clicks",
+    "skinID": "resonanceBeyondg",
+    "themeID": "resonanceBeyondg",
+    "drawable": "launcher_resonancebeyondg",
+    "image": "art/launcher/resonancebeyondg.webp"
+  },
+  {
+    "condition": "Сделайте 10 000 ручных нажатий.",
+    "description": "Фон «Неутомимый импульс». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "milestone1",
+    "name": "∫ · Неутомимый импульс",
+    "requiredAchievementID": "clicks-10000",
+    "skinID": "milestone1",
+    "themeID": "milestone1",
+    "drawable": "launcher_milestone1",
+    "image": "art/launcher/milestone1.webp"
+  },
+  {
+    "condition": "Сделайте 100 000 ручных нажатий.",
+    "description": "Фон «Орбиты марафона». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "milestone2",
+    "name": "∫ · Орбиты марафона",
+    "requiredAchievementID": "clicks-100000",
+    "skinID": "milestone2",
+    "themeID": "milestone2",
+    "drawable": "launcher_milestone2",
+    "image": "art/launcher/milestone2.webp"
+  },
+  {
+    "condition": "Сделайте 1 000 000 ручных нажатий.",
+    "description": "Фон «Миллион созвездий». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "milestone3",
+    "name": "∫ · Миллион созвездий",
+    "requiredAchievementID": "clicks-1000000",
+    "skinID": "milestone3",
+    "themeID": "milestone3",
+    "drawable": "launcher_milestone3",
+    "image": "art/launcher/milestone3.webp"
+  },
+  {
+    "condition": "Соберите 1 000 ресурсов одновременно.",
+    "description": "Фон «Город тысячи огней». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "milestone4",
+    "name": "∫ · Город тысячи огней",
+    "requiredAchievementID": "helpers-1000",
+    "skinID": "milestone4",
+    "themeID": "milestone4",
+    "drawable": "launcher_milestone4",
+    "image": "art/launcher/milestone4.webp"
+  },
+  {
+    "condition": "Изучите 75 улучшений в одной эпохе.",
+    "description": "Фон «Архив открытий». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "milestone5",
+    "name": "∫ · Архив открытий",
+    "requiredAchievementID": "research-75",
+    "skinID": "milestone5",
+    "themeID": "milestone5",
+    "drawable": "launcher_milestone5",
+    "image": "art/launcher/milestone5.webp"
+  },
+  {
+    "condition": "Победите в 50 испытаниях.",
+    "description": "Фон «Формула совершенства». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "milestone6",
+    "name": "∫ · Формула совершенства",
+    "requiredAchievementID": "challenges-50",
+    "skinID": "milestone6",
+    "themeID": "milestone6",
+    "drawable": "launcher_milestone6",
+    "image": "art/launcher/milestone6.webp"
+  },
+  {
+    "condition": "Одновременно соберите три работающие пары ресурсов.",
+    "description": "Фон «Созвездие сотрудничества». Иконка сохраняет этот облик на экране «Домой».",
+    "id": "milestone10",
+    "name": "∫ · Созвездие сотрудничества",
+    "requiredAchievementID": "pairs-3",
+    "skinID": "milestone10",
+    "themeID": "milestone10",
+    "drawable": "launcher_milestone10",
+    "image": "art/launcher/milestone10.webp"
+  }
+];
+  for (const item of catalog) Object.freeze(item);
+  return Object.freeze({catalog:Object.freeze(catalog), unlocked(item) { return !!item && (!item.requiredAchievementID || window.Honors?.earned(item.requiredAchievementID) === true); }});
+})();
+
+;
+// Android supplies the installed launcher state. A standalone preview keeps a separate local choice.
+(() => {
+  "use strict";
+  const storageKey = "integrals.duomax.launcher-preview.v1";
+  const native = window.DuoLauncher;
+  const onDevice = !!native && typeof native.current === "function" && typeof native.select === "function";
+  const known = new Set(window.LauncherIcons.catalog.map(item => item.id));
+  let lastNative = "", preview = "default";
+
+  if (!onDevice) {
+    try {
+      const saved = window.localStorage.getItem(storageKey);
+      if (known.has(saved)) preview = saved;
+    } catch (_) { /* Private previews can keep their choice for this session. */ }
+  }
+
+  function current() {
+    if (!onDevice) return preview;
+    try {
+      const id = native.current();
+      if (known.has(id)) lastNative = id;
+    } catch (_) { /* Keep the last confirmed launcher state. */ }
+    return lastNative;
+  }
+
+  function select(id) {
+    if (!known.has(id)) return false;
+    if (onDevice) {
+      try {
+        if (!native.select(id)) return false;
+        lastNative = id;
+      } catch (_) { return false; }
+    } else {
+      preview = id;
+      try { window.localStorage.setItem(storageKey, id); } catch (_) {}
+    }
+    window.dispatchEvent(new CustomEvent("duolaunchericon", {detail:{id,native:onDevice}}));
+    return true;
+  }
+
+  window.LauncherChoice = Object.freeze({current, select, native:onDevice});
+})();
+
+;
+// A chapter can stay selected while its rail changes from a row to a column.
+window.ChapterRails = (() => {
+  function vertical(row) {
+    return getComputedStyle(row).flexDirection === 'column';
+  }
+
+  function reveal(row) {
+    const active = row.querySelector('[aria-pressed="true"]');
+    if (!active || !row.clientWidth || !row.clientHeight) return;
+    const button = active.getBoundingClientRect(), rail = row.getBoundingClientRect();
+    if (vertical(row)) {
+      if (button.top < rail.top) row.scrollTop += button.top - rail.top;
+      else if (button.bottom > rail.bottom) row.scrollTop += button.bottom - rail.bottom;
+    } else {
+      if (button.left < rail.left) row.scrollLeft += button.left - rail.left;
+      else if (button.right > rail.right) row.scrollLeft += button.right - rail.right;
+    }
+  }
+
+  function bind(row) {
+    row.addEventListener('keydown', event => {
+      const button = event.target.closest('button[data-chapter]');
+      if (!button) return;
+      const buttons = Array.from(row.children), index = buttons.indexOf(button);
+      const [previous, next] = vertical(row) ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
+      let target;
+      if (event.key === previous) target = buttons[index - 1];
+      else if (event.key === next) target = buttons[index + 1];
+      else if (event.key === 'Home') target = buttons[0];
+      else if (event.key === 'End') target = buttons[buttons.length - 1];
+      else return;
+      event.preventDefault();
+      if (target) {
+        target.focus({preventScroll:true});
+        target.click();
+      }
+    });
+    row.addEventListener('wheel', event => {
+      if (vertical(row) || event.ctrlKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+      const before = row.scrollLeft;
+      row.scrollLeft += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? row.clientWidth : 1);
+      if (before !== row.scrollLeft) event.preventDefault();
+    }, {passive:false});
+  }
+
+  function revealVisibleChapters() {
+    document.querySelectorAll('.ap-chapters, .hc-gallery .hc-eras').forEach(reveal);
+  }
+  window.addEventListener('resize', revealVisibleChapters);
+  // The media-query change may apply the new axis after window.resize fires.
+  new MutationObserver(revealVisibleChapters).observe(document.documentElement, {
+    attributes: true, attributeFilter: ['data-landscape']
+  });
+  return {bind, reveal};
+})();
+
+;
+// Original iOS color tables, from IntegralThemeArtwork, IntegralSkinArtwork and PrestigeArtwork.
+window.Appearance = (() => {
+'use strict';
+const themes = {"emberfire":"#361d20","monsoon":"#17364a","enchanted":"#153726","nebula":"#251943","matrix":"#092e26","lotus":"#44293c","midnightgold":"#16140f","coralreef":"#123d45","electricstorm":"#192444","deeprift":"#150f2a","classic":"#1A4761","emerald":"#134730","night":"#1F1F45","parchment":"#54401F","aurora":"#1A5252","crimson":"#4D142B","starlight":"#24143b","cosmic":"#090e27","ocean":"#073247","sunset":"#442130","sakura":"#402338","graphite":"#18212A","copper":"#382319","lagoon":"#083934","violet":"#292042","glacier":"#203645","prestige3":"#28110e","prestige4":"#171c28","prestige5":"#112b2c","prestige6":"#112435","prestige7":"#082838","prestige8":"#241332","prestige9":"#2b131b","prestige10":"#080c20"};
+const skins = {"ocean":"#083c59","ruby":"#5a102c","emerald":"#074c3a","copper":"#b67640","pearl":"#ece4d6","neon":"#0b1522","blueprint":"#103779","solar":"#ffd38a","lunar":"#b7c7d7","prism":"#382b68","circuit":"#102c25","obsidian":"#161723","tesla":"#0d2545","runes":"#352248","ripple":"#073b51","galaxy":"#211d4d","clockwork":"#322a20","hologram":"#123e46","magma":"#571f1f","snowflake":"#cef1f1","jade":"#9cd5b6","pearlmoon":"#e6dded","sundial":"#f2d39b","eventide":"#24190c","fractal":"#18132e","quasar":"#1a112d","prestige3":"#38120d","prestige4":"#171f29","prestige5":"#0d2c2b","prestige6":"#0c2133","prestige7":"#073044","prestige8":"#271235","prestige9":"#39131a","prestige10":"#080918","blackhole":"#070811","cosmic":"#121333","classic":"#fffdf6","chalk":"#1a4540","gold":"#ffd466","crystal":"#a8e6fa","plasma":"#381257"};
+const darkSkins = new Set(["chalk", "plasma", "blackhole", "cosmic", "ocean", "ruby", "emerald", "neon", "blueprint", "prism", "circuit", "obsidian", "tesla", "runes", "ripple", "galaxy", "clockwork", "hologram", "magma", "eventide", "fractal", "quasar"]);
+const formulaPalettes = [["#21180b","#2a1c0c","#ffbf5c","#ffe5a4"],["#071d32","#08263b","#59caff","#b6eeff"],["#281126","#32152e","#ff82c6","#ffc2e3"],["#10252c","#12333a","#8ff0ef","#e0ffff"],["#201035","#2b173f","#ba91ff","#e3cbff"],["#2b141a","#36151c","#ff947e","#ffd0ad"],["#162510","#1c3013","#c2f46f","#ecffac"],["#17232c","#1e2c39","#c8dbe9","#f2f7ff"],["#281b0c","#35220d","#ffdd65","#fff4bc"],["#16132b","#1e1938","#8ae7ff","#ffa6e0"],["#111527","#151b31","#a1fff1","#d9b7ff"]];
+const resonancePalettes = [["#1f170e","#241b12","#ffcb72","#ffefb8"],["#240e29","#2b1038","#ff70bb","#a58aff"],["#081d2b","#0a1e33","#62ddff","#ff8fd3"],["#102624","#14332e","#86ffdc","#c4a4ff"],["#16122e","#201535","#c89bff","#7de4ff"],["#092531","#0c2d3b","#65e1f4","#c2f9ff"],["#0a1021","#070d1b","#ffb86a","#b6a0ff"],["#0a2525","#10302d","#6dffd0","#8cbcff"],["#24182f","#2d1c39","#ffa5dd","#8cefff"],["#201226","#27152f","#ffa4f0","#a3d9ff"],["#0c1428","#101b32","#ffde9b","#8ce7ff"]];
+const milestonePalettes = [["#071a25","#0a2434","#63eeff","#ffad6f"],["#2b1023","#34182b","#ffcc8a","#ff8fbd"],["#070b19","#10172a","#ffe597","#e6f5ff"],["#10231e","#17382e","#93ffcb","#ffd994"],["#1b1732","#292441","#ceb6ff","#adf1ff"],["#261229","#351a35","#ffa8ed","#f3e3ff"],["#251914","#38271d","#ffb782","#83e5e7"],["#0f1c33","#172c48","#ffd08a","#92c8ff"],["#21112f","#311843","#ffde7d","#d7a6ff"],["#0b272a","#12393c","#a4fff0","#f7d6ec"]];
+const key = 'mathclicker.duo.appearance.v1';
+const selected = {themes:'classic', skins:'classic'};
+const basicEffects = {
+  emberfire:'embers', enchanted:'fireflies', monsoon:'ripples', nebula:'nebula', matrix:'matrix',
+  lotus:'petals', electricstorm:'lightning', midnightgold:'orbits', deeprift:'prism', cosmic:'lens', starlight:'stars',
+  eventide:'orbits', fractal:'prism', tesla:'lightning', runes:'runes', ripple:'ripples', galaxy:'nebula',
+  clockwork:'gears', hologram:'ripples', magma:'lightning', jade:'prism', pearlmoon:'orbits', sundial:'gears',
+  quasar:'quasar', obsidian:'prism', blackhole:'lens', coralreef:'bubbles', snowflake:'stars'
+};
+const baseAccents={emberfire:'#ffbc68',enchanted:'#81ffbc',monsoon:'#8ee7ff',nebula:'#b78cf1',matrix:'#72ffba',lotus:'#ff9dbb',electricstorm:'#76eaff',tesla:'#78eaff',magma:'#ff8e54',jade:'#265d47',sundial:'#9d6916',pearlmoon:'#a78cbb'};
+const motifs=['orbits','plasma','city','prism','nebula','waves','lens','magnet','rays','quasar','stars'];
+const presetPrestige=['orbits','prism','embers','gears','prism','city','waves','infinity','rays','lens'];
+const milestoneFX=['waves','orbits','stars','city','prism','matrix','rays','magnet','quasar','stars'];
+const themePresets=['#ffd66d','#ac8bff','#ff8d38','#e8bc79','#81ffd8','#69cfff','#70e3ef','#c999ff','#ffad53','#ffc078'];
+function blend(first,second,f){
+  const a=parseInt(first.slice(1),16),b=parseInt(second.slice(1),16);
+  let hex='#';
+  for(const n of [16,8,0])hex+=Math.round((a>>n&255)*(1-f)+(b>>n&255)*f).toString(16).padStart(2,'0');
+  return hex;
+}
+function visual(kind,id){
+  const disk=kind==='skins', p = /^(formula|resonance)(\d+|Beyond)([a-h]?)$/.exec(id);
+  const m = /^milestone(\d+)$/.exec(id), level=/^prestige(\d+)$/.exec(id);
+  let palette,fx = basicEffects[id],accent=baseAccents[id]||'#ffd88b',second='#a8ebfc';
+  if(p){
+    const isFormula=p[1]==='formula', tier=p[2]==='Beyond'?10:+p[2]-1, variant=p[3]?p[3].charCodeAt(0)-96:0;
+    palette=(isFormula?formulaPalettes:resonancePalettes)[(tier+3*variant)%11].slice();
+    const tint=variant*(isFormula?.065:.027);
+    if(variant){
+      palette[0]=blend(palette[0],palette[3],tint*.1);palette[1]=blend(palette[1],palette[2],tint*.13);
+      palette[2]=blend(palette[2],palette[3],tint);palette[3]=isFormula?blend(palette[3],formulaPalettes[(tier+variant*5)%11][2],variant===1?.55:.68):blend(palette[3],'#ffffff',tint*.55);
+    }
+    fx=isFormula?'matrix':motifs[(tier+variant)%11];
+  }else if(m){palette=milestonePalettes[+m[1]-1];fx=milestoneFX[+m[1]-1];}
+  else if(level){fx=presetPrestige[+level[1]-1];accent=themePresets[+level[1]-1];}
+  let formula=null;
+  if(p && p[1]==='formula'){
+    const tier=p[2]==='Beyond'?11:+p[2],variant=p[3]?p[3].charCodeAt(0)-96:0;
+    formula={tier,variant,style:variant?1000+variant*100+tier:100+tier};
+  }else if(id==='milestone6'){formula={tier:5,variant:1,style:3006};}
+  const baseDisk=disk&&id!=='classic'&&!palette&&!level&&(!fx||animatedBaseDisks.has(id));
+  return {id,baseDisk,formula, color:palette?palette[disk?1:0]:(disk?skins:themes)[id]||(disk?skins.classic:themes.classic),
+    a:palette?palette[2]:accent,b:palette?palette[3]:second,fx,dark:!!(palette||level||darkSkins.has(id))};
+}
+
+const TAU=Math.PI*2, glyphs='∫π∞ΣλΔ√';
+const runeOutlines=["M-0.04468 0.19653Q-0.04468 0.27515 -0.03223 0.33228Q-0.01978 0.3894 0.00952 0.42407Q0.03296 0.45239 0.06738 0.46948Q0.10181 0.48657 0.13306 0.48657Q0.16333 0.48657 0.18335 0.47852Q0.20337 0.47046 0.21509 0.45972Q0.22827 0.44751 0.23413 0.43408Q0.23999 0.42065 0.23999 0.40698Q0.23999 0.38794 0.22852 0.375Q0.21704 0.36206 0.19458 0.36206Q0.15942 0.36206 0.14746 0.38721Q0.1355 0.41235 0.1355 0.44897Q0.13257 0.44946 0.13135 0.44971Q0.13013 0.44995 0.12915 0.45044Q0.12817 0.45093 0.12573 0.45093Q0.12329 0.45093 0.11938 0.45093Q0.09692 0.45093 0.08228 0.4353Q0.06763 0.41968 0.05884 0.39282Q0.05054 0.36646 0.04761 0.33008Q0.04468 0.2937 0.04468 0.26099L0.04468 -0.19653Q0.04468 -0.27075 0.03369 -0.32861Q0.02271 -0.38647 -0.00952 -0.42407Q-0.0354 -0.45435 -0.06738 -0.47046Q-0.09937 -0.48657 -0.13306 -0.48657Q-0.16235 -0.48657 -0.18213 -0.47925Q-0.2019 -0.47192 -0.21509 -0.45972Q-0.22729 -0.44849 -0.23364 -0.43457Q-0.23999 -0.42065 -0.23999 -0.40698Q-0.23999 -0.38989 -0.22876 -0.37598Q-0.21753 -0.36206 -0.19458 -0.36206Q-0.16235 -0.36206 -0.14893 -0.38501Q-0.1355 -0.40796 -0.1355 -0.44897Q-0.13306 -0.44946 -0.13135 -0.44995Q-0.12964 -0.45044 -0.12866 -0.45044Q-0.12769 -0.45044 -0.12598 -0.45068Q-0.12427 -0.45093 -0.11938 -0.45093Q-0.09595 -0.45093 -0.08105 -0.43457Q-0.06616 -0.41821 -0.05884 -0.39282Q-0.05054 -0.36499 -0.04761 -0.33301Q-0.04468 -0.30103 -0.04468 -0.25854Z","M-0.15869 -0.14966Q-0.13477 -0.10034 -0.12061 -0.02954Q-0.10645 0.04126 -0.10645 0.12036Q-0.10645 0.13501 -0.10693 0.15405Q-0.10742 0.1731 -0.1084 0.18628L-0.13867 0.18628Q-0.16455 0.18628 -0.18018 0.17749Q-0.1958 0.1687 -0.20605 0.15454Q-0.21436 0.14331 -0.21899 0.12573Q-0.22363 0.10815 -0.22559 0.08765L-0.25635 0.08765Q-0.25781 0.10132 -0.25879 0.11475Q-0.25977 0.12817 -0.25977 0.14526Q-0.25977 0.16187 -0.25342 0.17847Q-0.24707 0.19507 -0.23242 0.21118Q-0.21973 0.22583 -0.19775 0.23584Q-0.17578 0.24585 -0.14893 0.24585L0.26953 0.24585L0.26953 0.18628L0.15967 0.18628L0.15967 -0.13306Q0.15967 -0.16235 0.17798 -0.17969Q0.19629 -0.19702 0.23047 -0.19702Q0.2373 -0.19702 0.24683 -0.19653Q0.25635 -0.19604 0.26367 -0.19556L0.26367 -0.22681Q0.24072 -0.23462 0.21777 -0.23999Q0.19482 -0.24536 0.16064 -0.24536Q0.11426 -0.24536 0.09106 -0.21704Q0.06787 -0.18872 0.06787 -0.13989L0.06787 0.18628L-0.06055 0.18628Q-0.06006 0.17358 -0.05957 0.15527Q-0.05908 0.13696 -0.05908 0.11597Q-0.05908 0.05542 -0.07007 -0.01636Q-0.08105 -0.08813 -0.10254 -0.13989Q-0.12354 -0.19067 -0.15039 -0.21826Q-0.17725 -0.24585 -0.21289 -0.24585Q-0.24219 -0.24585 -0.25586 -0.22705Q-0.26953 -0.20825 -0.26953 -0.18774Q-0.26953 -0.17017 -0.25659 -0.15332Q-0.24365 -0.13647 -0.21826 -0.13647Q-0.20264 -0.13647 -0.18579 -0.1416Q-0.16895 -0.14673 -0.15869 -0.14966Z","M0.32129 0.00024Q0.32129 -0.08569 0.27222 -0.14453Q0.22314 -0.20337 0.15527 -0.20337Q0.10742 -0.20337 0.06738 -0.17383Q0.02734 -0.14429 -0.00537 -0.08569Q-0.03271 -0.14575 -0.07178 -0.17432Q-0.11084 -0.20288 -0.15625 -0.20288Q-0.229 -0.20288 -0.27515 -0.14697Q-0.32129 -0.09106 -0.32129 -0.00024Q-0.32129 0.08813 -0.27197 0.14575Q-0.22266 0.20337 -0.15527 0.20337Q-0.10791 0.20337 -0.06812 0.17456Q-0.02832 0.14575 0.00537 0.08569Q0.03125 0.1438 0.07056 0.17334Q0.10986 0.20288 0.15625 0.20288Q0.22949 0.20288 0.27539 0.14673Q0.32129 0.09058 0.32129 0.00024ZM0.2793 -0.00122Q0.2793 0.05347 0.24683 0.08569Q0.21436 0.11792 0.16162 0.11792Q0.1123 0.11792 0.07666 0.10181Q0.04102 0.08569 0.02246 0.05396Q0.06055 -0.03638 0.09302 -0.07642Q0.12549 -0.11646 0.17578 -0.11646Q0.22412 -0.11646 0.25171 -0.08374Q0.2793 -0.05103 0.2793 -0.00122ZM-0.02246 -0.05396Q-0.06104 0.03833 -0.09399 0.07739Q-0.12695 0.11646 -0.17578 0.11646Q-0.22412 0.11646 -0.25171 0.08374Q-0.2793 0.05103 -0.2793 0.0022Q-0.2793 -0.05298 -0.24658 -0.08545Q-0.21387 -0.11792 -0.16162 -0.11792Q-0.11426 -0.11792 -0.07715 -0.10132Q-0.04004 -0.08472 -0.02246 -0.05396Z","M0.28735 -0.13013L0.2644 -0.34644L-0.28735 -0.34644L-0.28735 -0.32935L-0.00854 -0.0188L-0.27954 0.32935L-0.27954 0.34644L0.24292 0.34644L0.24292 0.16235L0.20825 0.16235Q0.19751 0.21118 0.16699 0.25439Q0.13647 0.29761 0.10376 0.30298Q0.08911 0.30542 0.06201 0.30664Q0.03491 0.30786 0.01782 0.30786L-0.13306 0.30786L0.08423 0.02856L0.08423 0.02075L-0.16968 -0.2605L0.14917 -0.2605Q0.17114 -0.2605 0.18823 -0.24731Q0.20532 -0.23413 0.21753 -0.21362Q0.22876 -0.19507 0.23755 -0.17236Q0.24634 -0.14966 0.25317 -0.13013Z","M-0.09473 0.27148Q-0.11035 0.27295 -0.13062 0.27295Q-0.15088 0.27295 -0.15918 0.27344Q-0.18359 0.27441 -0.19678 0.29126Q-0.20996 0.30811 -0.20996 0.32617Q-0.20996 0.34814 -0.19287 0.36572Q-0.17578 0.3833 -0.14404 0.3833Q-0.10449 0.3833 -0.07666 0.3584Q-0.04883 0.3335 -0.02881 0.27539Q-0.00635 0.21094 0.01807 0.14429Q0.04248 0.07764 0.06543 0.01221Q0.09424 -0.06836 0.11938 -0.1394Q0.14453 -0.21045 0.16309 -0.25586Q0.18262 -0.30371 0.19604 -0.3186Q0.20947 -0.3335 0.24268 -0.3335L0.26465 -0.3335L0.26465 -0.36475Q0.24023 -0.37207 0.22095 -0.37769Q0.20166 -0.3833 0.17969 -0.3833Q0.15918 -0.3833 0.14624 -0.37549Q0.1333 -0.36768 0.12354 -0.35303Q0.11426 -0.33887 0.10742 -0.31738Q0.10059 -0.2959 0.09473 -0.27637Q0.08252 -0.23584 0.0647 -0.16431Q0.04688 -0.09277 0.01855 0.00195Q-0.01416 -0.0625 -0.05542 -0.15161Q-0.09668 -0.24072 -0.12207 -0.29248Q-0.13477 -0.31787 -0.14087 -0.33594Q-0.14697 -0.354 -0.15332 -0.37354L-0.26465 -0.37354L-0.02588 0.10889Q-0.04248 0.16553 -0.05884 0.20312Q-0.0752 0.24072 -0.09473 0.27148Z","M0.32104 -0.35132L-0.32104 -0.35132L-0.32104 -0.3269L-0.00854 0.35132L0.02954 0.35132L0.32104 -0.3269ZM0.18335 -0.26733L-0.02368 0.21704L-0.2439 -0.26733Z"];
+let runePaths;
+function rune(c,index,size) {
+  if(typeof Path2D==='undefined'){c.save();c.scale(1,-1);c.font=size+'px Georgia,serif';c.fillText('∫π∞ΣλΔ'[index],0,0);c.restore();return;}
+  if(!runePaths)runePaths=runeOutlines.map(d=>new Path2D(d));
+  c.save();c.scale(size,size);c.fill(runePaths[index]);c.restore();
+}
+function formulaRain(c,look,w,h,t,disk,activity) {
+  const {tier,variant,style}=look.formula;
+  const index=(tier-1+variant*3)%11;
+  const head=[0,3,1,5,2,4],rainbow=['#86e6ff','#bea0ff','#ffa1d8','#ffd67f','#a8efd2'];
+  const ink=lane=>index===9?rainbow[(lane+variant)%5]:index===10?(lane%3===0?'#ffe1a2':lane%2===0?look.a:look.b):lane%3===0?look.b:look.a;
+  const lanes=(disk?[15,11,9]:[23,17,14])[variant],tails=(disk?[3,4,5]:[5,6,7])[variant],r=Math.min(w,h)*.5;
+  if(!disk){
+    for(let j=0;j<3;j++){
+      const x=w*(.17+j*.34+Math.sin(t*.025+j*2)*.08),y=h*(.12+j*.37),rad=w*(j===1?.85:.65);
+      const grad=c.createRadialGradient(x,y,0,x,y,rad);grad.addColorStop(0,j%2?look.b:look.a);grad.addColorStop(1,'transparent');
+      c.globalAlpha=.13;c.fillStyle=grad;c.fillRect(x-rad,y-rad,rad*2,rad*2);
+    }
+  }
+  const extra=lanes*.5*activity;
+  for(let lane=0;lane<lanes+Math.ceil(extra);lane++){
+    const size=disk?r*([.10,.13,.16][variant]+((lane+style)%3)*.015):w*([.034,.043,.052][variant]+((lane+style)%4)*.005);
+    let x,y,alpha=1;
+    if(disk){
+      const spread=[.86,.82,.76][variant],xx=r*(-spread+lane/(lanes-1)*spread*2),extent=Math.sqrt(Math.max(0,r*r*.88-xx*xx));
+      const phase=(.14+(lane*37%71)/100+t/(8+(lane*3+style)%7))%1,start=extent-(tails-1)*size*1.12-size*.5,end=-extent+size*.5;
+      x=w/2+xx;y=h/2-start-(end-start)*phase;alpha=Math.min(1,Math.min(phase,1-phase)/.12)*(Math.abs(xx)<r*.48?.27:.63);
+    }else{
+      // New columns fade in between the original ones without moving them.
+      const column=lane<lanes ? lane+.5 : ((lane-lanes)*5+1)%lanes;
+      x=w*column/lanes;y=((lane*37%97/97+t/(22+lane%9))%1)*(h+size*6)-size*3;
+      if(lane>=lanes)alpha=Math.min(1,lanes+extra-lane);
+    }
+    for(let tail=0;tail<tails;tail++){
+      c.save();c.translate(x,y-tail*size*(disk?1.12:1.25));c.scale(1,-1);
+      c.globalAlpha=alpha*(disk?Math.pow(.54,tail):(tail===0?.42:.24*Math.pow(.65,tail-1)));c.fillStyle=ink(lane+(variant?tail:0));
+      rune(c,head[(lane*3+tail+style)%6],size);c.restore();
+    }
+  }
+  if(disk){for(const [rr,clr,al,width] of [[.91,look.a,.38,1.1],[.94,look.b,.15,2]]){
+    c.beginPath();c.arc(w/2,h/2,r*rr,0,TAU);c.strokeStyle=clr;c.lineWidth=width*r/150;c.globalAlpha=al;c.stroke();
+  }}
+}
+
+// Geometry normalized to the radius; the source SpriteKit coordinate system points up.
+const animatedBaseDisks = new Set(['runes','clockwork','sundial','ripple','hologram','tesla','magma','jade','snowflake','galaxy','pearlmoon']);
+function drawBaseDisk(c,id,r,t,animated){
+  const pink='#ff375f',cyan='#3cd3fe',gold='#ffcc6b',stroke=(color,alpha,width=1)=>{
+    c.strokeStyle=color;c.globalAlpha=alpha;c.lineWidth=width/150;
+  };
+  const ellipse=(rx,ry=rx)=>{c.beginPath();c.ellipse(0,0,rx,ry,0,0,TAU);c.stroke();};
+  const dot=(x,y,radius,ink,alpha)=>{c.fillStyle=ink;c.globalAlpha=alpha;c.beginPath();c.arc(x,y,radius,0,TAU);c.fill();};
+  const grid=(gap,radius,ink,alpha)=>{
+    stroke(ink,alpha,.8);c.beginPath();
+    for(let j=-4;j<=4;j++){
+      const d=j*gap,l=Math.sqrt(Math.max(0,radius*radius-d*d));
+      c.moveTo(-l,d);c.lineTo(l,d);c.moveTo(d,-l);c.lineTo(d,l);
+    }
+    c.stroke();
+  };
+  c.save();c.scale(r,-r);
+  if(id==='runes'||id==='clockwork'||id==='sundial'){
+    const runes=id==='runes',count=runes?12:32;
+    for(let band=0;band<2;band++){
+      c.save();c.rotate(t*TAU*(band?-1/47:1/70));c.globalAlpha=runes?(band?.25:.65):.6;
+      c.fillStyle=runes?pink:gold;
+      for(let j=0;j<count;j++){
+        c.save();c.rotate(j*TAU/count);c.translate(band?.73:.89,0);c.rotate(-Math.PI/2);
+        if(runes){rune(c,j%6,.10);}
+        else{const width=(j%4===0?3:1.5)/150;c.fillRect(-width/2,-.0325,width,.065);}
+        c.restore();
+      }
+      c.restore();
+    }
+  }else if(id==='ripple'||id==='hologram'){
+    if(id==='hologram')grid(.19,.9,cyan,.16);
+    for(let j=0;j<3;j++){
+      const phase=t%5-j*.8;
+      if(animated&&(phase<0||phase>=3.4))continue;
+      const p=Math.max(0,(phase-.1)/3.3),a=animated?(phase<.1?phase/.1:1-p)*.65:.52;
+      stroke(cyan,a,1.5);ellipse(.9*(animated?.16+.84*p:.3+.22*j));
+    }
+  }else if(id==='galaxy'||id==='pearlmoon'){
+    const ink=id==='galaxy'?cyan:pink;
+    c.save();c.rotate(t*TAU/55);
+    for(let j=0;j<30;j++){
+      const angle=j*.55+(j%2?Math.PI:0),d=.22+j/45;
+      dot(Math.cos(angle)*d,Math.sin(angle)*d*.78,(j%4===0?2:.9)/150,j%2?gold:ink,.6);
+    }
+    c.restore();
+    for(let j=0;j<2;j++){
+      c.save();c.rotate(j*Math.PI/2+(j?-1:1)*t*TAU/(45+j*13));stroke(ink,.35,j?1:2);ellipse(.88,.42);c.restore();
+    }
+  }else if(id==='tesla'||id==='magma'){
+    for(let j=0;j<9;j++){
+      const down=1.8+(j%3)*.2,period=down+2.1,phase=t%period;
+      const alpha=phase<down?1-(1-.32)*phase/down:.32+(.95-.32)*(phase-down)/2.1;
+      stroke(id==='magma'?gold:cyan,animated?.45*alpha:.45,id==='magma'?2.5:1.6);
+      c.beginPath();for(let k=0;k<=6;k++){const d=.34+k*.085,a=j*TAU/9+Math.sin(j*19+k*7)*.13;
+        if(k===0)c.moveTo(Math.cos(a)*d,Math.sin(a)*d);else c.lineTo(Math.cos(a)*d,Math.sin(a)*d);}
+      c.stroke();
+    }
+  }else if(id==='snowflake'||id==='jade'){
+    const sides=id==='snowflake'?6:8;
+    for(let j=0;j<3;j++){const d=.9-j*.17,a=t*TAU/(60+j*13)*(j%2?1:-1);stroke(cyan,.35,1.2);
+      c.beginPath();for(let k=0;k<sides;k++){const x=d*Math.cos(a+k*TAU/sides),y=d*Math.sin(a+k*TAU/sides);if(k)c.lineTo(x,y);else c.moveTo(x,y);}c.closePath();c.stroke();}
+  }else if(['chalk','blueprint','circuit'].includes(id))grid(.2,.91,'#ffffff',.08);
+  else if(['crystal','ruby','emerald','prism'].includes(id)){
+    for(let j=0;j<8;j++){
+      const a=j*Math.PI/4;c.beginPath();c.moveTo(-.08,.06);c.lineTo(.92*Math.cos(a),.92*Math.sin(a));c.lineTo(.92*Math.cos(a+Math.PI/4),.92*Math.sin(a+Math.PI/4));c.closePath();
+      c.fillStyle=j%2?'#0091ff':'#ffffff';c.globalAlpha=.10;c.fill();stroke('#ffffff',.18);c.stroke();
+    }
+  }else{
+    const inks=[gold,'#ffffff','#ff9230'];
+    for(let j=0;j<3;j++){stroke(inks[j],.26,3-j);ellipse(.73+j*.07);}
+    if(['neon','lunar','solar','pearl'].includes(id))for(let j=0;j<18;j++){
+      const a=j*2.39996,d=.25+(j%7)*.10;dot(Math.cos(a)*d,Math.sin(a)*d,(j%5===0?1.9:.8)/150,inks[j%3],.8);
+    }
+  }
+  c.restore();
+}
+
+const stillFrames=new WeakMap();
+const ambientEquations={fx:'ambientEquations'};
+function paint(canvas,look,t,disk,rainActivity=0){
+  if(!canvas||!canvas.isConnected||!canvas.clientWidth||!canvas.clientHeight)return;
+  const w=canvas.clientWidth,h=canvas.clientHeight,scale=Math.min(window.devicePixelRatio||1,1.5,720/Math.max(w,h));
+  const bw=Math.max(1,Math.round(w*scale)),bh=Math.max(1,Math.round(h*scale));
+  const stillKey=!look.fx || motion.matches ? look.id+':'+[w,h,bw,bh].join('x') : '';
+  if(stillKey && stillFrames.get(canvas)===stillKey)return;
+  if(canvas.width!==bw)canvas.width=bw;
+  if(canvas.height!==bh)canvas.height=bh;
+  const c=canvas.getContext('2d'); if(!c)return;
+  if(stillKey)stillFrames.set(canvas,stillKey);else stillFrames.delete(canvas);
+  c.setTransform(bw/w,0,0,bh/h,0,0);c.clearRect(0,0,w,h);
+  if(look===ambientEquations){window.ClickFX.paintAmbientEquations(c,w,h,t);return;}
+  const unit=Math.min(w,h),r=unit*(disk?.44:.36),fx=look.fx;
+  if(look.formula){c.save();if(disk){c.beginPath();c.arc(w/2,h/2,unit*.48,0,TAU);c.clip();}formulaRain(c,look,w,h,t,disk,rainActivity);c.restore();return;}
+  if(disk && look.baseDisk){c.save();c.translate(w/2,h/2);drawBaseDisk(c,look.id,unit*.5,t,!motion.matches);c.restore();return;}
+  if(!fx)return;
+  c.save();
+  if(disk){c.beginPath();c.arc(w/2,h/2,unit*.48,0,TAU);c.clip();}
+  c.globalAlpha=disk?.75:.57;c.strokeStyle=look.a;c.fillStyle=look.a;c.lineWidth=Math.max(.75,unit/420);
+  function ellipse(x,y,rx,ry,angle=0,fill=false){
+    c.beginPath();c.ellipse(x,y,Math.max(.1,rx),Math.max(.1,ry),angle,0,TAU);if(fill)c.fill();else c.stroke();
+  }
+  function line(n,position){
+    c.beginPath();for(let i=0;i<=n;i++){const [x,y]=position(i/n,i);if(!i)c.moveTo(x,y);else c.lineTo(x,y);}c.stroke();
+  }
+  const seed=i=>[(i*61%103+.3)/103,(i*47%101+.6)/101];
+  if(fx==='matrix'||fx==='runes'){
+    c.font=Math.max(9,unit*.038)+'px Georgia,serif';
+    const extra=12*rainActivity;
+    for(let i=0;i<25+Math.ceil(extra);i++){
+      const [u,v]=seed(i),a=i*TAU/25+t*.08;
+      const x=fx==='runes'?w/2+Math.cos(a)*r:u*w;
+      const y=fx==='runes'?h/2+Math.sin(a)*r:((v+t/(20+i%7))%1)*(h+24)-12;
+      if(i>=25)c.globalAlpha=.57*Math.min(1,25+extra-i);
+      c.fillStyle=i%4?look.a:look.b;c.fillText(glyphs[i%glyphs.length],x,y);
+    }
+  }else if(['embers','fireflies','bubbles','petals','stars'].includes(fx)){
+    const pts=[];
+    for(let i=0;i<30;i++){
+      const [u,v]=seed(i),phase=(v+t/(21+i%8))%1;
+      const x=u*w+Math.sin(i+t*.22)*.025*w,y=fx==='stars'?v*h+Math.sin(t*.12+i)*4:(1-phase)*h;
+      const d=unit*(.002+(i%4)*.001);
+      c.globalAlpha=.22+.25*(1+Math.sin(t+i))*.5;c.fillStyle=i%5?look.a:look.b;
+      if(fx==='petals')ellipse(x,y,d*2,d*4,t/24+i,true);
+      else ellipse(x,y,fx==='bubbles'?d*2:d,fx==='bubbles'?d*2:d,0,fx!=='bubbles');
+      if(fx==='stars'&&pts.length&&i%3){const last=pts[pts.length-1]; if(Math.hypot(x-last[0],y-last[1])<unit*.5){c.globalAlpha=.12;line(1,z=>[last[0]+z*(x-last[0]),last[1]+z*(y-last[1])]);}}
+      pts.push([x,y]);
+    }
+  }else if(fx==='ripples'){
+    for(let i=0;i<10;i++){const [u,v]=seed(i),p=(i*.23+t/6)%1;c.globalAlpha=.7*(1-p);const a=(.02+p*.18)*unit;ellipse(disk?w/2:u*w,disk?h/2:v*h,a*(disk?2:1),a*(disk?2:.33));}
+  }else if(fx==='nebula'){
+    for(let i=0;i<5;i++){
+      const x=w*(.12+.18*i+.07*Math.sin(t/18+i)),y=h*((i+1)/6+.045*Math.cos(t/16+i)), rad=unit*.48;
+      const g=c.createRadialGradient(x,y,0,x,y,rad);g.addColorStop(0,i%2?look.a:look.b);g.addColorStop(1,'transparent');
+      c.globalAlpha=.18;c.fillStyle=g;c.fillRect(x-rad,y-rad,rad*2,rad*2);
+    }
+  }else if(fx==='lightning'||fx==='city'){
+    for(let i=0;i<8;i++){
+      const x=(i+.5)*w/8;c.globalAlpha=.12+.16*(1+Math.sin(i+t*.64))*.5;
+      line(12,(z,j)=>[x+Math.sin(j*7+i*11)*unit*.07,z*h]);
+      if(fx==='city'){for(let j=0;j<6;j++)ellipse(x+Math.sin(2*j*7+i*11)*unit*.07,j*h/6,unit*.007,unit*.007,0,true);}
+    }
+  }else if(fx==='waves'||fx==='plasma'||fx==='infinity'||fx==='magnet'){
+    for(let i=0;i<7;i++){c.strokeStyle=i%3?look.a:look.b;c.globalAlpha=.36+.08*Math.sin(i+t/3);
+      line(90,z=>fx==='infinity'?[w*.5+r*Math.sin(z*TAU+t*.03),h*.5+r*.55*Math.sin(z*TAU*2+t*.06+i*.07)]:
+        fx==='magnet'?[w*.5+(z-.5)*r*2.8,h*.5+r*Math.sin(z*Math.PI)*(i-3)*.32]:
+        [z*w,h*(.22+i*.09)+r*.25*Math.sin(z*TAU*(fx==='plasma'?2:1)+t*.27+i*.35)]);}
+  }else if(fx==='prism'||fx==='gears'){
+    for(let i=0;i<4;i++){c.strokeStyle=i%2?look.a:look.b; const sides=fx==='gears'?56:6;
+      const rad=r*(1-i*.12),spin=t*.03*(i%2?1:-1)+i*.3;line(sides,(z,j)=>{const a=z*TAU+spin,d=rad*(fx==='gears'&&j%4<2?.92:1);return [w/2+Math.cos(a)*d,h/2+Math.sin(a)*d];});}
+  }else {
+    for(let i=0;i<6;i++){
+      c.strokeStyle=i%3?look.a:look.b;c.globalAlpha=.19+.06*(i%3);
+      const a=t*.016+i*Math.PI/6;
+      ellipse(w/2,h/2,r*(.62+i*.09),r*(fx==='lens'?.19:.32),a);
+      const q=t*(i%2?-.18:.15)+i*1.2,dx=Math.cos(q)*r*(.62+i*.09),dy=Math.sin(q)*r*(fx==='lens'?.19:.32);
+      c.globalAlpha=.7;c.fillStyle=c.strokeStyle;ellipse(w/2+dx*Math.cos(a)-dy*Math.sin(a),h/2+dx*Math.sin(a)+dy*Math.cos(a),unit*.006,unit*.006,0,true);
+    }
+    if(fx==='rays'||fx==='quasar'){c.globalAlpha=.24;for(let i=0;i<26;i++)line(1,z=>{const a=i*TAU/26+t*.025;return [w/2+Math.cos(a)*r*(.5+z*.9),h/2+Math.sin(a)*r*(.5+z*.9)];});}
+  }
+  c.restore();
+}
+let surface,diskSurface,preview,previewLook,previewDisk=false,timer=0,ready=false;
+const motion=matchMedia('(prefers-reduced-motion: reduce)');
+let backdrop,skin,nativePaused=false;
+const visible = c => !!(c && c.isConnected && c.clientWidth && c.clientHeight);
+let previewObserver,previewOnScreen=true;
+function watchPreview(c){
+  previewObserver?.disconnect();previewOnScreen=true;
+  if(!window.IntersectionObserver)return;
+  previewObserver=new IntersectionObserver(entries=>{
+    if(c!==preview)return;
+    previewOnScreen=entries.some(entry=>entry.isIntersecting);
+    draw();
+  });
+  previewObserver.observe(c);
+}
+function draw(){
+  if(timer){clearTimeout(timer);timer=0;}
+  if(document.hidden||nativePaused||window.App?.scrolling)return;
+  const t=motion.matches?0:performance.now()/1000;
+  const overlay=document.getElementById('dialog-layer');
+  const showPage=!overlay||overlay.hidden;
+  const showScene=showPage&&!document.getElementById('home')?.hidden;
+  const ambientPage=showPage && !showScene && !motion.matches;
+  const pageLook=backdrop?.fx ? backdrop : (ambientPage ? ambientEquations : null);
+  if(surface && surface.hidden===Boolean(pageLook))surface.hidden=!pageLook;
+  let animated=false;
+  if(showPage && pageLook && visible(surface)){
+    const rain=showScene && !motion.matches && (pageLook.formula || pageLook.fx==='matrix') && window.ClickFX;
+    paint(surface,pageLook,rain ? rain.rainTime : t,false,rain ? rain.rainActivity : 0);
+    animated=true;
+  }
+  if(showScene && skin && visible(diskSurface)){paint(diskSurface,skin,t,true);animated=animated||!!skin.fx;}
+  const previewExposed=preview&&(!overlay||overlay.hidden||overlay.contains(preview));
+  if(previewExposed && previewOnScreen && previewLook && (previewLook.fx||previewDisk) && visible(preview)){paint(preview,previewLook,t,previewDisk);animated=animated||!!previewLook.fx;}
+  if(animated&&!motion.matches)timer=setTimeout(draw,showScene?70:90);
+}
+function canvas(parent, cls){
+  const c=document.createElement('canvas');c.className=cls;c.setAttribute('aria-hidden','true');parent.prepend(c);return c;
+}
+function apply(){
+  const station=document.getElementById('station'),btn=document.getElementById('integral-button');
+  if(!station||!btn)return;
+  backdrop=visual('themes',selected.themes);skin=visual('skins',selected.skins);
+  station.style.setProperty('--lab-theme',backdrop.color);station.style.setProperty('--texture-opacity',selected.themes==='classic'?'0.54':'0.16');
+  btn.style.backgroundColor=skin.color;btn.classList.toggle('ap-dark-glyph',skin.dark);
+  btn.dataset.skin=selected.skins;
+  window.dispatchEvent(new Event('duoappearancechange'));
+  diskSurface.hidden=selected.skins==='classic';
+  draw();
+}
+function init(){
+  if(ready)return;
+  const station=document.getElementById('station'),btn=document.getElementById('integral-button');if(!station||!btn)return;
+  ready=true;
+  try{const saved=JSON.parse(localStorage.getItem(key)||'{}');for(const k of ['themes','skins'])if(typeof saved[k]==='string' && window.Honors && Honors.catalog(k).some(item=>item.id===saved[k]&&unlocked(item)))selected[k]=saved[k];}catch(e){}
+  surface=canvas(station,'ap-background');diskSurface=canvas(btn,'ap-diskart');
+  for(const name of ['resize','duonavigation','duoscrollstart','duoscrollend'])window.addEventListener(name,draw);
+  window.addEventListener('duopause',()=>{nativePaused=true;draw();});
+  window.addEventListener('duoresume',()=>{nativePaused=false;draw();});
+  window.addEventListener('duohonors',()=>refreshGallery?.());
+  document.addEventListener('visibilitychange',draw);
+  if(motion.addEventListener)motion.addEventListener('change',draw);else motion.addListener(draw);
+  apply();
+}
+function unlocked(item){return !item.requiredAchievementID||window.Honors && Honors.earned(item.requiredAchievementID);}
+function node(tag,cls,copy){
+  const n=document.createElement(tag);if(cls)n.className=cls;if(copy!==undefined)n.textContent=copy;return n;
+}
+function button(cls,copy,onClick){const b=node('button',cls,copy);b.type='button';b.onclick=onClick;return b;}
+const chapterNames=[
+  ['beginning','Начало'],...['I','II','III','IV','V','VI','VII','VIII','IX','X'].map((number,index)=>['prestige-'+(index+1),'Престиж '+number]),
+  ['beyond','За гранью бесконечности']
+];
+const categories=[['themes','Фоны'],['skins','Интегралы'],['icons','Иконки']];
+const catalogFor=kind=>kind==='icons'?(window.LauncherIcons?.catalog||[]):(window.Honors?.catalog(kind)||[]);
+const seenKey=key+'.seen';
+let seen=new Set();
+try{const stored=JSON.parse(localStorage.getItem(seenKey)||'[]');if(Array.isArray(stored))seen=new Set(stored);}catch(e){}
+const galleryIcons={
+  lock:'<path d="M6 9V6.5a4 4 0 1 1 8 0V9"/><rect x="4" y="9" width="12" height="9" rx="2"/><path d="M10 13v2"/>',
+  check:'<path d="m4 10 4 4 8-9"/>',
+  spark:'<path d="m10 2 1.8 5.9 5.8 2.1-5.8 1.9L10 18l-1.8-6.1L2.5 10l5.7-2.1Z"/>'
+};
+function badgeIcon(type){
+  const icon=node('span','ap-symbol');icon.setAttribute('aria-hidden','true');
+  icon.innerHTML='<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'+galleryIcons[type]+'</svg>';return icon;
+}
+// The gallery keeps native scrolling for touch, wheel and keyboard. Its visible
+// scrollbar sits in a separate column so composited thumbnails cannot cover it.
+function bindGalleryScrollbar(grid,track){
+  const thumb=node('span','ap-scroll-thumb');track.append(thumb);
+  track.tabIndex=0;track.setAttribute('role','scrollbar');
+  track.setAttribute('aria-label','Прокрутка оформлений');
+  track.setAttribute('aria-orientation','vertical');track.setAttribute('aria-controls',grid.id);
+  track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','100');
+  let maximum=0,travel=0,grab=null;
+  function position(){
+    const fraction=maximum?Math.max(0,Math.min(1,grid.scrollTop/maximum)):0;
+    thumb.style.transform='translateY('+fraction*travel+'px)';
+    track.setAttribute('aria-valuenow',String(Math.round(fraction*100)));
+  }
+  function measure(){
+    const height=track.clientHeight;
+    maximum=Math.max(0,grid.scrollHeight-grid.clientHeight);
+    const size=Math.min(height,Math.max(30,height*grid.clientHeight/(grid.scrollHeight||1)));
+    travel=height-size;thumb.style.height=size+'px';
+    track.style.visibility=maximum&&height?'visible':'hidden';
+    position();
+  }
+  function seek(event){
+    if(!travel||grab===null)return;
+    grid.scrollTop=(event.clientY-track.getBoundingClientRect().top-grab)*maximum/travel;
+  }
+  track.onpointerdown=event=>{
+    if(event.button!==0||!travel)return;
+    const bounds=thumb.getBoundingClientRect();
+    grab=event.target===thumb?event.clientY-bounds.top:bounds.height/2;
+    track.setPointerCapture(event.pointerId);seek(event);
+  };
+  track.onpointermove=seek;track.onlostpointercapture=()=>{grab=null;};
+  track.onkeydown=event=>{
+    const line=Math.max(32,grid.clientHeight/9);
+    const deltas={ArrowUp:-line,ArrowDown:line,PageUp:-grid.clientHeight,PageDown:grid.clientHeight,Home:-maximum,End:maximum};
+    if(Object.prototype.hasOwnProperty.call(deltas,event.key)){event.preventDefault();grid.scrollTop+=deltas[event.key];}
+  };
+  track.onwheel=event=>{
+    const unit=event.deltaMode===1?18:event.deltaMode===2?grid.clientHeight:1;
+    if(event.deltaY&&!event.ctrlKey){event.preventDefault();grid.scrollTop+=event.deltaY*unit;}
+  };
+  grid.addEventListener('scroll',position,{passive:true});return measure;
+}
+let thumbnailObserver,galleryResize,refreshGallery,closeGalleryPreview,stopGalleryLayout;
+function unmount(){
+  refreshGallery=null;closeGalleryPreview=null;stopGalleryLayout?.();stopGalleryLayout=null;
+  thumbnailObserver?.disconnect();thumbnailObserver=null;
+  galleryResize?.disconnect();galleryResize=null;
+  previewObserver?.disconnect();preview=null;previewLook=null;previewOnScreen=false;draw();
+}
+function render(root,options={}){
+  unmount();init();
+  let kind=categories.some(([id])=>id===options.kind)?options.kind:'themes',filter='all',target,activeButton,earned,origin;
+  const wide=matchMedia('(orientation: landscape)');
+  let pinned=false;
+  const frame=node('section','ap-collection'),tabs=node('div','ap-tabs'),body=node('div','ap-browser'),detail=node('article','ap-detail');
+  const panel=node('div','ap-preview'),copy=node('div','ap-detail-copy'),name=node('h3'),caption=node('p','ap-description');
+  const condition=node('p','ap-condition'),action=button('ap-use','',applySelection);
+  const close=button('ap-detail-close nav-control','×',()=>dismissPreview(true));
+  const closeSymbol=document.querySelector('#close-sheet .sheet-close-symbol');
+  if(closeSymbol)close.replaceChildren(closeSymbol.cloneNode(true));
+  close.setAttribute('aria-label','Свернуть предпросмотр');detail.hidden=true;
+  const currentName=node('span','ap-current-name'),current=button('ap-current','',event=>{
+    if(!detail.hidden&&target===appliedID){dismissPreview(true);return;}
+    const item=byId.get(appliedID);if(item)selectItem(item,true,current,event?.detail===0);
+  });
+  current.append(badgeIcon('check'),currentName);current.setAttribute('aria-expanded','false');
+  const library=node('section','ap-library'),filterbar=node('div','ap-filter'),filters=node('div','ap-status-filters'),grid=node('div','ap-grid');
+  const chapters=node('div','ap-chapters'),chapterButtons=new Map(),filterButtons=new Map();
+  const state=window.Economy?.snapshot?.(),progressChapter=state?.prestigeLevel?'prestige-'+state.prestigeLevel:state?.cosmicAscensions?'beyond':'beginning';
+  let chapter=chapterNames.some(([id])=>id===progressChapter)?progressChapter:'beginning';
+  frame.setAttribute('aria-label','Оформления');tabs.setAttribute('aria-label','Вид оформления');detail.setAttribute('aria-label','Предпросмотр');
+  chapters.setAttribute('role','group');chapters.setAttribute('aria-label','Главы коллекции');
+  filters.setAttribute('role','group');filters.setAttribute('aria-label','Доступность оформлений');
+  const scrollArea=node('div','ap-scroll-area'),track=node('div','ap-scroll-track');
+  grid.id='ap-gallery-grid';scrollArea.append(grid,track);
+  const measureScroll=bindGalleryScrollbar(grid,track);
+  filterbar.append(current,filters);library.append(filterbar,scrollArea);
+  copy.append(name,caption,condition);detail.append(panel,copy,action,close);body.append(library,detail);frame.append(tabs,chapters,body);root.replaceChildren(frame);
+  const tabButtons=new Map(),cards=new Map();
+  const activeID=()=>kind==='icons'?currentIcon():selected[kind];
+  const opened=item=>!item.requiredAchievementID||earned.has(item.requiredAchievementID);
+  const unseen=item=>!!item.requiredAchievementID&&opened(item)&&!seen.has(kind+'/'+item.id);
+  let list,appliedID,byId,groups;
+  // A definite track and image height avoid circular percentage sizing in older WebViews.
+  // ResizeObserver reacts to changes of the viewport, not to the scroller's position.
+  let measuredWidth=0,measuredHeight=0,measuredScale=0;
+  function measureTiles(){
+    if(!grid.clientWidth||!window.getComputedStyle)return;
+    const w=grid.clientWidth,h=grid.clientHeight,rem=parseFloat(getComputedStyle(document.documentElement).fontSize)||16;
+    if(w===measuredWidth&&h===measuredHeight&&rem===measuredScale){measureScroll();return;}
+    measuredWidth=w;measuredHeight=h;measuredScale=rem;
+    const css=getComputedStyle(grid),gap=parseFloat(css.columnGap)||0;
+    const cols=document.documentElement.hasAttribute('data-landscape')
+      ? Math.max(2,Math.min(10,Math.floor((w+gap)/(Math.max(94,7.35*rem)+gap))))
+      : w>=1400?4:w>=475?3:2;
+    const gutter=gap*(cols-1)+(parseFloat(css.paddingLeft)||0)+(parseFloat(css.paddingRight)||0);
+    const naturalHeight=((w-gutter)/cols-2)*5/6;
+    const artHeight=Math.round(wide.matches?Math.min(naturalHeight,Math.max(42,h*.48)):naturalHeight);
+    const labelSize=wide.matches?Math.min(23,Math.max(13,rem)):parseFloat(css.fontSize);
+    grid.style.setProperty('--ap-columns',String(cols));
+    grid.style.setProperty('--ap-tile-art-height',artHeight+'px');
+    grid.style.setProperty('--ap-tile-height',Math.ceil(artHeight+labelSize*2.4+rem*.82+2)+'px');
+    measureScroll();
+  }
+  measureTiles();
+  if(window.ResizeObserver){
+    galleryResize=new ResizeObserver(measureTiles);galleryResize.observe(grid);
+  }
+  grid.onclick=event=>{
+    const card=event.target.closest?.('button[data-id]');if(!card||!grid.contains(card))return;
+    const item=byId.get(card.dataset.id);if(item)selectItem(item,true,card,event.detail===0);
+  };
+  for(const [id,label] of categories){
+    const b=button('ap-tab','',()=>{if(kind!==id){kind=id;showKind();}});
+    b.append(node('span','',label),node('small','',String(catalogFor(id).length)));
+    tabs.append(b);tabButtons.set(id,b);
+  }
+  function dismissPreview(restoreFocus=false){
+    if(detail.hidden||(restoreFocus&&wide.matches&&pinned))return false;
+    pinned=false;detail.hidden=true;previewObserver?.disconnect();preview=null;previewLook=null;previewOnScreen=false;
+    panel.replaceChildren();current.setAttribute('aria-expanded','false');
+    activeButton?.setAttribute('aria-pressed','false');activeButton=null;
+    if(restoreFocus && filter==='new'){
+      // Keep the item under the pointer until its preview closes.
+      const position=grid.scrollTop,index=[...cards.values()].indexOf(origin);
+      showGrid();grid.scrollTop=position;
+      if(origin!==current){
+        const remaining=[...cards.values()];
+        origin=remaining[Math.max(0,Math.min(index,remaining.length-1))]||filterButtons.get('new');
+      }
+    }
+    if(restoreFocus&&origin?.isConnected)origin.focus({preventScroll:true});
+    origin=null;
+    if(restoreFocus&&wide.matches&&detail.hidden)showEquipped();
+    draw();return true;
+  }
+  closeGalleryPreview=()=>frame.isConnected&&dismissPreview(true);
+  frame.onkeydown=event=>{
+    if(event.key==='Escape'&&dismissPreview(true)){event.stopPropagation();event.preventDefault();}
+  };
+  function updateCurrent(){
+    const item=byId.get(appliedID);current.hidden=!item;
+    if(!item)return;
+    const title=item.name.replace(/^∫ · /,'');currentName.textContent=title;
+    current.setAttribute('aria-label','Выбрано: '+title+'. Посмотреть оформление');
+    current.title='Выбрано: '+title;
+  }
+  function currentIcon(){return window.LauncherChoice?LauncherChoice.current():'default';}
+  for(const [id,title] of chapterNames){
+    const b=button('ap-era','',()=>changeChapter(id));b.dataset.chapter=id;
+    const short=id==='beyond'?'∞':title.replace('Престиж ','');
+    b.append(node('strong','',short),node('small'));b.title=title;
+    chapters.append(b);chapterButtons.set(id,b);
+  }
+  ChapterRails.bind(chapters);
+  for(const [id,label] of [['all','Все'],['open','Открытые'],['locked','Закрытые'],['new','Новые']]){
+    const b=button('ap-filter-choice',label,()=>{if(filter!==id){if(!wide.matches)dismissPreview();filter=id;updateFilters();showGrid();}});
+    b.dataset.filter=id;filters.append(b);filterButtons.set(id,b);
+  }
+  function updateFilters(){
+    for(const [id,b] of filterButtons){
+      b.setAttribute('aria-pressed',String(filter===id));
+    }
+  }
+  function updateChapters(){
+    for(const [id,title] of chapterNames){
+      const b=chapterButtons.get(id),items=groups.get(id),n=items.filter(opened).length,isCurrent=id===progressChapter;
+      b.setAttribute('aria-pressed',String(chapter===id));
+      b.setAttribute('aria-label',title+'. '+(isCurrent?'Текущая глава. ':'')+'Открыто '+n+' из '+items.length);
+      b.classList.toggle('ap-era-current',isCurrent);
+      b.lastElementChild.textContent=(isCurrent?'◆ ':'')+n+'/'+items.length;
+    }
+  }
+  function changeChapter(id){
+    if(chapter===id)return;
+    if(!wide.matches)dismissPreview();
+    chapter=id;updateChapters();showGrid();ChapterRails.reveal(chapters);
+  }
+  function showKind(){
+    dismissPreview();list=catalogFor(kind);byId=new Map(list.map(item=>[item.id,item]));
+    groups=new Map(chapterNames.map(([id])=>[id,[]]));
+    for(const item of list){
+      const id=item.requiredAchievementID?window.Honors?.item(item.requiredAchievementID)?.era:'beginning';
+      (groups.get(id)||groups.get('beginning')).push(item);
+    }
+    earned=window.Honors?.earnedIDs()||new Set();
+    appliedID=activeID();target=appliedID;grid.dataset.kind=kind;updateCurrent();
+    for(const [id,b] of tabButtons)b.setAttribute('aria-pressed',String(kind===id));
+    updateChapters();updateFilters();showGrid();ChapterRails.reveal(chapters);
+  }
+  function status(item){
+    if(item.id===appliedID)return ['check','Выбрано'];
+    if(!opened(item))return ['lock','Закрыто'];
+    if(unseen(item))return ['spark','Новое'];
+    return ['open','Доступно'];
+  }
+  function updateCard(item){
+    const b=cards.get(item.id);if(!b)return;
+    const [state,label]=status(item),badge=b.lastElementChild;
+    b.dataset.state=state;
+    b.setAttribute('aria-label',item.name+'. '+label);
+    badge.replaceChildren();
+    if(state!=='open'){
+      badge.append(badgeIcon(state));
+      if(state==='spark')badge.append(node('span','','Новое'));
+    }
+  }
+  function thumbnail(item){
+    const sample=node('span','ap-thumb');sample.setAttribute('aria-hidden','true');
+    const image=node('img');image.loading='lazy';image.decoding='async';image.alt='';
+    const path=kind==='icons'?item.image:'art/appearance/'+kind+'/'+item.id+'.webp';
+    image.width=kind==='icons'?256:168;image.height=kind==='icons'?256:140;
+    if(thumbnailObserver)image.dataset.path=path;else image.src=window.duoArt(path);
+    sample.append(image);return sample;
+  }
+  function showGrid(){
+    thumbnailObserver?.disconnect();thumbnailObserver=null;
+    if(window.IntersectionObserver){
+      thumbnailObserver=new IntersectionObserver(entries=>{
+        for(const entry of entries){
+          const card=entry.target;
+          card.classList.toggle('ap-in-view',entry.isIntersecting);
+          if(entry.isIntersecting){
+            const image=card.querySelector('img[data-path]');
+            if(image){image.src=window.duoArt(image.dataset.path);delete image.dataset.path;}
+          }
+        }
+      },{root:grid,rootMargin:'480px 0px'});
+    }
+    const frag=document.createDocumentFragment();cards.clear();activeButton=null;
+    const choices=groups.get(chapter).filter(item=>filter==='all'||(filter==='open'?opened(item):filter==='locked'?!opened(item):unseen(item)));
+    choices.sort((a,b)=>Number(opened(b))-Number(opened(a)));
+    const section=node('section','ap-chapter'),tiles=node('div','ap-chapter-items');
+    section.dataset.chapter=chapter;section.setAttribute('aria-label',chapterButtons.get(chapter).title);
+    section.append(tiles);frag.append(section);
+    for(const item of choices){
+      const b=node('button','ap-card');b.type='button';b.dataset.id=item.id;b.setAttribute('aria-pressed','false');
+      const label=node('strong','',item.name.replace(/^∫ · /,''));
+      b.append(thumbnail(item),label,node('span','ap-badge'));cards.set(item.id,b);updateCard(item);tiles.append(b);
+    }
+    if(!cards.size){
+      const empty=filter==='new'?'В этой главе пока нет новых оформлений.':filter==='locked'?'Все оформления главы уже открыты.':'В этой главе пока нет открытых оформлений.';
+      section.append(node('p','ap-empty',empty));
+    }
+    grid.replaceChildren(frag);grid.scrollTop=0;measureScroll();
+    if(thumbnailObserver)cards.forEach(card=>thumbnailObserver.observe(card));
+    if(!detail.hidden){
+      const inspecting=byId.get(target);
+      if(inspecting&&(wide.matches||cards.has(target)||filter==='new')){
+        activeButton=cards.get(target);activeButton?.setAttribute('aria-pressed','true');
+      }else dismissPreview();
+    }else if(wide.matches)showEquipped();
+  }
+  function showEquipped(){
+    const equipped=byId.get(appliedID);
+    if(equipped)selectItem(equipped,false,null,false,true);
+  }
+  function selectItem(item,userSelected,opener,fromKeyboard=false,equipped=false){
+    if(!userSelected&&detail.hidden&&!equipped)return;
+    if(wide.matches&&filter==='new'&&userSelected&&activeButton&&activeButton.dataset.id!==item.id&&!unseen(byId.get(activeButton.dataset.id))){
+      thumbnailObserver?.unobserve(activeButton);cards.delete(activeButton.dataset.id);activeButton.remove();
+      measureScroll();
+    }
+    if(opener)origin=opener;
+    if(userSelected||equipped)pinned=equipped;
+    close.hidden=wide.matches&&pinned;
+    close.setAttribute('aria-label',wide.matches?'Вернуться к выбранному оформлению':'Свернуть предпросмотр');
+    if(detail.hidden||target!==item.id)copy.scrollTop=0;
+    target=item.id;detail.hidden=false;
+    current.setAttribute('aria-expanded',String(target===appliedID));
+    if(activeButton){activeButton.setAttribute('aria-pressed','false');}
+    activeButton=cards.get(item.id);activeButton?.setAttribute('aria-pressed','true');
+    if(userSelected&&unseen(item)){
+      seen.add(kind+'/'+item.id);try{localStorage.setItem(seenKey,JSON.stringify([...seen]));}catch(e){}
+      updateCard(item);
+    }
+    previewObserver?.disconnect();preview=null;previewLook=null;
+    panel.replaceChildren();panel.dataset.kind=kind;
+    if(kind==='icons'){
+      const img=node('img','ap-icon-preview');img.alt='';img.src=window.duoArt(item.image);panel.append(img);
+    }else{
+      const disk=kind==='skins',v=visual(kind,item.id),sample=node('div',disk?'ap-preview-disk':'ap-preview-bg');
+      sample.style.backgroundColor=v.color;
+      if(!disk)sample.style.setProperty('--ap-texture',item.id==='classic'?'.54':'.16');
+      preview=canvas(sample,'ap-preview-canvas');previewLook=v;previewDisk=disk;
+      if(disk){const image=node('img');image.alt='';image.draggable=false;image.src=window.duoArt('art/formula.svg');if(v.dark)image.className='ap-pale';sample.append(image);}
+      panel.append(sample);watchPreview(preview);
+    }
+    name.textContent=item.name.replace(/^∫ · /,'');
+    caption.textContent=String(item.description||'').replace(/Доступно с начала игры\.?/g,'Доступно сразу.');
+    const [state]=status(item),locked=state==='lock',req=locked&&window.Honors?.item(item.requiredAchievementID);
+    condition.textContent=locked?(item.condition||req?.description||'Получите соответствующее достижение.'):'';
+    condition.hidden=!locked;action.dataset.state=state;
+    action.replaceChildren();
+    if(locked||state==='check')action.append(badgeIcon(locked?'lock':'check'));
+    action.append(node('span','',locked?'Закрыто':state==='check'?'Выбрано':'Применить'));
+    action.disabled=locked||state==='check';draw();
+    if(fromKeyboard){
+      const next=action.disabled?(close.hidden?opener:close):action;
+      next?.focus({preventScroll:true});
+    }
+  }
+  function applySelection(){
+    const item=list.find(it=>it.id===target);if(!item||!unlocked(item))return;
+    const oldID=appliedID;
+    if(kind==='icons'){
+      if(!window.LauncherChoice?.select?.(item.id)){condition.hidden=false;condition.textContent='Не удалось изменить иконку приложения.';return;}
+    }else{
+      selected[kind]=item.id;try{localStorage.setItem(key,JSON.stringify(selected));}catch(e){}
+      apply();
+    }
+    appliedID=activeID();
+    const old=byId.get(oldID);if(old)updateCard(old);updateCard(item);updateCurrent();
+    action.disabled=true;dismissPreview(true);
+  }
+  function layoutChanged(){
+    if(wide.matches&&detail.hidden)showEquipped();
+    else if(!wide.matches&&pinned)dismissPreview();
+    else if(!detail.hidden){
+      close.hidden=wide.matches&&pinned;
+      close.setAttribute('aria-label',wide.matches?'Вернуться к выбранному оформлению':'Свернуть предпросмотр');
+    }
+    measureTiles();
+  }
+  showKind();
+  wide.addEventListener('change',layoutChanged);
+  stopGalleryLayout=()=>wide.removeEventListener('change',layoutChanged);
+  refreshGallery=()=>{
+    if(!frame.isConnected){unmount();return;}
+    const next=window.Honors?.earnedIDs();if(!next||next.size===earned.size)return;
+    const changed=list.filter(item=>item.requiredAchievementID&&next.has(item.requiredAchievementID)&&!earned.has(item.requiredAchievementID));
+    earned=next;if(!changed.length)return;
+    updateChapters();
+    if(filter==='open'||filter==='locked'||filter==='new'){
+      const top=grid.scrollTop;showGrid();grid.scrollTop=top;
+      const inspecting=changed.find(item=>item.id===target);if(inspecting)selectItem(inspecting,false);
+    }else{
+      changed.forEach(updateCard);
+      const inspecting=changed.find(item=>item.id===target);if(inspecting)selectItem(inspecting,false);
+    }
+  };
+}
+function paintDisk(c){
+  const look=visual('skins',selected.skins);paint(c,look,0,true);return look;
+}
+return {init,render,unmount,visual,paintDisk,back:()=>closeGalleryPreview?.()||false,selection:()=>({...selected})};
+})();
+
+;
+/* Integrals Clicker: русский каталог из оригинала iPhone. */
+(function () {
+  "use strict";
+  const catalogue = {"items":[{"description":"Нажмите на интеграл один раз.","era":"beginning","id":"clicks-1","metric":"clicks","requiredEra":"beginning","reward":{"integrals":25},"symbol":"hand.tap.fill","threshold":1,"title":"Первая мысль"},{"description":"Сделайте 50 ручных нажатий.","era":"beginning","id":"clicks-50","metric":"clicks","requiredEra":"beginning","reward":{"cosmetics":["Меловая доска"]},"symbol":"hand.tap.fill","threshold":50,"title":"Мел в руках"},{"description":"Сделайте 1 000 ручных нажатий.","era":"beginning","id":"clicks-1000","metric":"clicks","requiredEra":"beginning","reward":{"cosmetics":["Лотос","Пергамент","Руны открытий","Жемчужина"]},"symbol":"hand.tap.fill","threshold":1000,"title":"Тысяча озарений"},{"description":"Сделайте 10 000 ручных нажатий.","era":"beginning","id":"clicks-10000","metric":"clicks","requiredEra":"beginning","reward":{"cosmetics":["Неутомимый импульс","∫ · Неутомимый импульс"]},"symbol":"hand.tap.fill","threshold":10000,"title":"Неутомимый ум"},{"description":"Сделайте 100 000 ручных нажатий.","era":"beginning","id":"clicks-100000","metric":"clicks","requiredEra":"beginning","reward":{"cosmetics":["Орбиты марафона","∫ · Орбиты марафона"]},"symbol":"hand.tap.fill","threshold":100000,"title":"Математический марафон"},{"description":"Сделайте 1 000 000 ручных нажатий.","era":"beginning","id":"clicks-1000000","metric":"clicks","requiredEra":"beginning","reward":{"cosmetics":["Миллион созвездий","∫ · Миллион созвездий"]},"symbol":"hand.tap.fill","threshold":1000000,"title":"Миллион прикосновений"},{"description":"Произведите 1 000 интегралов.","era":"beginning","id":"earned-1000","metric":"totalEarned","requiredEra":"beginning","reward":{"cosmetics":["Последний луч","Рубиновая грань"]},"symbol":"function","threshold":1000,"title":"Первая тысяча"},{"description":"Произведите 1 000 000 интегралов.","era":"beginning","id":"earned-1000000","metric":"totalEarned","requiredEra":"beginning","reward":{"cosmetics":["Туманность","Спиральная галактика","Золотое сечение"]},"symbol":"function","threshold":1000000,"title":"Золотой миллион"},{"description":"Произведите 1 000 000 000 интегралов.","era":"beginning","id":"earned-1000000000","metric":"totalEarned","requiredEra":"beginning","reward":{"cosmetics":["Солнечный диск"]},"symbol":"function","threshold":1000000000,"title":"Миллиард решений"},{"description":"Произведите 1 000 000 000 000 интегралов.","era":"beginning","id":"earned-1000000000000","metric":"totalEarned","requiredEra":"beginning","reward":{"integrals":20000000000},"symbol":"function","threshold":1000000000000,"title":"Триллион идей"},{"description":"Произведите 1 000 000 000 000 000 интегралов.","era":"beginning","id":"earned-1000000000000000","metric":"totalEarned","requiredEra":"beginning","reward":{"integrals":20000000000000},"symbol":"function","threshold":1000000000000000,"title":"На пороге вечности"},{"description":"Достигните производства 1 интеграл в секунду.","era":"beginning","id":"production-1","metric":"cps","requiredEra":"beginning","reward":{"integrals":60},"symbol":"bolt.fill","threshold":1,"title":"Лаборатория проснулась"},{"description":"Достигните производства 100 интегралов в секунду.","era":"beginning","id":"production-100","metric":"cps","requiredEra":"beginning","reward":{"cosmetics":["Угли рассвета","Медный век","Солнечные часы","Медная орбита"]},"symbol":"bolt.fill","threshold":100,"title":"Сто решений в секунду"},{"description":"Достигните производства 10 000 интегралов в секунду.","era":"beginning","id":"production-10000","metric":"cps","requiredEra":"beginning","reward":{"cosmetics":["Электрическое небо","Магматическое сердце"]},"symbol":"bolt.fill","threshold":10000,"title":"Быстрее мысли"},{"description":"Достигните производства 1 000 000 интегралов в секунду.","era":"beginning","id":"production-1000000","metric":"cps","requiredEra":"beginning","reward":{"integrals":60000000},"symbol":"bolt.fill","threshold":1000000,"title":"Поток открытий"},{"description":"Достигните производства 1 000 000 000 интегралов в секунду.","era":"beginning","id":"production-1000000000","metric":"cps","requiredEra":"beginning","reward":{"integrals":60000000000},"symbol":"bolt.fill","threshold":1000000000,"title":"Нескончаемый поток"},{"description":"Получите первый ресурс.","era":"beginning","id":"helpers-1","metric":"helpers","requiredEra":"beginning","reward":{"integrals":50},"symbol":"person.3.fill","threshold":1,"title":"Первый ресурс"},{"description":"Соберите 25 ресурсов одновременно.","era":"beginning","id":"helpers-25","metric":"helpers","requiredEra":"beginning","reward":{"cosmetics":["Светлячки","Сад сакуры","Нефритовый талисман","Изумрудное ядро"]},"symbol":"person.3.fill","threshold":25,"title":"Своя лаборатория"},{"description":"Соберите 100 ресурсов одновременно.","era":"beginning","id":"helpers-100","metric":"helpers","requiredEra":"beginning","reward":{"cosmetics":["Северное сияние","Часовой механизм","Призма"]},"symbol":"person.3.fill","threshold":100,"title":"Большая лаборатория"},{"description":"Соберите 1 000 ресурсов одновременно.","era":"beginning","id":"helpers-1000","metric":"helpers","requiredEra":"beginning","reward":{"cosmetics":["Город тысячи огней","∫ · Город тысячи огней"]},"symbol":"person.3.fill","threshold":1000,"title":"Город науки"},{"description":"Изучите одно улучшение.","era":"beginning","id":"research-1","metric":"research","requiredEra":"beginning","reward":{"cosmetics":["Графитовая мастерская","Чертёж бесконечности"]},"symbol":"atom","threshold":1,"title":"Первое исследование"},{"description":"Изучите 10 улучшений в одной эпохе.","era":"beginning","id":"research-10","metric":"research","requiredEra":"beginning","reward":{"cosmetics":["Поток формул","Аметистовая ночь","Катушка Теслы","Неоновый контур"]},"symbol":"atom","threshold":10,"title":"Хорошая база"},{"description":"Изучите 25 улучшений в одной эпохе.","era":"beginning","id":"research-25","metric":"research","requiredEra":"beginning","reward":{"cosmetics":["Голограмма","Кристальная мысль"]},"symbol":"atom","threshold":25,"title":"Кристальная ясность"},{"description":"Изучите 75 улучшений в одной эпохе.","era":"beginning","id":"research-75","metric":"research","requiredEra":"beginning","reward":{"cosmetics":["Архив открытий","∫ · Архив открытий"]},"symbol":"atom","threshold":75,"title":"Научное наследие"},{"description":"Победите в первом испытании.","era":"beginning","id":"challenges-1","metric":"challengeWins","requiredEra":"beginning","reward":{"cosmetics":["Тёплый ливень","Бирюзовая лагуна","Живая вода","Лунная поверхность"]},"symbol":"graduationcap.fill","threshold":1,"title":"Задача решена"},{"description":"Победите в 10 испытаниях.","era":"beginning","id":"challenges-10","metric":"challengeWins","requiredEra":"beginning","reward":{"cosmetics":["Багровый рассвет","Перламутровая луна"]},"symbol":"graduationcap.fill","threshold":10,"title":"Отличник"},{"description":"Победите в 50 испытаниях.","era":"beginning","id":"challenges-50","metric":"challengeWins","requiredEra":"beginning","reward":{"cosmetics":["Формула совершенства","∫ · Формула совершенства"]},"symbol":"graduationcap.fill","threshold":50,"title":"Без нерешённых задач"},{"description":"Достигните престижа I.","era":"prestige-1","id":"prestige-1","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["I · Корона света","Звёздный свет","I · Золотое ядро","Горизонт событий"]},"symbol":"circle.dotted.circle","threshold":1,"title":"Первый горизонт"},{"description":"Достигните престижа II.","era":"prestige-2","id":"prestige-2","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["II · Разлом пространства","II · Зеркало измерений","Обсидиан"]},"symbol":"circle.dotted.circle","threshold":2,"title":"Две вселенные"},{"description":"Достигните престижа III.","era":"prestige-3","id":"prestige-3","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["III · Кузница звёзд","III · Звёздный реактор"]},"symbol":"circle.dotted.circle","threshold":3,"title":"Третий рассвет"},{"description":"Достигните престижа IV.","era":"prestige-4","id":"prestige-4","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["IV · Храм времени","IV · Хронометр вечности"]},"symbol":"circle.dotted.circle","threshold":4,"title":"Четвёртое измерение"},{"description":"Достигните престижа V.","era":"prestige-5","id":"prestige-5","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["V · Кристальный сад","V · Алмазная мысль"]},"symbol":"circle.dotted.circle","threshold":5,"title":"Пять начал"},{"description":"Достигните престижа VI.","era":"prestige-6","id":"prestige-6","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["VI · Нейронная вселенная","VI · Живое сознание"]},"symbol":"circle.dotted.circle","threshold":6,"title":"Шестое чувство"},{"description":"Достигните престижа VII.","era":"prestige-7","id":"prestige-7","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["VII · Океан бесконечности","VII · Прилив миров"]},"symbol":"circle.dotted.circle","threshold":7,"title":"Семь горизонтов"},{"description":"Достигните престижа VIII.","era":"prestige-8","id":"prestige-8","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["VIII · Двойная бесконечность","VIII · Узел бесконечности"]},"symbol":"circle.dotted.circle","threshold":8,"title":"Восемь бесконечностей"},{"description":"Достигните престижа IX.","era":"prestige-9","id":"prestige-9","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["IX · Сердце сверхновой","IX · Ядро сверхновой"]},"symbol":"circle.dotted.circle","threshold":9,"title":"Девятая орбита"},{"description":"Достигните престижа X.","era":"prestige-10","id":"prestige-10","metric":"prestige","requiredEra":"beginning","reward":{"cosmetics":["X · Владыка сингулярности","X · Абсолютный горизонт"]},"symbol":"circle.dotted.circle","threshold":10,"title":"Властелин чёрной дыры"},{"description":"Пройдите через чёрную дыру после престижа X и создайте новую вселенную.","era":"beyond","id":"cosmic-1","metric":"cosmic","requiredEra":"beginning","reward":{"cosmetics":["За гранью бесконечности","Квазар","Сердце новой вселенной"]},"symbol":"sparkles","threshold":1,"title":"За гранью бесконечности"},{"description":"Одновременно соберите три работающие пары ресурсов.","era":"beginning","id":"pairs-3","metric":"pairs","requiredEra":"beginning","reward":{"cosmetics":["Созвездие сотрудничества","∫ · Созвездие сотрудничества"]},"symbol":"person.2.fill","threshold":3,"title":"Наука объединяет"},{"description":"Получите первый ресурс «Бит информации».","era":"beginning","id":"resource-autoclick","metric":"resource(\"autoclick\")","requiredEra":"beginning","reward":{"integrals":25},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Бит информации: начало"},{"description":"Получите первый ресурс «Школьник».","era":"beginning","id":"resource-abacus","metric":"resource(\"abacus\")","requiredEra":"beginning","reward":{"integrals":25},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Школьник: начало"},{"description":"Получите первый ресурс «Студент».","era":"beginning","id":"resource-calculator","metric":"resource(\"calculator\")","requiredEra":"beginning","reward":{"integrals":60},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Студент: начало"},{"description":"Получите первый ресурс «Преподаватель».","era":"beginning","id":"resource-algorithm","metric":"resource(\"algorithm\")","requiredEra":"beginning","reward":{"integrals":600},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Преподаватель: начало"},{"description":"Получите первый ресурс «Профессор».","era":"beginning","id":"resource-neuron","metric":"resource(\"neuron\")","requiredEra":"beginning","reward":{"integrals":8000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Профессор: начало"},{"description":"Получите первый ресурс «Академик».","era":"beginning","id":"resource-quantum","metric":"resource(\"quantum\")","requiredEra":"beginning","reward":{"integrals":115000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Академик: начало"},{"description":"Получите первый ресурс «Исследовательская группа».","era":"beginning","id":"resource-singularity","metric":"resource(\"singularity\")","requiredEra":"beginning","reward":{"integrals":2000000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Исследовательская группа: начало"},{"description":"Получите первый ресурс «Лаборатория».","era":"beginning","id":"resource-dimension","metric":"resource(\"dimension\")","requiredEra":"beginning","reward":{"integrals":35000000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Лаборатория: начало"},{"description":"Получите первый ресурс «Научный институт».","era":"beginning","id":"resource-universe","metric":"resource(\"universe\")","requiredEra":"beginning","reward":{"integrals":700000000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Научный институт: начало"},{"description":"Получите первый ресурс «Суперкомпьютер».","era":"beginning","id":"resource-multiverse","metric":"resource(\"multiverse\")","requiredEra":"beginning","reward":{"integrals":15000000000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Суперкомпьютер: начало"},{"description":"Получите первый ресурс «Дата-центр ИИ».","era":"beginning","id":"resource-superintelligence","metric":"resource(\"superintelligence\")","requiredEra":"beginning","reward":{"integrals":500000000000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Дата-центр ИИ: начало"},{"description":"Получите первый ресурс «Исследовательский кампус».","era":"beginning","id":"resource-automaton","metric":"resource(\"automaton\")","requiredEra":"beginning","reward":{"integrals":18250000000000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Исследовательский кампус: начало"},{"description":"Получите первый ресурс «Наукоград».","era":"beginning","id":"resource-navigator","metric":"resource(\"navigator\")","requiredEra":"beginning","reward":{"integrals":675000000000000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Наукоград: начало"},{"description":"Получите первый ресурс «Детектор частиц».","era":"beginning","id":"resource-chronologist","metric":"resource(\"chronologist\")","requiredEra":"beginning","reward":{"integrals":24750000000000000},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Детектор частиц: начало"},{"description":"Получите первый ресурс «Коллайдер».","era":"beginning","id":"resource-oracle","metric":"resource(\"oracle\")","requiredEra":"beginning","reward":{"integrals":9e+17},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Коллайдер: начало"},{"description":"Получите первый ресурс «Термоядерный реактор».","era":"beginning","id":"resource-architect","metric":"resource(\"architect\")","requiredEra":"beginning","reward":{"integrals":3.3e+19},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Термоядерный реактор: начало"},{"description":"Получите первый ресурс «Гравитационный реактор».","era":"beginning","id":"resource-nanoforge","metric":"resource(\"nanoforge\")","requiredEra":"beginning","reward":{"integrals":1.225e+21},"symbol":"sparkle.magnifyingglass","threshold":1,"title":"Гравитационный реактор: начало"},{"description":"С престижа I: заработайте 1 000 000 000 000 ∫ за один мир.","era":"prestige-1","id":"epoch-1-earned","metric":"runEarned","requiredEra":"prestige-1","reward":{"cosmetics":["Золотые орбиты","∫ · Золотые орбиты"]},"symbol":"sparkles","threshold":1000000000000,"title":"Золотые орбиты"},{"description":"С престижа I: достигните производства 10⁵ ∫ в секунду.","era":"prestige-1","id":"epoch-1-production","metric":"cps","requiredEra":"prestige-1","reward":{"cosmetics":["Плазменный поток · нефрит","∫ · Плазменный поток · нефрит"]},"symbol":"bolt.fill","threshold":100000,"title":"Поток I"},{"description":"С престижа I: соберите 250 ресурсов одновременно.","era":"prestige-1","id":"epoch-1-population","metric":"helpers","requiredEra":"prestige-1","reward":{"cosmetics":["Неоновый город · затмение","∫ · Неоновый город · затмение"]},"symbol":"person.3.fill","threshold":250,"title":"Научное сообщество I"},{"description":"С престижа I: изучите 12 улучшений в одном мире.","era":"prestige-1","id":"epoch-1-research","metric":"research","requiredEra":"prestige-1","reward":{"cosmetics":["Кристальная решётка · квазар","∫ · Кристальная решётка · квазар"]},"symbol":"atom","threshold":12,"title":"Теория I"},{"description":"С престижа I: соберите 2 работающих пар ресурсов одновременно.","era":"prestige-1","id":"epoch-1-pairs","metric":"pairs","requiredEra":"prestige-1","reward":{"cosmetics":["Живая туманность · фуксия","∫ · Живая туманность · фуксия"]},"symbol":"person.2.fill","threshold":2,"title":"Согласованная работа I"},{"description":"С престижа I: успешно завершите 3 заданий за один мир.","era":"prestige-1","id":"epoch-1-formulas","metric":"runChallengeWins","requiredEra":"prestige-1","reward":{"cosmetics":["Янтарные формулы","∫ · Янтарные формулы"]},"symbol":"function","threshold":3,"title":"Янтарные формулы"},{"description":"С престижа I: сделайте 100 ручных нажатий за один мир.","era":"prestige-1","id":"epoch-1-touches","metric":"runClicks","requiredEra":"prestige-1","reward":{"cosmetics":["Ледяные формулы","∫ · Ледяные формулы"]},"symbol":"hand.tap.fill","threshold":100,"title":"Почерк I"},{"description":"С престижа I: купите суммарно 3000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-1","id":"epoch-1-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-1","reward":{"cosmetics":["Лаймовые формулы","∫ · Лаймовые формулы"]},"symbol":"number","threshold":3000,"title":"Память миров I"},{"description":"С престижа I: купите суммарно 500 ресурсов «Студент» за все миры.","era":"prestige-1","id":"epoch-1-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-1","reward":{"cosmetics":["Линза бездны · полярность","∫ · Линза бездны · полярность"]},"symbol":"graduationcap.fill","threshold":500,"title":"Поколения студентов I"},{"description":"С престижа I: купите суммарно 500 ресурсов «Преподаватель» за все миры.","era":"prestige-1","id":"epoch-1-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-1","reward":{"cosmetics":["Магнитные полюса · звёздный свет","∫ · Магнитные полюса · звёздный свет"]},"symbol":"book.closed.fill","threshold":500,"title":"Школа сквозь время I"},{"description":"С престижа I: купите суммарно 3000 ресурсов любых видов за все миры.","era":"prestige-1","id":"epoch-1-all-purchases","metric":"purchases","requiredEra":"prestige-1","reward":{"cosmetics":["Призменный свет · лазурь","∫ · Призменный свет · лазурь"]},"symbol":"building.2.fill","threshold":3000,"title":"Наследие науки I"},{"description":"С престижа II: заработайте 10 000 000 000 000 ∫ за один мир.","era":"prestige-2","id":"epoch-2-earned","metric":"runEarned","requiredEra":"prestige-2","reward":{"cosmetics":["Плазменный поток","∫ · Плазменный поток"]},"symbol":"sparkles","threshold":10000000000000,"title":"Плазменный поток"},{"description":"С престижа II: достигните производства 10⁶ ∫ в секунду.","era":"prestige-2","id":"epoch-2-production","metric":"cps","requiredEra":"prestige-2","reward":{"cosmetics":["Неоновый город · аметист","∫ · Неоновый город · аметист"]},"symbol":"bolt.fill","threshold":1000000,"title":"Поток II"},{"description":"С престижа II: соберите 500 ресурсов одновременно.","era":"prestige-2","id":"epoch-2-population","metric":"helpers","requiredEra":"prestige-2","reward":{"cosmetics":["Кристальная решётка · полярность","∫ · Кристальная решётка · полярность"]},"symbol":"person.3.fill","threshold":500,"title":"Научное сообщество II"},{"description":"С престижа II: изучите 18 улучшений в одном мире.","era":"prestige-2","id":"epoch-2-research","metric":"research","requiredEra":"prestige-2","reward":{"cosmetics":["Живая туманность · звёздный свет","∫ · Живая туманность · звёздный свет"]},"symbol":"atom","threshold":18,"title":"Теория II"},{"description":"С престижа II: соберите 3 работающих пар ресурсов одновременно.","era":"prestige-2","id":"epoch-2-pairs","metric":"pairs","requiredEra":"prestige-2","reward":{"cosmetics":["Гравитационные волны · лазурь","∫ · Гравитационные волны · лазурь"]},"symbol":"person.2.fill","threshold":3,"title":"Согласованная работа II"},{"description":"С престижа II: успешно завершите 4 заданий за один мир.","era":"prestige-2","id":"epoch-2-formulas","metric":"runChallengeWins","requiredEra":"prestige-2","reward":{"cosmetics":["Лазурные формулы","∫ · Лазурные формулы"]},"symbol":"function","threshold":4,"title":"Лазурные формулы"},{"description":"С престижа II: сделайте 150 ручных нажатий за один мир.","era":"prestige-2","id":"epoch-2-touches","metric":"runClicks","requiredEra":"prestige-2","reward":{"cosmetics":["Аметистовые формулы","∫ · Аметистовые формулы"]},"symbol":"hand.tap.fill","threshold":150,"title":"Почерк II"},{"description":"С престижа II: купите суммарно 5000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-2","id":"epoch-2-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-2","reward":{"cosmetics":["Серебряные формулы","∫ · Серебряные формулы"]},"symbol":"number","threshold":5000,"title":"Память миров II"},{"description":"С престижа II: купите суммарно 1000 ресурсов «Студент» за все миры.","era":"prestige-2","id":"epoch-2-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-2","reward":{"cosmetics":["Магнитные полюса · перламутр","∫ · Магнитные полюса · перламутр"]},"symbol":"graduationcap.fill","threshold":1000,"title":"Поколения студентов II"},{"description":"С престижа II: купите суммарно 1000 ресурсов «Преподаватель» за все миры.","era":"prestige-2","id":"epoch-2-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-2","reward":{"cosmetics":["Призменный свет · янтарь","∫ · Призменный свет · янтарь"]},"symbol":"book.closed.fill","threshold":1000,"title":"Школа сквозь время II"},{"description":"С престижа II: купите суммарно 6000 ресурсов любых видов за все миры.","era":"prestige-2","id":"epoch-2-all-purchases","metric":"purchases","requiredEra":"prestige-2","reward":{"cosmetics":["Сердце квазара · нефрит","∫ · Сердце квазара · нефрит"]},"symbol":"building.2.fill","threshold":6000,"title":"Наследие науки II"},{"description":"С престижа III: заработайте 100 000 000 000 000 ∫ за один мир.","era":"prestige-3","id":"epoch-3-earned","metric":"runEarned","requiredEra":"prestige-3","reward":{"cosmetics":["Неоновый город","∫ · Неоновый город"]},"symbol":"sparkles","threshold":100000000000000,"title":"Неоновый город"},{"description":"С престижа III: достигните производства 10⁷ ∫ в секунду.","era":"prestige-3","id":"epoch-3-production","metric":"cps","requiredEra":"prestige-3","reward":{"cosmetics":["Кристальная решётка · лёд","∫ · Кристальная решётка · лёд"]},"symbol":"bolt.fill","threshold":10000000,"title":"Поток III"},{"description":"С престижа III: соберите 750 ресурсов одновременно.","era":"prestige-3","id":"epoch-3-population","metric":"helpers","requiredEra":"prestige-3","reward":{"cosmetics":["Живая туманность · перламутр","∫ · Живая туманность · перламутр"]},"symbol":"person.3.fill","threshold":750,"title":"Научное сообщество III"},{"description":"С престижа III: изучите 24 улучшений в одном мире.","era":"prestige-3","id":"epoch-3-research","metric":"research","requiredEra":"prestige-3","reward":{"cosmetics":["Гравитационные волны · янтарь","∫ · Гравитационные волны · янтарь"]},"symbol":"atom","threshold":24,"title":"Теория III"},{"description":"С престижа III: соберите 4 работающих пар ресурсов одновременно.","era":"prestige-3","id":"epoch-3-pairs","metric":"pairs","requiredEra":"prestige-3","reward":{"cosmetics":["Линза бездны · нефрит","∫ · Линза бездны · нефрит"]},"symbol":"person.2.fill","threshold":4,"title":"Согласованная работа III"},{"description":"С престижа III: успешно завершите 5 заданий за один мир.","era":"prestige-3","id":"epoch-3-formulas","metric":"runChallengeWins","requiredEra":"prestige-3","reward":{"cosmetics":["Розовые формулы","∫ · Розовые формулы"]},"symbol":"function","threshold":5,"title":"Розовые формулы"},{"description":"С престижа III: сделайте 200 ручных нажатий за один мир.","era":"prestige-3","id":"epoch-3-touches","metric":"runClicks","requiredEra":"prestige-3","reward":{"cosmetics":["Коралловые формулы","∫ · Коралловые формулы"]},"symbol":"hand.tap.fill","threshold":200,"title":"Почерк III"},{"description":"С престижа III: купите суммарно 7500 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-3","id":"epoch-3-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-3","reward":{"cosmetics":["Солнечные формулы","∫ · Солнечные формулы"]},"symbol":"number","threshold":7500,"title":"Память миров III"},{"description":"С престижа III: купите суммарно 2000 ресурсов «Студент» за все миры.","era":"prestige-3","id":"epoch-3-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-3","reward":{"cosmetics":["Призменный свет · квазар","∫ · Призменный свет · квазар"]},"symbol":"graduationcap.fill","threshold":2000,"title":"Поколения студентов III"},{"description":"С престижа III: купите суммарно 1500 ресурсов «Преподаватель» за все миры.","era":"prestige-3","id":"epoch-3-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-3","reward":{"cosmetics":["Сердце квазара · фуксия","∫ · Сердце квазара · фуксия"]},"symbol":"book.closed.fill","threshold":1500,"title":"Школа сквозь время III"},{"description":"С престижа III: купите суммарно 10000 ресурсов любых видов за все миры.","era":"prestige-3","id":"epoch-3-all-purchases","metric":"purchases","requiredEra":"prestige-3","reward":{"cosmetics":["Созвездие вечности · аметист","∫ · Созвездие вечности · аметист"]},"symbol":"building.2.fill","threshold":10000,"title":"Наследие науки III"},{"description":"С престижа IV: заработайте 1 000 000 000 000 000 ∫ за один мир.","era":"prestige-4","id":"epoch-4-earned","metric":"runEarned","requiredEra":"prestige-4","reward":{"cosmetics":["Кристальная решётка","∫ · Кристальная решётка"]},"symbol":"sparkles","threshold":1000000000000000,"title":"Кристальная решётка"},{"description":"С престижа IV: достигните производства 10⁸ ∫ в секунду.","era":"prestige-4","id":"epoch-4-production","metric":"cps","requiredEra":"prestige-4","reward":{"cosmetics":["Живая туманность · затмение","∫ · Живая туманность · затмение"]},"symbol":"bolt.fill","threshold":100000000,"title":"Поток IV"},{"description":"С престижа IV: соберите 1000 ресурсов одновременно.","era":"prestige-4","id":"epoch-4-population","metric":"helpers","requiredEra":"prestige-4","reward":{"cosmetics":["Гравитационные волны · квазар","∫ · Гравитационные волны · квазар"]},"symbol":"person.3.fill","threshold":1000,"title":"Научное сообщество IV"},{"description":"С престижа IV: изучите 30 улучшений в одном мире.","era":"prestige-4","id":"epoch-4-research","metric":"research","requiredEra":"prestige-4","reward":{"cosmetics":["Линза бездны · фуксия","∫ · Линза бездны · фуксия"]},"symbol":"atom","threshold":30,"title":"Теория IV"},{"description":"С престижа IV: соберите 5 работающих пар ресурсов одновременно.","era":"prestige-4","id":"epoch-4-pairs","metric":"pairs","requiredEra":"prestige-4","reward":{"cosmetics":["Магнитные полюса · аметист","∫ · Магнитные полюса · аметист"]},"symbol":"person.2.fill","threshold":5,"title":"Согласованная работа IV"},{"description":"С престижа IV: успешно завершите 6 заданий за один мир.","era":"prestige-4","id":"epoch-4-formulas","metric":"runChallengeWins","requiredEra":"prestige-4","reward":{"cosmetics":["Ледяные формулы","∫ · Ледяные формулы"]},"symbol":"function","threshold":6,"title":"Ледяные формулы"},{"description":"С престижа IV: сделайте 250 ручных нажатий за один мир.","era":"prestige-4","id":"epoch-4-touches","metric":"runClicks","requiredEra":"prestige-4","reward":{"cosmetics":["Лаймовые формулы","∫ · Лаймовые формулы"]},"symbol":"hand.tap.fill","threshold":250,"title":"Почерк IV"},{"description":"С престижа IV: купите суммарно 10000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-4","id":"epoch-4-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-4","reward":{"cosmetics":["Радужные формулы","∫ · Радужные формулы"]},"symbol":"number","threshold":10000,"title":"Память миров IV"},{"description":"С престижа IV: купите суммарно 3000 ресурсов «Студент» за все миры.","era":"prestige-4","id":"epoch-4-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-4","reward":{"cosmetics":["Сердце квазара · звёздный свет","∫ · Сердце квазара · звёздный свет"]},"symbol":"graduationcap.fill","threshold":3000,"title":"Поколения студентов IV"},{"description":"С престижа IV: купите суммарно 2500 ресурсов «Преподаватель» за все миры.","era":"prestige-4","id":"epoch-4-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-4","reward":{"cosmetics":["Созвездие вечности · лазурь","∫ · Созвездие вечности · лазурь"]},"symbol":"book.closed.fill","threshold":2500,"title":"Школа сквозь время IV"},{"description":"С престижа IV: купите суммарно 15000 ресурсов любых видов за все миры.","era":"prestige-4","id":"epoch-4-all-purchases","metric":"purchases","requiredEra":"prestige-4","reward":{"cosmetics":["Световые орбиты · лёд","∫ · Световые орбиты · лёд"]},"symbol":"building.2.fill","threshold":15000,"title":"Наследие науки IV"},{"description":"С престижа V: заработайте 10 000 000 000 000 000 ∫ за один мир.","era":"prestige-5","id":"epoch-5-earned","metric":"runEarned","requiredEra":"prestige-5","reward":{"cosmetics":["Живая туманность","∫ · Живая туманность"]},"symbol":"sparkles","threshold":10000000000000000,"title":"Живая туманность"},{"description":"С престижа V: достигните производства 10⁹ ∫ в секунду.","era":"prestige-5","id":"epoch-5-production","metric":"cps","requiredEra":"prestige-5","reward":{"cosmetics":["Гравитационные волны · полярность","∫ · Гравитационные волны · полярность"]},"symbol":"bolt.fill","threshold":1000000000,"title":"Поток V"},{"description":"С престижа V: соберите 1500 ресурсов одновременно.","era":"prestige-5","id":"epoch-5-population","metric":"helpers","requiredEra":"prestige-5","reward":{"cosmetics":["Линза бездны · звёздный свет","∫ · Линза бездны · звёздный свет"]},"symbol":"person.3.fill","threshold":1500,"title":"Научное сообщество V"},{"description":"С престижа V: изучите 36 улучшений в одном мире.","era":"prestige-5","id":"epoch-5-research","metric":"research","requiredEra":"prestige-5","reward":{"cosmetics":["Магнитные полюса · лазурь","∫ · Магнитные полюса · лазурь"]},"symbol":"atom","threshold":36,"title":"Теория V"},{"description":"С престижа V: соберите 6 работающих пар ресурсов одновременно.","era":"prestige-5","id":"epoch-5-pairs","metric":"pairs","requiredEra":"prestige-5","reward":{"cosmetics":["Призменный свет · лёд","∫ · Призменный свет · лёд"]},"symbol":"person.2.fill","threshold":6,"title":"Согласованная работа V"},{"description":"С престижа V: успешно завершите 8 заданий за один мир.","era":"prestige-5","id":"epoch-5-formulas","metric":"runChallengeWins","requiredEra":"prestige-5","reward":{"cosmetics":["Аметистовые формулы","∫ · Аметистовые формулы"]},"symbol":"function","threshold":8,"title":"Аметистовые формулы"},{"description":"С престижа V: сделайте 300 ручных нажатий за один мир.","era":"prestige-5","id":"epoch-5-touches","metric":"runClicks","requiredEra":"prestige-5","reward":{"cosmetics":["Серебряные формулы","∫ · Серебряные формулы"]},"symbol":"hand.tap.fill","threshold":300,"title":"Почерк V"},{"description":"С престижа V: купите суммарно 12500 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-5","id":"epoch-5-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-5","reward":{"cosmetics":["Бесконечные формулы","∫ · Бесконечные формулы"]},"symbol":"number","threshold":12500,"title":"Память миров V"},{"description":"С престижа V: купите суммарно 4000 ресурсов «Студент» за все миры.","era":"prestige-5","id":"epoch-5-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-5","reward":{"cosmetics":["Созвездие вечности · янтарь","∫ · Созвездие вечности · янтарь"]},"symbol":"graduationcap.fill","threshold":4000,"title":"Поколения студентов V"},{"description":"С престижа V: купите суммарно 3500 ресурсов «Преподаватель» за все миры.","era":"prestige-5","id":"epoch-5-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-5","reward":{"cosmetics":["Световые орбиты · нефрит","∫ · Световые орбиты · нефрит"]},"symbol":"book.closed.fill","threshold":3500,"title":"Школа сквозь время V"},{"description":"С престижа V: купите суммарно 22000 ресурсов любых видов за все миры.","era":"prestige-5","id":"epoch-5-all-purchases","metric":"purchases","requiredEra":"prestige-5","reward":{"cosmetics":["Плазменный поток · затмение","∫ · Плазменный поток · затмение"]},"symbol":"building.2.fill","threshold":22000,"title":"Наследие науки V"},{"description":"С престижа VI: заработайте 100 000 000 000 000 000 ∫ за один мир.","era":"prestige-6","id":"epoch-6-earned","metric":"runEarned","requiredEra":"prestige-6","reward":{"cosmetics":["Гравитационные волны","∫ · Гравитационные волны"]},"symbol":"sparkles","threshold":1e+17,"title":"Гравитационные волны"},{"description":"С престижа VI: достигните производства 10¹⁰ ∫ в секунду.","era":"prestige-6","id":"epoch-6-production","metric":"cps","requiredEra":"prestige-6","reward":{"cosmetics":["Линза бездны · перламутр","∫ · Линза бездны · перламутр"]},"symbol":"bolt.fill","threshold":10000000000,"title":"Поток VI"},{"description":"С престижа VI: соберите 2000 ресурсов одновременно.","era":"prestige-6","id":"epoch-6-population","metric":"helpers","requiredEra":"prestige-6","reward":{"cosmetics":["Магнитные полюса · янтарь","∫ · Магнитные полюса · янтарь"]},"symbol":"person.3.fill","threshold":2000,"title":"Научное сообщество VI"},{"description":"С престижа VI: изучите 42 улучшений в одном мире.","era":"prestige-6","id":"epoch-6-research","metric":"research","requiredEra":"prestige-6","reward":{"cosmetics":["Призменный свет · нефрит","∫ · Призменный свет · нефрит"]},"symbol":"atom","threshold":42,"title":"Теория VI"},{"description":"С престижа VI: соберите 7 работающих пар ресурсов одновременно.","era":"prestige-6","id":"epoch-6-pairs","metric":"pairs","requiredEra":"prestige-6","reward":{"cosmetics":["Сердце квазара · затмение","∫ · Сердце квазара · затмение"]},"symbol":"person.2.fill","threshold":7,"title":"Согласованная работа VI"},{"description":"С престижа VI: успешно завершите 10 заданий за один мир.","era":"prestige-6","id":"epoch-6-formulas","metric":"runChallengeWins","requiredEra":"prestige-6","reward":{"cosmetics":["Коралловые формулы","∫ · Коралловые формулы"]},"symbol":"function","threshold":10,"title":"Коралловые формулы"},{"description":"С престижа VI: сделайте 400 ручных нажатий за один мир.","era":"prestige-6","id":"epoch-6-touches","metric":"runClicks","requiredEra":"prestige-6","reward":{"cosmetics":["Солнечные формулы","∫ · Солнечные формулы"]},"symbol":"hand.tap.fill","threshold":400,"title":"Почерк VI"},{"description":"С престижа VI: купите суммарно 15000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-6","id":"epoch-6-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-6","reward":{"cosmetics":["Янтарные формулы","∫ · Янтарные формулы"]},"symbol":"number","threshold":15000,"title":"Память миров VI"},{"description":"С престижа VI: купите суммарно 5000 ресурсов «Студент» за все миры.","era":"prestige-6","id":"epoch-6-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-6","reward":{"cosmetics":["Световые орбиты · фуксия","∫ · Световые орбиты · фуксия"]},"symbol":"graduationcap.fill","threshold":5000,"title":"Поколения студентов VI"},{"description":"С престижа VI: купите суммарно 5000 ресурсов «Преподаватель» за все миры.","era":"prestige-6","id":"epoch-6-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-6","reward":{"cosmetics":["Плазменный поток · аметист","∫ · Плазменный поток · аметист"]},"symbol":"book.closed.fill","threshold":5000,"title":"Школа сквозь время VI"},{"description":"С престижа VI: купите суммарно 30000 ресурсов любых видов за все миры.","era":"prestige-6","id":"epoch-6-all-purchases","metric":"purchases","requiredEra":"prestige-6","reward":{"cosmetics":["Неоновый город · полярность","∫ · Неоновый город · полярность"]},"symbol":"building.2.fill","threshold":30000,"title":"Наследие науки VI"},{"description":"С престижа VII: заработайте 1 000 000 000 000 000 000 ∫ за один мир.","era":"prestige-7","id":"epoch-7-earned","metric":"runEarned","requiredEra":"prestige-7","reward":{"cosmetics":["Линза бездны","∫ · Линза бездны"]},"symbol":"sparkles","threshold":1e+18,"title":"Линза бездны"},{"description":"С престижа VII: достигните производства 10¹¹ ∫ в секунду.","era":"prestige-7","id":"epoch-7-production","metric":"cps","requiredEra":"prestige-7","reward":{"cosmetics":["Магнитные полюса · квазар","∫ · Магнитные полюса · квазар"]},"symbol":"bolt.fill","threshold":100000000000,"title":"Поток VII"},{"description":"С престижа VII: соберите 2500 ресурсов одновременно.","era":"prestige-7","id":"epoch-7-population","metric":"helpers","requiredEra":"prestige-7","reward":{"cosmetics":["Призменный свет · фуксия","∫ · Призменный свет · фуксия"]},"symbol":"person.3.fill","threshold":2500,"title":"Научное сообщество VII"},{"description":"С престижа VII: изучите 48 улучшений в одном мире.","era":"prestige-7","id":"epoch-7-research","metric":"research","requiredEra":"prestige-7","reward":{"cosmetics":["Сердце квазара · аметист","∫ · Сердце квазара · аметист"]},"symbol":"atom","threshold":48,"title":"Теория VII"},{"description":"С престижа VII: соберите 8 работающих пар ресурсов одновременно.","era":"prestige-7","id":"epoch-7-pairs","metric":"pairs","requiredEra":"prestige-7","reward":{"cosmetics":["Созвездие вечности · полярность","∫ · Созвездие вечности · полярность"]},"symbol":"person.2.fill","threshold":8,"title":"Согласованная работа VII"},{"description":"С престижа VII: успешно завершите 12 заданий за один мир.","era":"prestige-7","id":"epoch-7-formulas","metric":"runChallengeWins","requiredEra":"prestige-7","reward":{"cosmetics":["Лаймовые формулы","∫ · Лаймовые формулы"]},"symbol":"function","threshold":12,"title":"Лаймовые формулы"},{"description":"С престижа VII: сделайте 500 ручных нажатий за один мир.","era":"prestige-7","id":"epoch-7-touches","metric":"runClicks","requiredEra":"prestige-7","reward":{"cosmetics":["Радужные формулы","∫ · Радужные формулы"]},"symbol":"hand.tap.fill","threshold":500,"title":"Почерк VII"},{"description":"С престижа VII: купите суммарно 17500 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-7","id":"epoch-7-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-7","reward":{"cosmetics":["Лазурные формулы","∫ · Лазурные формулы"]},"symbol":"number","threshold":17500,"title":"Память миров VII"},{"description":"С престижа VII: купите суммарно 6500 ресурсов «Студент» за все миры.","era":"prestige-7","id":"epoch-7-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-7","reward":{"cosmetics":["Плазменный поток · лазурь","∫ · Плазменный поток · лазурь"]},"symbol":"graduationcap.fill","threshold":6500,"title":"Поколения студентов VII"},{"description":"С престижа VII: купите суммарно 6500 ресурсов «Преподаватель» за все миры.","era":"prestige-7","id":"epoch-7-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-7","reward":{"cosmetics":["Неоновый город · лёд","∫ · Неоновый город · лёд"]},"symbol":"book.closed.fill","threshold":6500,"title":"Школа сквозь время VII"},{"description":"С престижа VII: купите суммарно 40000 ресурсов любых видов за все миры.","era":"prestige-7","id":"epoch-7-all-purchases","metric":"purchases","requiredEra":"prestige-7","reward":{"cosmetics":["Кристальная решётка · перламутр","∫ · Кристальная решётка · перламутр"]},"symbol":"building.2.fill","threshold":40000,"title":"Наследие науки VII"},{"description":"С престижа VIII: заработайте 10 000 000 000 000 000 000 ∫ за один мир.","era":"prestige-8","id":"epoch-8-earned","metric":"runEarned","requiredEra":"prestige-8","reward":{"cosmetics":["Магнитные полюса","∫ · Магнитные полюса"]},"symbol":"sparkles","threshold":1e+19,"title":"Магнитные полюса"},{"description":"С престижа VIII: достигните производства 1 000 000 000 000 ∫ в секунду.","era":"prestige-8","id":"epoch-8-production","metric":"cps","requiredEra":"prestige-8","reward":{"cosmetics":["Призменный свет · звёздный свет","∫ · Призменный свет · звёздный свет"]},"symbol":"bolt.fill","threshold":1000000000000,"title":"Поток VIII"},{"description":"С престижа VIII: соберите 3500 ресурсов одновременно.","era":"prestige-8","id":"epoch-8-population","metric":"helpers","requiredEra":"prestige-8","reward":{"cosmetics":["Сердце квазара · лазурь","∫ · Сердце квазара · лазурь"]},"symbol":"person.3.fill","threshold":3500,"title":"Научное сообщество VIII"},{"description":"С престижа VIII: изучите 54 улучшений в одном мире.","era":"prestige-8","id":"epoch-8-research","metric":"research","requiredEra":"prestige-8","reward":{"cosmetics":["Созвездие вечности · лёд","∫ · Созвездие вечности · лёд"]},"symbol":"atom","threshold":54,"title":"Теория VIII"},{"description":"С престижа VIII: соберите 8 работающих пар ресурсов одновременно.","era":"prestige-8","id":"epoch-8-pairs","metric":"pairs","requiredEra":"prestige-8","reward":{"cosmetics":["Световые орбиты · перламутр","∫ · Световые орбиты · перламутр"]},"symbol":"person.2.fill","threshold":8,"title":"Согласованная работа VIII"},{"description":"С престижа VIII: успешно завершите 15 заданий за один мир.","era":"prestige-8","id":"epoch-8-formulas","metric":"runChallengeWins","requiredEra":"prestige-8","reward":{"cosmetics":["Серебряные формулы","∫ · Серебряные формулы"]},"symbol":"function","threshold":15,"title":"Серебряные формулы"},{"description":"С престижа VIII: сделайте 650 ручных нажатий за один мир.","era":"prestige-8","id":"epoch-8-touches","metric":"runClicks","requiredEra":"prestige-8","reward":{"cosmetics":["Бесконечные формулы","∫ · Бесконечные формулы"]},"symbol":"hand.tap.fill","threshold":650,"title":"Почерк VIII"},{"description":"С престижа VIII: купите суммарно 20000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-8","id":"epoch-8-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-8","reward":{"cosmetics":["Розовые формулы","∫ · Розовые формулы"]},"symbol":"number","threshold":20000,"title":"Память миров VIII"},{"description":"С престижа VIII: купите суммарно 8000 ресурсов «Студент» за все миры.","era":"prestige-8","id":"epoch-8-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-8","reward":{"cosmetics":["Неоновый город · нефрит","∫ · Неоновый город · нефрит"]},"symbol":"graduationcap.fill","threshold":8000,"title":"Поколения студентов VIII"},{"description":"С престижа VIII: купите суммарно 8000 ресурсов «Преподаватель» за все миры.","era":"prestige-8","id":"epoch-8-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-8","reward":{"cosmetics":["Кристальная решётка · затмение","∫ · Кристальная решётка · затмение"]},"symbol":"book.closed.fill","threshold":8000,"title":"Школа сквозь время VIII"},{"description":"С престижа VIII: купите суммарно 55000 ресурсов любых видов за все миры.","era":"prestige-8","id":"epoch-8-all-purchases","metric":"purchases","requiredEra":"prestige-8","reward":{"cosmetics":["Живая туманность · квазар","∫ · Живая туманность · квазар"]},"symbol":"building.2.fill","threshold":55000,"title":"Наследие науки VIII"},{"description":"С престижа IX: заработайте 100 000 000 000 000 000 000 ∫ за один мир.","era":"prestige-9","id":"epoch-9-earned","metric":"runEarned","requiredEra":"prestige-9","reward":{"cosmetics":["Призменный свет","∫ · Призменный свет"]},"symbol":"sparkles","threshold":1e+20,"title":"Призменный свет"},{"description":"С престижа IX: достигните производства 10 000 000 000 000 ∫ в секунду.","era":"prestige-9","id":"epoch-9-production","metric":"cps","requiredEra":"prestige-9","reward":{"cosmetics":["Сердце квазара · янтарь","∫ · Сердце квазара · янтарь"]},"symbol":"bolt.fill","threshold":10000000000000,"title":"Поток IX"},{"description":"С престижа IX: соберите 5000 ресурсов одновременно.","era":"prestige-9","id":"epoch-9-population","metric":"helpers","requiredEra":"prestige-9","reward":{"cosmetics":["Созвездие вечности · нефрит","∫ · Созвездие вечности · нефрит"]},"symbol":"person.3.fill","threshold":5000,"title":"Научное сообщество IX"},{"description":"С престижа IX: изучите 60 улучшений в одном мире.","era":"prestige-9","id":"epoch-9-research","metric":"research","requiredEra":"prestige-9","reward":{"cosmetics":["Световые орбиты · затмение","∫ · Световые орбиты · затмение"]},"symbol":"atom","threshold":60,"title":"Теория IX"},{"description":"С престижа IX: соберите 8 работающих пар ресурсов одновременно.","era":"prestige-9","id":"epoch-9-pairs","metric":"pairs","requiredEra":"prestige-9","reward":{"cosmetics":["Плазменный поток · квазар","∫ · Плазменный поток · квазар"]},"symbol":"person.2.fill","threshold":8,"title":"Согласованная работа IX"},{"description":"С престижа IX: успешно завершите 18 заданий за один мир.","era":"prestige-9","id":"epoch-9-formulas","metric":"runChallengeWins","requiredEra":"prestige-9","reward":{"cosmetics":["Солнечные формулы","∫ · Солнечные формулы"]},"symbol":"function","threshold":18,"title":"Солнечные формулы"},{"description":"С престижа IX: сделайте 800 ручных нажатий за один мир.","era":"prestige-9","id":"epoch-9-touches","metric":"runClicks","requiredEra":"prestige-9","reward":{"cosmetics":["Янтарные формулы","∫ · Янтарные формулы"]},"symbol":"hand.tap.fill","threshold":800,"title":"Почерк IX"},{"description":"С престижа IX: купите суммарно 22500 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-9","id":"epoch-9-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-9","reward":{"cosmetics":["Ледяные формулы","∫ · Ледяные формулы"]},"symbol":"number","threshold":22500,"title":"Память миров IX"},{"description":"С престижа IX: купите суммарно 10000 ресурсов «Студент» за все миры.","era":"prestige-9","id":"epoch-9-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-9","reward":{"cosmetics":["Кристальная решётка · аметист","∫ · Кристальная решётка · аметист"]},"symbol":"graduationcap.fill","threshold":10000,"title":"Поколения студентов IX"},{"description":"С престижа IX: купите суммарно 10000 ресурсов «Преподаватель» за все миры.","era":"prestige-9","id":"epoch-9-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-9","reward":{"cosmetics":["Живая туманность · полярность","∫ · Живая туманность · полярность"]},"symbol":"book.closed.fill","threshold":10000,"title":"Школа сквозь время IX"},{"description":"С престижа IX: купите суммарно 75000 ресурсов любых видов за все миры.","era":"prestige-9","id":"epoch-9-all-purchases","metric":"purchases","requiredEra":"prestige-9","reward":{"cosmetics":["Гравитационные волны · звёздный свет","∫ · Гравитационные волны · звёздный свет"]},"symbol":"building.2.fill","threshold":75000,"title":"Наследие науки IX"},{"description":"С престижа X: заработайте 1 000 000 000 000 000 000 000 ∫ за один мир.","era":"prestige-10","id":"epoch-10-earned","metric":"runEarned","requiredEra":"prestige-10","reward":{"cosmetics":["Сердце квазара","∫ · Сердце квазара"]},"symbol":"sparkles","threshold":1e+21,"title":"Сердце квазара"},{"description":"С престижа X: достигните производства 100 000 000 000 000 ∫ в секунду.","era":"prestige-10","id":"epoch-10-production","metric":"cps","requiredEra":"prestige-10","reward":{"cosmetics":["Созвездие вечности · фуксия","∫ · Созвездие вечности · фуксия"]},"symbol":"bolt.fill","threshold":100000000000000,"title":"Поток X"},{"description":"С престижа X: соберите 7500 ресурсов одновременно.","era":"prestige-10","id":"epoch-10-population","metric":"helpers","requiredEra":"prestige-10","reward":{"cosmetics":["Световые орбиты · аметист","∫ · Световые орбиты · аметист"]},"symbol":"person.3.fill","threshold":7500,"title":"Научное сообщество X"},{"description":"С престижа X: изучите 70 улучшений в одном мире.","era":"prestige-10","id":"epoch-10-research","metric":"research","requiredEra":"prestige-10","reward":{"cosmetics":["Плазменный поток · полярность","∫ · Плазменный поток · полярность"]},"symbol":"atom","threshold":70,"title":"Теория X"},{"description":"С престижа X: соберите 8 работающих пар ресурсов одновременно.","era":"prestige-10","id":"epoch-10-pairs","metric":"pairs","requiredEra":"prestige-10","reward":{"cosmetics":["Неоновый город · звёздный свет","∫ · Неоновый город · звёздный свет"]},"symbol":"person.2.fill","threshold":8,"title":"Согласованная работа X"},{"description":"С престижа X: успешно завершите 20 заданий за один мир.","era":"prestige-10","id":"epoch-10-formulas","metric":"runChallengeWins","requiredEra":"prestige-10","reward":{"cosmetics":["Радужные формулы","∫ · Радужные формулы"]},"symbol":"function","threshold":20,"title":"Радужные формулы"},{"description":"С престижа X: сделайте 1000 ручных нажатий за один мир.","era":"prestige-10","id":"epoch-10-touches","metric":"runClicks","requiredEra":"prestige-10","reward":{"cosmetics":["Лазурные формулы","∫ · Лазурные формулы"]},"symbol":"hand.tap.fill","threshold":1000,"title":"Почерк X"},{"description":"С престижа X: купите суммарно 25000 бит информации. Покупки сохраняются между мирами; подарки не учитываются.","era":"prestige-10","id":"epoch-10-bits","metric":"purchased(\"autoclick\")","requiredEra":"prestige-10","reward":{"cosmetics":["Аметистовые формулы","∫ · Аметистовые формулы"]},"symbol":"number","threshold":25000,"title":"Память миров X"},{"description":"С престижа X: купите суммарно 12500 ресурсов «Студент» за все миры.","era":"prestige-10","id":"epoch-10-students","metric":"purchased(\"calculator\")","requiredEra":"prestige-10","reward":{"cosmetics":["Живая туманность · лёд","∫ · Живая туманность · лёд"]},"symbol":"graduationcap.fill","threshold":12500,"title":"Поколения студентов X"},{"description":"С престижа X: купите суммарно 12500 ресурсов «Преподаватель» за все миры.","era":"prestige-10","id":"epoch-10-teachers","metric":"purchased(\"algorithm\")","requiredEra":"prestige-10","reward":{"cosmetics":["Гравитационные волны · перламутр","∫ · Гравитационные волны · перламутр"]},"symbol":"book.closed.fill","threshold":12500,"title":"Школа сквозь время X"},{"description":"С престижа X: купите суммарно 100000 ресурсов любых видов за все миры.","era":"prestige-10","id":"epoch-10-all-purchases","metric":"purchases","requiredEra":"prestige-10","reward":{"cosmetics":["Линза бездны · янтарь","∫ · Линза бездны · янтарь"]},"symbol":"building.2.fill","threshold":100000,"title":"Наследие науки X"},{"description":"Создайте новую вселенную после престижа X 2 раз.","era":"beyond","id":"cosmic-2","metric":"cosmic","requiredEra":"beyond","reward":{"cosmetics":["Световые орбиты · лазурь","∫ · Световые орбиты · лазурь"]},"symbol":"sparkles","threshold":2,"title":"Новые горизонты"},{"description":"Создайте новую вселенную после престижа X 3 раз.","era":"beyond","id":"cosmic-3","metric":"cosmic","requiredEra":"beyond","reward":{"cosmetics":["Бесконечные формулы","∫ · Бесконечные формулы"]},"symbol":"sparkles","threshold":3,"title":"Бесконечные формулы"},{"description":"Создайте новую вселенную после престижа X 5 раз.","era":"beyond","id":"cosmic-5","metric":"cosmic","requiredEra":"beyond","reward":{"cosmetics":["Плазменный поток · лёд","∫ · Плазменный поток · лёд"]},"symbol":"sparkles","threshold":5,"title":"Созвездие вечности"},{"description":"Создайте новую вселенную после престижа X 10 раз.","era":"beyond","id":"cosmic-10","metric":"cosmic","requiredEra":"beyond","reward":{"cosmetics":["Неоновый город · перламутр","∫ · Неоновый город · перламутр"]},"symbol":"sparkles","threshold":10,"title":"Архитектор вселенных"},{"description":"После первого прохождения престижа X заработайте 10 000 000 000 000 000 000 000 ∫ за один мир.","era":"beyond","id":"beyond-earned","metric":"runEarned","requiredEra":"beyond","reward":{"cosmetics":["Созвездие вечности","∫ · Созвездие вечности"]},"symbol":"sun.max.fill","threshold":1e+22,"title":"Свет новой вселенной"},{"description":"После первого прохождения престижа X успешно завершите 25 заданий за один мир.","era":"beyond","id":"beyond-formulas","metric":"runChallengeWins","requiredEra":"beyond","reward":{"cosmetics":["Розовые формулы","∫ · Розовые формулы"]},"symbol":"infinity","threshold":25,"title":"Математика вечности"},{"description":"После первого прохождения престижа X купите суммарно 50 000 бит информации за все миры.","era":"beyond","id":"beyond-bits","metric":"purchased(\"autoclick\")","requiredEra":"beyond","reward":{"cosmetics":["Коралловые формулы","∫ · Коралловые формулы"]},"symbol":"number","threshold":50000,"title":"Бесконечная память"},{"description":"После первого прохождения престижа X купите суммарно 25 000 ресурсов «Студент» за все миры.","era":"beyond","id":"beyond-students","metric":"purchased(\"calculator\")","requiredEra":"beyond","reward":{"cosmetics":["Кристальная решётка · янтарь","∫ · Кристальная решётка · янтарь"]},"symbol":"graduationcap.fill","threshold":25000,"title":"Университет вечности"},{"description":"После первого прохождения престижа X купите суммарно 25 000 ресурсов «Преподаватель» за все миры.","era":"beyond","id":"beyond-teachers","metric":"purchased(\"algorithm\")","requiredEra":"beyond","reward":{"cosmetics":["Живая туманность · нефрит","∫ · Живая туманность · нефрит"]},"symbol":"book.closed.fill","threshold":25000,"title":"Хранители знаний"},{"description":"После первого прохождения престижа X купите суммарно 250 000 ресурсов за все миры.","era":"beyond","id":"beyond-all-purchases","metric":"purchases","requiredEra":"beyond","reward":{"cosmetics":["Гравитационные волны · затмение","∫ · Гравитационные волны · затмение"]},"symbol":"building.2.fill","threshold":250000,"title":"Цивилизация науки"},{"description":"Пройдите престиж X и накопите 1 000 000 ручных нажатий за всё время.","era":"beyond","id":"beyond-clicks","metric":"clicks","requiredEra":"beyond","reward":{"cosmetics":["Линза бездны · квазар","∫ · Линза бездны · квазар"]},"symbol":"hand.tap.fill","threshold":1000000,"title":"Миллион мыслей"}],"skins":[{"description":"Искры рождающихся звёзд и вращающееся ядро.","id":"prestige3","name":"III · Звёздный реактор","requiredAchievementID":"prestige-3"},{"description":"Световые механизмы и встречное вращение орбит.","id":"prestige4","name":"IV · Хронометр вечности","requiredAchievementID":"prestige-4"},{"description":"Преломления света в растущих кристаллах.","id":"prestige5","name":"V · Алмазная мысль","requiredAchievementID":"prestige-5"},{"description":"Импульсы между узлами математической сети.","id":"prestige6","name":"VI · Живое сознание","requiredAchievementID":"prestige-6"},{"description":"Текучие волны и расходящиеся кольца.","id":"prestige7","name":"VII · Прилив миров","requiredAchievementID":"prestige-7"},{"description":"Световые потоки переплетаются в знак бесконечности.","id":"prestige8","name":"VIII · Узел бесконечности","requiredAchievementID":"prestige-8"},{"description":"Солнечная корона и медленные протуберанцы.","id":"prestige9","name":"IX · Ядро сверхновой","requiredAchievementID":"prestige-9"},{"description":"Звёздные потоки и гравитационное кольцо чёрной дыры.","id":"prestige10","name":"X · Абсолютный горизонт","requiredAchievementID":"prestige-10"},{"description":"Дышащие электрические дорожки.","id":"tesla","name":"Катушка Теслы","requiredAchievementID":"research-10"},{"description":"Древние символы медленно вращаются.","id":"runes","name":"Руны открытий","requiredAchievementID":"clicks-1000"},{"description":"От центра расходятся кольца.","id":"ripple","name":"Живая вода","requiredAchievementID":"challenges-1"},{"description":"Два рукава вращающихся звёзд.","id":"galaxy","name":"Спиральная галактика","requiredAchievementID":"earned-1000000"},{"description":"Встречное вращение золотых шестерён.","id":"clockwork","name":"Часовой механизм","requiredAchievementID":"helpers-100"},{"description":"Сканирующее кольцо на тонкой сетке.","id":"hologram","name":"Голограмма","requiredAchievementID":"research-25"},{"description":"Тлеющие трещины и живой жар.","id":"magma","name":"Магматическое сердце","requiredAchievementID":"production-10000"},{"description":"Мягко мерцающий геометрический узор.","id":"jade","name":"Нефритовый талисман","requiredAchievementID":"helpers-25"},{"description":"Светлая сфера с переливами орбит.","id":"pearlmoon","name":"Перламутровая луна","requiredAchievementID":"challenges-10"},{"description":"Лучи и движущаяся минутная отметка.","id":"sundial","name":"Солнечные часы","requiredAchievementID":"production-100"},{"description":"Живой солнечный обод и корона первого мира.","id":"eventide","name":"I · Золотое ядро","requiredAchievementID":"prestige-1"},{"description":"Грани вращаются в двух противоположных измерениях.","id":"fractal","name":"II · Зеркало измерений","requiredAchievementID":"prestige-2"},{"description":"Пульсирующее ядро новой вселенной.","id":"quasar","name":"Квазар","requiredAchievementID":"cosmic-1"},{"description":"Доступно с начала игры.","id":"ocean","name":"Прилив","requiredAchievementID":null},{"description":"Оформление за достижение.","id":"ruby","name":"Рубиновая грань","requiredAchievementID":"earned-1000"},{"description":"Оформление за достижение.","id":"emerald","name":"Изумрудное ядро","requiredAchievementID":"helpers-25"},{"description":"Оформление за достижение.","id":"copper","name":"Медная орбита","requiredAchievementID":"production-100"},{"description":"Оформление за достижение.","id":"pearl","name":"Жемчужина","requiredAchievementID":"clicks-1000"},{"description":"Оформление за достижение.","id":"neon","name":"Неоновый контур","requiredAchievementID":"research-10"},{"description":"Оформление за достижение.","id":"blueprint","name":"Чертёж бесконечности","requiredAchievementID":"research-1"},{"description":"Оформление за достижение.","id":"solar","name":"Солнечный диск","requiredAchievementID":"earned-1000000000"},{"description":"Оформление за достижение.","id":"lunar","name":"Лунная поверхность","requiredAchievementID":"challenges-1"},{"description":"Оформление за достижение.","id":"prism","name":"Призма","requiredAchievementID":"helpers-100"},{"description":"Оформление за достижение.","id":"obsidian","name":"Обсидиан","requiredAchievementID":"prestige-2"},{"description":"Белый круг и вечная формула.","id":"classic","name":"Классический интеграл","requiredAchievementID":null},{"description":"За 50 ручных нажатий.","id":"chalk","name":"Меловая доска","requiredAchievementID":"clicks-50"},{"description":"За первый миллион интегралов.","id":"gold","name":"Золотое сечение","requiredAchievementID":"earned-1000000"},{"description":"За 25 изученных улучшений.","id":"crystal","name":"Кристальная мысль","requiredAchievementID":"research-25"},{"description":"За первое перерождение.","id":"blackhole","name":"Горизонт событий","requiredAchievementID":"prestige-1"},{"description":"За завершение престижа X.","id":"cosmic","name":"Сердце новой вселенной","requiredAchievementID":"cosmic-1"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula1","name":"∫ · Янтарные формулы","requiredAchievementID":"epoch-1-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula1a","name":"∫ · Ледяные формулы","requiredAchievementID":"epoch-1-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula1b","name":"∫ · Лаймовые формулы","requiredAchievementID":"epoch-1-bits"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance1","name":"∫ · Золотые орбиты","requiredAchievementID":"epoch-1-earned"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance1a","name":"∫ · Плазменный поток · нефрит","requiredAchievementID":"epoch-1-production"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance1b","name":"∫ · Неоновый город · затмение","requiredAchievementID":"epoch-1-population"},{"description":"Преломления света в кристаллической решётке.","id":"resonance1c","name":"∫ · Кристальная решётка · квазар","requiredAchievementID":"epoch-1-research"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance1d","name":"∫ · Живая туманность · фуксия","requiredAchievementID":"epoch-1-pairs"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance1f","name":"∫ · Линза бездны · полярность","requiredAchievementID":"epoch-1-students"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance1g","name":"∫ · Магнитные полюса · звёздный свет","requiredAchievementID":"epoch-1-teachers"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance1h","name":"∫ · Призменный свет · лазурь","requiredAchievementID":"epoch-1-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula2","name":"∫ · Лазурные формулы","requiredAchievementID":"epoch-2-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula2a","name":"∫ · Аметистовые формулы","requiredAchievementID":"epoch-2-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula2b","name":"∫ · Серебряные формулы","requiredAchievementID":"epoch-2-bits"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance2","name":"∫ · Плазменный поток","requiredAchievementID":"epoch-2-earned"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance2a","name":"∫ · Неоновый город · аметист","requiredAchievementID":"epoch-2-production"},{"description":"Преломления света в кристаллической решётке.","id":"resonance2b","name":"∫ · Кристальная решётка · полярность","requiredAchievementID":"epoch-2-population"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance2c","name":"∫ · Живая туманность · звёздный свет","requiredAchievementID":"epoch-2-research"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance2d","name":"∫ · Гравитационные волны · лазурь","requiredAchievementID":"epoch-2-pairs"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance2f","name":"∫ · Магнитные полюса · перламутр","requiredAchievementID":"epoch-2-students"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance2g","name":"∫ · Призменный свет · янтарь","requiredAchievementID":"epoch-2-teachers"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance2h","name":"∫ · Сердце квазара · нефрит","requiredAchievementID":"epoch-2-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula3","name":"∫ · Розовые формулы","requiredAchievementID":"epoch-3-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula3a","name":"∫ · Коралловые формулы","requiredAchievementID":"epoch-3-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula3b","name":"∫ · Солнечные формулы","requiredAchievementID":"epoch-3-bits"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance3","name":"∫ · Неоновый город","requiredAchievementID":"epoch-3-earned"},{"description":"Преломления света в кристаллической решётке.","id":"resonance3a","name":"∫ · Кристальная решётка · лёд","requiredAchievementID":"epoch-3-production"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance3b","name":"∫ · Живая туманность · перламутр","requiredAchievementID":"epoch-3-population"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance3c","name":"∫ · Гравитационные волны · янтарь","requiredAchievementID":"epoch-3-research"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance3d","name":"∫ · Линза бездны · нефрит","requiredAchievementID":"epoch-3-pairs"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance3f","name":"∫ · Призменный свет · квазар","requiredAchievementID":"epoch-3-students"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance3g","name":"∫ · Сердце квазара · фуксия","requiredAchievementID":"epoch-3-teachers"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance3h","name":"∫ · Созвездие вечности · аметист","requiredAchievementID":"epoch-3-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula4","name":"∫ · Ледяные формулы","requiredAchievementID":"epoch-4-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula4a","name":"∫ · Лаймовые формулы","requiredAchievementID":"epoch-4-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula4b","name":"∫ · Радужные формулы","requiredAchievementID":"epoch-4-bits"},{"description":"Преломления света в кристаллической решётке.","id":"resonance4","name":"∫ · Кристальная решётка","requiredAchievementID":"epoch-4-earned"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance4a","name":"∫ · Живая туманность · затмение","requiredAchievementID":"epoch-4-production"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance4b","name":"∫ · Гравитационные волны · квазар","requiredAchievementID":"epoch-4-population"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance4c","name":"∫ · Линза бездны · фуксия","requiredAchievementID":"epoch-4-research"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance4d","name":"∫ · Магнитные полюса · аметист","requiredAchievementID":"epoch-4-pairs"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance4f","name":"∫ · Сердце квазара · звёздный свет","requiredAchievementID":"epoch-4-students"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance4g","name":"∫ · Созвездие вечности · лазурь","requiredAchievementID":"epoch-4-teachers"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance4h","name":"∫ · Световые орбиты · лёд","requiredAchievementID":"epoch-4-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula5","name":"∫ · Аметистовые формулы","requiredAchievementID":"epoch-5-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula5a","name":"∫ · Серебряные формулы","requiredAchievementID":"epoch-5-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula5b","name":"∫ · Бесконечные формулы","requiredAchievementID":"epoch-5-bits"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance5","name":"∫ · Живая туманность","requiredAchievementID":"epoch-5-earned"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance5a","name":"∫ · Гравитационные волны · полярность","requiredAchievementID":"epoch-5-production"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance5b","name":"∫ · Линза бездны · звёздный свет","requiredAchievementID":"epoch-5-population"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance5c","name":"∫ · Магнитные полюса · лазурь","requiredAchievementID":"epoch-5-research"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance5d","name":"∫ · Призменный свет · лёд","requiredAchievementID":"epoch-5-pairs"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance5f","name":"∫ · Созвездие вечности · янтарь","requiredAchievementID":"epoch-5-students"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance5g","name":"∫ · Световые орбиты · нефрит","requiredAchievementID":"epoch-5-teachers"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance5h","name":"∫ · Плазменный поток · затмение","requiredAchievementID":"epoch-5-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula6","name":"∫ · Коралловые формулы","requiredAchievementID":"epoch-6-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula6a","name":"∫ · Солнечные формулы","requiredAchievementID":"epoch-6-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula6b","name":"∫ · Янтарные формулы","requiredAchievementID":"epoch-6-bits"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance6","name":"∫ · Гравитационные волны","requiredAchievementID":"epoch-6-earned"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance6a","name":"∫ · Линза бездны · перламутр","requiredAchievementID":"epoch-6-production"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance6b","name":"∫ · Магнитные полюса · янтарь","requiredAchievementID":"epoch-6-population"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance6c","name":"∫ · Призменный свет · нефрит","requiredAchievementID":"epoch-6-research"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance6d","name":"∫ · Сердце квазара · затмение","requiredAchievementID":"epoch-6-pairs"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance6f","name":"∫ · Световые орбиты · фуксия","requiredAchievementID":"epoch-6-students"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance6g","name":"∫ · Плазменный поток · аметист","requiredAchievementID":"epoch-6-teachers"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance6h","name":"∫ · Неоновый город · полярность","requiredAchievementID":"epoch-6-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula7","name":"∫ · Лаймовые формулы","requiredAchievementID":"epoch-7-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula7a","name":"∫ · Радужные формулы","requiredAchievementID":"epoch-7-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula7b","name":"∫ · Лазурные формулы","requiredAchievementID":"epoch-7-bits"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance7","name":"∫ · Линза бездны","requiredAchievementID":"epoch-7-earned"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance7a","name":"∫ · Магнитные полюса · квазар","requiredAchievementID":"epoch-7-production"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance7b","name":"∫ · Призменный свет · фуксия","requiredAchievementID":"epoch-7-population"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance7c","name":"∫ · Сердце квазара · аметист","requiredAchievementID":"epoch-7-research"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance7d","name":"∫ · Созвездие вечности · полярность","requiredAchievementID":"epoch-7-pairs"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance7f","name":"∫ · Плазменный поток · лазурь","requiredAchievementID":"epoch-7-students"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance7g","name":"∫ · Неоновый город · лёд","requiredAchievementID":"epoch-7-teachers"},{"description":"Преломления света в кристаллической решётке.","id":"resonance7h","name":"∫ · Кристальная решётка · перламутр","requiredAchievementID":"epoch-7-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula8","name":"∫ · Серебряные формулы","requiredAchievementID":"epoch-8-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula8a","name":"∫ · Бесконечные формулы","requiredAchievementID":"epoch-8-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula8b","name":"∫ · Розовые формулы","requiredAchievementID":"epoch-8-bits"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance8","name":"∫ · Магнитные полюса","requiredAchievementID":"epoch-8-earned"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance8a","name":"∫ · Призменный свет · звёздный свет","requiredAchievementID":"epoch-8-production"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance8b","name":"∫ · Сердце квазара · лазурь","requiredAchievementID":"epoch-8-population"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance8c","name":"∫ · Созвездие вечности · лёд","requiredAchievementID":"epoch-8-research"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance8d","name":"∫ · Световые орбиты · перламутр","requiredAchievementID":"epoch-8-pairs"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance8f","name":"∫ · Неоновый город · нефрит","requiredAchievementID":"epoch-8-students"},{"description":"Преломления света в кристаллической решётке.","id":"resonance8g","name":"∫ · Кристальная решётка · затмение","requiredAchievementID":"epoch-8-teachers"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance8h","name":"∫ · Живая туманность · квазар","requiredAchievementID":"epoch-8-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula9","name":"∫ · Солнечные формулы","requiredAchievementID":"epoch-9-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula9a","name":"∫ · Янтарные формулы","requiredAchievementID":"epoch-9-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula9b","name":"∫ · Ледяные формулы","requiredAchievementID":"epoch-9-bits"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance9","name":"∫ · Призменный свет","requiredAchievementID":"epoch-9-earned"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance9a","name":"∫ · Сердце квазара · янтарь","requiredAchievementID":"epoch-9-production"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance9b","name":"∫ · Созвездие вечности · нефрит","requiredAchievementID":"epoch-9-population"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance9c","name":"∫ · Световые орбиты · затмение","requiredAchievementID":"epoch-9-research"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance9d","name":"∫ · Плазменный поток · квазар","requiredAchievementID":"epoch-9-pairs"},{"description":"Преломления света в кристаллической решётке.","id":"resonance9f","name":"∫ · Кристальная решётка · аметист","requiredAchievementID":"epoch-9-students"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance9g","name":"∫ · Живая туманность · полярность","requiredAchievementID":"epoch-9-teachers"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance9h","name":"∫ · Гравитационные волны · звёздный свет","requiredAchievementID":"epoch-9-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula10","name":"∫ · Радужные формулы","requiredAchievementID":"epoch-10-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula10a","name":"∫ · Лазурные формулы","requiredAchievementID":"epoch-10-touches"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formula10b","name":"∫ · Аметистовые формулы","requiredAchievementID":"epoch-10-bits"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance10","name":"∫ · Сердце квазара","requiredAchievementID":"epoch-10-earned"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance10a","name":"∫ · Созвездие вечности · фуксия","requiredAchievementID":"epoch-10-production"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance10b","name":"∫ · Световые орбиты · аметист","requiredAchievementID":"epoch-10-population"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance10c","name":"∫ · Плазменный поток · полярность","requiredAchievementID":"epoch-10-research"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance10d","name":"∫ · Неоновый город · звёздный свет","requiredAchievementID":"epoch-10-pairs"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance10f","name":"∫ · Живая туманность · лёд","requiredAchievementID":"epoch-10-students"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance10g","name":"∫ · Гравитационные волны · перламутр","requiredAchievementID":"epoch-10-teachers"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance10h","name":"∫ · Линза бездны · янтарь","requiredAchievementID":"epoch-10-all-purchases"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formulaBeyond","name":"∫ · Бесконечные формулы","requiredAchievementID":"cosmic-3"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formulaBeyonda","name":"∫ · Розовые формулы","requiredAchievementID":"beyond-formulas"},{"description":"Математические символы движутся внутри светящегося диска.","id":"formulaBeyondb","name":"∫ · Коралловые формулы","requiredAchievementID":"beyond-bits"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonanceBeyond","name":"∫ · Созвездие вечности","requiredAchievementID":"beyond-earned"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonanceBeyonda","name":"∫ · Световые орбиты · лазурь","requiredAchievementID":"cosmic-2"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonanceBeyondb","name":"∫ · Плазменный поток · лёд","requiredAchievementID":"cosmic-5"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonanceBeyondc","name":"∫ · Неоновый город · перламутр","requiredAchievementID":"cosmic-10"},{"description":"Преломления света в кристаллической решётке.","id":"resonanceBeyondd","name":"∫ · Кристальная решётка · янтарь","requiredAchievementID":"beyond-students"},{"description":"Спиральные потоки звёздной пыли.","id":"resonanceBeyonde","name":"∫ · Живая туманность · нефрит","requiredAchievementID":"beyond-teachers"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonanceBeyondf","name":"∫ · Гравитационные волны · затмение","requiredAchievementID":"beyond-all-purchases"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonanceBeyondg","name":"∫ · Линза бездны · квазар","requiredAchievementID":"beyond-clicks"},{"description":"За 10 000 ручных нажатий.","id":"milestone1","name":"∫ · Неутомимый импульс","requiredAchievementID":"clicks-10000"},{"description":"За 100 000 ручных нажатий.","id":"milestone2","name":"∫ · Орбиты марафона","requiredAchievementID":"clicks-100000"},{"description":"За 1 000 000 ручных нажатий.","id":"milestone3","name":"∫ · Миллион созвездий","requiredAchievementID":"clicks-1000000"},{"description":"За 1 000 ресурсов одновременно.","id":"milestone4","name":"∫ · Город тысячи огней","requiredAchievementID":"helpers-1000"},{"description":"За 75 изученных улучшений в одном мире.","id":"milestone5","name":"∫ · Архив открытий","requiredAchievementID":"research-75"},{"description":"За 50 побед в испытаниях.","id":"milestone6","name":"∫ · Формула совершенства","requiredAchievementID":"challenges-50"},{"description":"За три одновременно работающие пары ресурсов.","id":"milestone10","name":"∫ · Созвездие сотрудничества","requiredAchievementID":"pairs-3"}],"themes":[{"description":"Искры рождающихся звёзд и вращающееся ядро.","id":"prestige3","name":"III · Кузница звёзд","requiredAchievementID":"prestige-3"},{"description":"Световые механизмы и встречное вращение орбит.","id":"prestige4","name":"IV · Храм времени","requiredAchievementID":"prestige-4"},{"description":"Преломления света в растущих кристаллах.","id":"prestige5","name":"V · Кристальный сад","requiredAchievementID":"prestige-5"},{"description":"Импульсы между узлами математической сети.","id":"prestige6","name":"VI · Нейронная вселенная","requiredAchievementID":"prestige-6"},{"description":"Текучие волны и расходящиеся кольца.","id":"prestige7","name":"VII · Океан бесконечности","requiredAchievementID":"prestige-7"},{"description":"Световые потоки переплетаются в знак бесконечности.","id":"prestige8","name":"VIII · Двойная бесконечность","requiredAchievementID":"prestige-8"},{"description":"Солнечная корона и медленные протуберанцы.","id":"prestige9","name":"IX · Сердце сверхновой","requiredAchievementID":"prestige-9"},{"description":"Звёздные потоки и гравитационное кольцо чёрной дыры.","id":"prestige10","name":"X · Владыка сингулярности","requiredAchievementID":"prestige-10"},{"description":"Медленно поднимающиеся искры.","id":"emberfire","name":"Угли рассвета","requiredAchievementID":"production-100"},{"description":"Кольца дождя на тёмной воде.","id":"monsoon","name":"Тёплый ливень","requiredAchievementID":"challenges-1"},{"description":"Живой свет зачарованного леса.","id":"enchanted","name":"Светлячки","requiredAchievementID":"helpers-25"},{"description":"Плывущие звёздные облака.","id":"nebula","name":"Туманность","requiredAchievementID":"earned-1000000"},{"description":"Светящиеся символы математики.","id":"matrix","name":"Поток формул","requiredAchievementID":"research-10"},{"description":"Медленный танец золотых лепестков.","id":"lotus","name":"Лотос","requiredAchievementID":"clicks-1000"},{"description":"Световые короны и золотой звёздный ветер.","id":"midnightgold","name":"I · Корона света","requiredAchievementID":"prestige-1"},{"description":"Мягкие импульсы разрядов без вспышек.","id":"electricstorm","name":"Электрическое небо","requiredAchievementID":"production-10000"},{"description":"Переплетённые потоки на границе измерений.","id":"deeprift","name":"II · Разлом пространства","requiredAchievementID":"prestige-2"},{"description":"Доступно с начала игры.","id":"ocean","name":"Глубокий океан","requiredAchievementID":null},{"description":"Оформление за достижение.","id":"sunset","name":"Последний луч","requiredAchievementID":"earned-1000"},{"description":"Оформление за достижение.","id":"sakura","name":"Сад сакуры","requiredAchievementID":"helpers-25"},{"description":"Оформление за достижение.","id":"graphite","name":"Графитовая мастерская","requiredAchievementID":"research-1"},{"description":"Оформление за достижение.","id":"copper","name":"Медный век","requiredAchievementID":"production-100"},{"description":"Оформление за достижение.","id":"lagoon","name":"Бирюзовая лагуна","requiredAchievementID":"challenges-1"},{"description":"Оформление за достижение.","id":"violet","name":"Аметистовая ночь","requiredAchievementID":"research-10"},{"description":"Синяя лаборатория и тёплое дерево.","id":"classic","name":"Классика","requiredAchievementID":null},{"description":"Зелёная лаборатория первых открытий.","id":"emerald","name":"Изумруд","requiredAchievementID":null},{"description":"Тихая ночь среди далёких звёзд.","id":"night","name":"Космос","requiredAchievementID":null},{"description":"За 1 000 ручных нажатий.","id":"parchment","name":"Пергамент","requiredAchievementID":"clicks-1000"},{"description":"За коллекцию из 100 ресурсов.","id":"aurora","name":"Северное сияние","requiredAchievementID":"helpers-100"},{"description":"За 10 побед в испытаниях.","id":"crimson","name":"Багровый рассвет","requiredAchievementID":"challenges-10"},{"description":"За первое перерождение.","id":"starlight","name":"Звёздный свет","requiredAchievementID":"prestige-1"},{"description":"За завершение престижа X.","id":"cosmic","name":"За гранью бесконечности","requiredAchievementID":"cosmic-1"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula1","name":"Янтарные формулы","requiredAchievementID":"epoch-1-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula1a","name":"Ледяные формулы","requiredAchievementID":"epoch-1-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula1b","name":"Лаймовые формулы","requiredAchievementID":"epoch-1-bits"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance1","name":"Золотые орбиты","requiredAchievementID":"epoch-1-earned"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance1a","name":"Плазменный поток · нефрит","requiredAchievementID":"epoch-1-production"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance1b","name":"Неоновый город · затмение","requiredAchievementID":"epoch-1-population"},{"description":"Преломления света в кристаллической решётке.","id":"resonance1c","name":"Кристальная решётка · квазар","requiredAchievementID":"epoch-1-research"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance1d","name":"Живая туманность · фуксия","requiredAchievementID":"epoch-1-pairs"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance1f","name":"Линза бездны · полярность","requiredAchievementID":"epoch-1-students"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance1g","name":"Магнитные полюса · звёздный свет","requiredAchievementID":"epoch-1-teachers"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance1h","name":"Призменный свет · лазурь","requiredAchievementID":"epoch-1-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula2","name":"Лазурные формулы","requiredAchievementID":"epoch-2-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula2a","name":"Аметистовые формулы","requiredAchievementID":"epoch-2-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula2b","name":"Серебряные формулы","requiredAchievementID":"epoch-2-bits"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance2","name":"Плазменный поток","requiredAchievementID":"epoch-2-earned"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance2a","name":"Неоновый город · аметист","requiredAchievementID":"epoch-2-production"},{"description":"Преломления света в кристаллической решётке.","id":"resonance2b","name":"Кристальная решётка · полярность","requiredAchievementID":"epoch-2-population"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance2c","name":"Живая туманность · звёздный свет","requiredAchievementID":"epoch-2-research"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance2d","name":"Гравитационные волны · лазурь","requiredAchievementID":"epoch-2-pairs"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance2f","name":"Магнитные полюса · перламутр","requiredAchievementID":"epoch-2-students"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance2g","name":"Призменный свет · янтарь","requiredAchievementID":"epoch-2-teachers"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance2h","name":"Сердце квазара · нефрит","requiredAchievementID":"epoch-2-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula3","name":"Розовые формулы","requiredAchievementID":"epoch-3-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula3a","name":"Коралловые формулы","requiredAchievementID":"epoch-3-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula3b","name":"Солнечные формулы","requiredAchievementID":"epoch-3-bits"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance3","name":"Неоновый город","requiredAchievementID":"epoch-3-earned"},{"description":"Преломления света в кристаллической решётке.","id":"resonance3a","name":"Кристальная решётка · лёд","requiredAchievementID":"epoch-3-production"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance3b","name":"Живая туманность · перламутр","requiredAchievementID":"epoch-3-population"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance3c","name":"Гравитационные волны · янтарь","requiredAchievementID":"epoch-3-research"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance3d","name":"Линза бездны · нефрит","requiredAchievementID":"epoch-3-pairs"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance3f","name":"Призменный свет · квазар","requiredAchievementID":"epoch-3-students"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance3g","name":"Сердце квазара · фуксия","requiredAchievementID":"epoch-3-teachers"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance3h","name":"Созвездие вечности · аметист","requiredAchievementID":"epoch-3-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula4","name":"Ледяные формулы","requiredAchievementID":"epoch-4-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula4a","name":"Лаймовые формулы","requiredAchievementID":"epoch-4-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula4b","name":"Радужные формулы","requiredAchievementID":"epoch-4-bits"},{"description":"Преломления света в кристаллической решётке.","id":"resonance4","name":"Кристальная решётка","requiredAchievementID":"epoch-4-earned"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance4a","name":"Живая туманность · затмение","requiredAchievementID":"epoch-4-production"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance4b","name":"Гравитационные волны · квазар","requiredAchievementID":"epoch-4-population"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance4c","name":"Линза бездны · фуксия","requiredAchievementID":"epoch-4-research"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance4d","name":"Магнитные полюса · аметист","requiredAchievementID":"epoch-4-pairs"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance4f","name":"Сердце квазара · звёздный свет","requiredAchievementID":"epoch-4-students"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance4g","name":"Созвездие вечности · лазурь","requiredAchievementID":"epoch-4-teachers"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance4h","name":"Световые орбиты · лёд","requiredAchievementID":"epoch-4-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula5","name":"Аметистовые формулы","requiredAchievementID":"epoch-5-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula5a","name":"Серебряные формулы","requiredAchievementID":"epoch-5-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula5b","name":"Бесконечные формулы","requiredAchievementID":"epoch-5-bits"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance5","name":"Живая туманность","requiredAchievementID":"epoch-5-earned"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance5a","name":"Гравитационные волны · полярность","requiredAchievementID":"epoch-5-production"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance5b","name":"Линза бездны · звёздный свет","requiredAchievementID":"epoch-5-population"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance5c","name":"Магнитные полюса · лазурь","requiredAchievementID":"epoch-5-research"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance5d","name":"Призменный свет · лёд","requiredAchievementID":"epoch-5-pairs"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance5f","name":"Созвездие вечности · янтарь","requiredAchievementID":"epoch-5-students"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance5g","name":"Световые орбиты · нефрит","requiredAchievementID":"epoch-5-teachers"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance5h","name":"Плазменный поток · затмение","requiredAchievementID":"epoch-5-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula6","name":"Коралловые формулы","requiredAchievementID":"epoch-6-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula6a","name":"Солнечные формулы","requiredAchievementID":"epoch-6-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula6b","name":"Янтарные формулы","requiredAchievementID":"epoch-6-bits"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance6","name":"Гравитационные волны","requiredAchievementID":"epoch-6-earned"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance6a","name":"Линза бездны · перламутр","requiredAchievementID":"epoch-6-production"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance6b","name":"Магнитные полюса · янтарь","requiredAchievementID":"epoch-6-population"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance6c","name":"Призменный свет · нефрит","requiredAchievementID":"epoch-6-research"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance6d","name":"Сердце квазара · затмение","requiredAchievementID":"epoch-6-pairs"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance6f","name":"Световые орбиты · фуксия","requiredAchievementID":"epoch-6-students"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance6g","name":"Плазменный поток · аметист","requiredAchievementID":"epoch-6-teachers"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance6h","name":"Неоновый город · полярность","requiredAchievementID":"epoch-6-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula7","name":"Лаймовые формулы","requiredAchievementID":"epoch-7-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula7a","name":"Радужные формулы","requiredAchievementID":"epoch-7-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula7b","name":"Лазурные формулы","requiredAchievementID":"epoch-7-bits"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance7","name":"Линза бездны","requiredAchievementID":"epoch-7-earned"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance7a","name":"Магнитные полюса · квазар","requiredAchievementID":"epoch-7-production"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance7b","name":"Призменный свет · фуксия","requiredAchievementID":"epoch-7-population"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance7c","name":"Сердце квазара · аметист","requiredAchievementID":"epoch-7-research"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance7d","name":"Созвездие вечности · полярность","requiredAchievementID":"epoch-7-pairs"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance7f","name":"Плазменный поток · лазурь","requiredAchievementID":"epoch-7-students"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance7g","name":"Неоновый город · лёд","requiredAchievementID":"epoch-7-teachers"},{"description":"Преломления света в кристаллической решётке.","id":"resonance7h","name":"Кристальная решётка · перламутр","requiredAchievementID":"epoch-7-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula8","name":"Серебряные формулы","requiredAchievementID":"epoch-8-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula8a","name":"Бесконечные формулы","requiredAchievementID":"epoch-8-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula8b","name":"Розовые формулы","requiredAchievementID":"epoch-8-bits"},{"description":"Световые частицы движутся вдоль магнитных линий.","id":"resonance8","name":"Магнитные полюса","requiredAchievementID":"epoch-8-earned"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance8a","name":"Призменный свет · звёздный свет","requiredAchievementID":"epoch-8-production"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance8b","name":"Сердце квазара · лазурь","requiredAchievementID":"epoch-8-population"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance8c","name":"Созвездие вечности · лёд","requiredAchievementID":"epoch-8-research"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance8d","name":"Световые орбиты · перламутр","requiredAchievementID":"epoch-8-pairs"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance8f","name":"Неоновый город · нефрит","requiredAchievementID":"epoch-8-students"},{"description":"Преломления света в кристаллической решётке.","id":"resonance8g","name":"Кристальная решётка · затмение","requiredAchievementID":"epoch-8-teachers"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance8h","name":"Живая туманность · квазар","requiredAchievementID":"epoch-8-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula9","name":"Солнечные формулы","requiredAchievementID":"epoch-9-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula9a","name":"Янтарные формулы","requiredAchievementID":"epoch-9-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula9b","name":"Ледяные формулы","requiredAchievementID":"epoch-9-bits"},{"description":"Цветные лучи проходят сквозь грани призмы.","id":"resonance9","name":"Призменный свет","requiredAchievementID":"epoch-9-earned"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance9a","name":"Сердце квазара · янтарь","requiredAchievementID":"epoch-9-production"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance9b","name":"Созвездие вечности · нефрит","requiredAchievementID":"epoch-9-population"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance9c","name":"Световые орбиты · затмение","requiredAchievementID":"epoch-9-research"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance9d","name":"Плазменный поток · квазар","requiredAchievementID":"epoch-9-pairs"},{"description":"Преломления света в кристаллической решётке.","id":"resonance9f","name":"Кристальная решётка · аметист","requiredAchievementID":"epoch-9-students"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance9g","name":"Живая туманность · полярность","requiredAchievementID":"epoch-9-teachers"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance9h","name":"Гравитационные волны · звёздный свет","requiredAchievementID":"epoch-9-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula10","name":"Радужные формулы","requiredAchievementID":"epoch-10-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula10a","name":"Лазурные формулы","requiredAchievementID":"epoch-10-touches"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formula10b","name":"Аметистовые формулы","requiredAchievementID":"epoch-10-bits"},{"description":"Энергетическое ядро и встречные струи квазара.","id":"resonance10","name":"Сердце квазара","requiredAchievementID":"epoch-10-earned"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonance10a","name":"Созвездие вечности · фуксия","requiredAchievementID":"epoch-10-production"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonance10b","name":"Световые орбиты · аметист","requiredAchievementID":"epoch-10-population"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonance10c","name":"Плазменный поток · полярность","requiredAchievementID":"epoch-10-research"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonance10d","name":"Неоновый город · звёздный свет","requiredAchievementID":"epoch-10-pairs"},{"description":"Спиральные потоки звёздной пыли.","id":"resonance10f","name":"Живая туманность · лёд","requiredAchievementID":"epoch-10-students"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonance10g","name":"Гравитационные волны · перламутр","requiredAchievementID":"epoch-10-teachers"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonance10h","name":"Линза бездны · янтарь","requiredAchievementID":"epoch-10-all-purchases"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formulaBeyond","name":"Бесконечные формулы","requiredAchievementID":"cosmic-3"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formulaBeyonda","name":"Розовые формулы","requiredAchievementID":"beyond-formulas"},{"description":"Падающие математические символы: цветные световые цепочки и мягкие следы.","id":"formulaBeyondb","name":"Коралловые формулы","requiredAchievementID":"beyond-bits"},{"description":"Световые нити соединяют звёзды бесконечной вселенной.","id":"resonanceBeyond","name":"Созвездие вечности","requiredAchievementID":"beyond-earned"},{"description":"Золотые орбиты и движущиеся световые следы.","id":"resonanceBeyonda","name":"Световые орбиты · лазурь","requiredAchievementID":"cosmic-2"},{"description":"Переплетённые плазменные потоки и мягкое свечение.","id":"resonanceBeyondb","name":"Плазменный поток · лёд","requiredAchievementID":"cosmic-5"},{"description":"Огни научного города и пульсирующие линии связи.","id":"resonanceBeyondc","name":"Неоновый город · перламутр","requiredAchievementID":"cosmic-10"},{"description":"Преломления света в кристаллической решётке.","id":"resonanceBeyondd","name":"Кристальная решётка · янтарь","requiredAchievementID":"beyond-students"},{"description":"Спиральные потоки звёздной пыли.","id":"resonanceBeyonde","name":"Живая туманность · нефрит","requiredAchievementID":"beyond-teachers"},{"description":"Волны расходятся от центра и накладываются друг на друга.","id":"resonanceBeyondf","name":"Гравитационные волны · затмение","requiredAchievementID":"beyond-all-purchases"},{"description":"Тёмное ядро, светящийся диск и гравитационные дуги.","id":"resonanceBeyondg","name":"Линза бездны · квазар","requiredAchievementID":"beyond-clicks"},{"description":"За 10 000 ручных нажатий.","id":"milestone1","name":"Неутомимый импульс","requiredAchievementID":"clicks-10000"},{"description":"За 100 000 ручных нажатий.","id":"milestone2","name":"Орбиты марафона","requiredAchievementID":"clicks-100000"},{"description":"За 1 000 000 ручных нажатий.","id":"milestone3","name":"Миллион созвездий","requiredAchievementID":"clicks-1000000"},{"description":"За 1 000 ресурсов одновременно.","id":"milestone4","name":"Город тысячи огней","requiredAchievementID":"helpers-1000"},{"description":"За 75 изученных улучшений в одном мире.","id":"milestone5","name":"Архив открытий","requiredAchievementID":"research-75"},{"description":"За 50 побед в испытаниях.","id":"milestone6","name":"Формула совершенства","requiredAchievementID":"challenges-50"},{"description":"За три одновременно работающие пары ресурсов.","id":"milestone10","name":"Созвездие сотрудничества","requiredAchievementID":"pairs-3"}]};
+  const game = window.Economy;
+  const items = new Map(catalogue.items.map(it => [it.id,it]));
+  const ranks = ["Начало","I","II","III","IV","V","VI","VII","VIII","IX","X","∞"];
+  const chapters = ranks.map((_,i) => i === 0 ? "beginning" : i === 11 ? "beyond" : "prestige-" + i);
+  const model = game.progress("honors") || {};
+  const unlocked = new Set(model.earned || []), received = new Set(model.claimed || []);
+  let lastRefresh=0, lastEarned=-1;
+  let previousSignature = "", overlay = null, chapter = "beginning", lastContainer = null;
+  function metric(item,s) {
+    const m = item.metric;
+    if (m.startsWith("resource(")) return game.owned(item.id.slice("resource-".length));
+    if (m.startsWith("purchased(")) return game.purchased(m.split('"')[1]);
+    switch(m) {
+      case "research":return s.researchCount;
+      case "helpers":return s.totalHelpers;
+      case "pairs":return s.pairs.filter(x=>x.matchedCount>0).length;
+      case "challengeWins":return s.challengeWins;
+      case "runChallengeWins":return s.runWins;
+      case "prestige":return s.highestPrestige;
+      case "cosmic":return s.cosmicAscensions;
+      case "purchases":return s.totalPurchased;
+      default:return s[m] || 0;
+    }
+  }
+  function reached(era,s) {
+    if (era === "beginning") return true;
+    if (s.cosmicAscensions) return true;
+    return era !== "beyond" && s.highestPrestige >= Number(era.split("-")[1]);
+  }
+  const paidAs = model.converted || {};
+  let checkedOld=false,settling=false;
+  function fingerprint(s){
+    return [s.clicks,s.totalEarned,s.runEarned,s.cps,s.totalHelpers,s.researchCount,s.runWins,s.totalPurchased,s.prestigeLevel,s.cosmicAscensions,s.challengeWins].join("|");
+  }
+  function reward(it) {
+    if (paidAs[it.id]) return {integrals:paidAs[it.id]};
+    if (it.reward.bits && game.owned("autoclick")+it.reward.bits>2500) return {integrals:game.grantValue("autoclick",it.reward.bits)};
+    return it.reward;
+  }
+  function collect(s=game.snapshot()) {
+    if(settling)return true;
+    const signature=fingerprint(s);
+    if(checkedOld && previousSignature===signature)return true;
+    const eligible=(it,s)=>reached(it.requiredEra,s) && metric(it,s)>=it.threshold;
+    const pending=!checkedOld && catalogue.items.some(it=>unlocked.has(it.id)&&!received.has(it.id));
+    if(!pending && !catalogue.items.some(it=>!unlocked.has(it.id) && eligible(it,s))){
+      checkedOld=true;previousSignature=signature;return true;
+    }
+    settling=true;
+    try{
+      const earned=new Set(unlocked), claimed=new Set(received), converted={...paidAs},fresh=[];
+      const saved=game.commitHonors(apply=>{
+        // The loop is bounded: each non-final pass adds at least one permanent receipt.
+        let changed;
+        do {
+          changed=false;
+          const current=game.snapshot();
+          for(const it of catalogue.items){
+            if(!earned.has(it.id) && !eligible(it,current))continue;
+            const newHonor=!earned.has(it.id);earned.add(it.id);
+            if(claimed.has(it.id))continue;
+            const r=reward(it);
+            if(r.bits && !apply({resourceID:"autoclick",count:r.bits}))return null;
+            if(r.integrals && !apply({integrals:r.integrals}))return null;
+            if(it.reward.bits && r.integrals)converted[it.id]=r.integrals;
+            claimed.add(it.id);changed=true;
+            if(newHonor)fresh.push({...it,reward:r});
+          }
+        }while(changed);
+        return {earned:[...earned],claimed:[...claimed],converted};
+      });
+      if(!saved)return false;
+      earned.forEach(id=>unlocked.add(id));claimed.forEach(id=>received.add(id));Object.assign(paidAs,converted);
+      checkedOld=true;previousSignature=fingerprint(game.snapshot());
+      if(fresh.length && typeof window.CustomEvent==="function" && typeof window.dispatchEvent==="function")
+        window.dispatchEvent(new CustomEvent("duohonors",{detail:fresh}));
+      return true;
+    }finally{settling=false;}
+  }
+  function el(tag,cls,txt) {
+    const node=document.createElement(tag);
+    if (cls) node.className=cls;
+    if (txt != null) node.textContent=txt;
+    return node;
+  }
+  function btn(label,action,cls) {
+    const node=el("button",cls,label); node.type="button"; node.addEventListener("click",action); return node;
+  }
+  const format=IntegralNumbers.exact;
+  const dialogOpeners=new WeakMap();
+  function dialog(label,closeFn) {
+    const frame=el("section","hc-standalone");
+    dialogOpeners.set(frame,document.activeElement);
+    frame.setAttribute("role","dialog");frame.setAttribute("aria-modal","true");frame.setAttribute("aria-label",label);
+    const head=el("div","hc-standalone-head");
+    const close=btn("Закрыть",closeFn,"hc-small nav-control");
+    const closeSymbol=document.querySelector("#close-sheet .sheet-close-symbol");
+    if(closeSymbol){
+      close.classList.add("hc-icon-close");
+      close.setAttribute("aria-label","Закрыть");
+      close.replaceChildren(closeSymbol.cloneNode(true));
+    }
+    head.append(close);
+    const body=el("div","hc-standalone-body"); frame.append(head,body);
+    document.body.append(frame); close.focus();
+    return {frame,body};
+  }
+  function dismissDialog(frame){
+    const opener=dialogOpeners.get(frame);
+    frame.remove();dialogOpeners.delete(frame);
+    if(opener?.isConnected)opener.focus({preventScroll:true});
+  }
+  window.DuoPanel = {el,btn,format,dialog,dismissDialog};
+  function rewardText(r) {
+    if (r.integrals) return "+"+format(r.integrals)+" ∫";
+    if (r.bits) return "+"+r.bits+" бит информации";
+    if (r.cosmetics) return r.cosmetics.join(" · ");
+    return "Знак отличия";
+  }
+  // Line symbols follow the metric categories in GameHonors. Revealed resource
+  // discoveries use the same resident artwork as the shop and the original medal.
+  const lineSymbols={
+    "hand.tap.fill":'<path d="M9 12V6a1.5 1.5 0 0 1 3 0v6-2a1.5 1.5 0 0 1 3 0v2-1a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1 3 0v2c0 4-2.5 6-6 6h-1.5a5 5 0 0 1-4-2L5 13.5c-1-1.4 1-3 2.2-1.9L9 13.2"/><path d="M5 7q0-4 4-5"/>',
+    "bolt.fill":'<path d="m14.5 2-11 12H11l-1.5 8 11-13H13z" fill="currentColor" stroke="none"/>',
+    "graduationcap.fill":'<path d="m2 9 10-5 10 5-10 5zM6 12v4q6 5 12 0v-4m4-3v7"/>',
+    "person.2.fill":'<circle cx="9" cy="7" r="3"/><path d="M2.5 20v-2a6.5 6.5 0 0 1 13 0v2zM16 4.8a3 3 0 0 1 0 5.9m2 2.4q4 1 4 5V20h-3"/>',
+    "person.3.fill":'<circle cx="12" cy="7" r="3"/><path d="M5.5 20v-2a6.5 6.5 0 0 1 13 0v2zM5 5a2.6 2.6 0 0 0 0 5m14-5a2.6 2.6 0 0 1 0 5M4 13q-3 1-3 5m19-5q3 1 3 5"/>',
+    "function":'<path d="M18 3c-5-3-6 3-7 9s-2 12-7 8M7 10h9"/>',
+    "atom":'<ellipse cx="12" cy="12" rx="10" ry="3.5"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(120 12 12)"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/>',
+    "circle.dotted.circle":'<circle cx="12" cy="12" r="9" stroke-dasharray="1 3"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(-28 12 12)"/><circle cx="12" cy="12" r="3.5" fill="currentColor"/>',
+    "infinity":'<path d="M12 12c-3-6-8-7-9-2-2 8 5 10 9 2s11-6 10 0-6 7-10 0z"/>',
+    "sparkles":'<path d="m9 3 1.8 5.3L16 10l-5.2 1.8L9 17l-1.8-5.2L2 10l5.2-1.7zM18 14l1 3 3 1-3 1-1 3-1-3-3-1 3-1z" fill="currentColor" stroke="none"/>',
+    "number":'<path d="m10 3-3 18m10-18-3 18M4 9h17M3 15h17"/>',
+    "book.closed.fill":'<path d="M5 6a3 3 0 0 1 3-3h11v18H8a3 3 0 0 1-3-3V6zm0 12a3 3 0 0 1 3-3h11M9 5v7"/>',
+    "building.2.fill":'<path d="M2 21h20M4 21V3h10v18m0-12h6v12M7 7h1m2 0h1M7 10h1m2 0h1m-4 3h1m2 0h1m7 0h-1m1 4h-1"/>',
+    "sun.max.fill":'<circle cx="12" cy="12" r="4.5"/><path d="M12 1v3m0 16v3M1 12h3m16 0h3M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2"/>',
+    "sparkle.magnifyingglass":'<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6m-11-14 1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>',
+    mystery:'<path d="m12 2 10 10-10 10L2 12zM9.5 9a2.6 2.6 0 1 1 4.2 2.1c-1.2.8-1.7 1.5-1.7 2.9m0 2.4v.1"/>',
+    laurels:'<path d="M10 20C5 19 2 15 3 10m11 10c5-1 8-5 7-10"/><path d="M5 16c-3 0-4-2-4-3 3 0 4 1 4 3zm3 3c-3 1-5 0-6-2 3-1 5 0 6 2zm11-3c3 0 4-2 4-3-3 0-4 1-4 3zm-3 3c3 1 5 0 6-2-3-1-5 0-6 2zM12 3l1.7 4.1 4.3.4-3.3 2.8 1 4.2-3.7-2.2-3.7 2.2 1-4.2L6 7.5l4.3-.4z" fill="currentColor" stroke="none"/>'
+  };
+  function glyph(kind){
+    const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");
+    svg.setAttribute("viewBox","0 0 24 24");svg.setAttribute("fill","none");svg.setAttribute("stroke","currentColor");
+    svg.setAttribute("stroke-width","1.7");svg.setAttribute("stroke-linejoin","round");svg.setAttribute("stroke-linecap","round");svg.setAttribute("aria-hidden","true");
+    svg.innerHTML=lineSymbols[kind] || lineSymbols.sparkles;return svg;
+  }
+  let selectedHonor=null, observe=null, resourceCache=null, chapterScroll=0;
+  let firstChapter=true, focusAfter=null;
+  const visibleCards=new Set();
+  function currentChapter(s){return s.prestigeLevel?"prestige-"+s.prestigeLevel:s.cosmicAscensions?"beyond":"beginning";}
+  function chapterName(c){return c==="beginning"?"Начало":c==="beyond"?"За гранью бесконечности":"Престиж "+ranks[chapters.indexOf(c)];}
+  function stopObserving(){observe?.disconnect();observe=null;visibleCards.clear();}
+  function isSecret(it){return it.id.startsWith("resource-") && !resourceCache.get(it.id.slice(9))?.discovered && !unlocked.has(it.id);}
+  function icon(it,large=false){
+    const secret=isSecret(it), earned=unlocked.has(it.id);const medal=el("span","hc-medal"+(earned?" hc-medal-earned":"")+(large?" hc-medal-large":""));
+    medal.setAttribute("aria-hidden","true");
+    const resident=it.id.startsWith("resource-") && resourceCache.get(it.id.slice(9));
+    if(resident && !secret){
+      const img=el("img");const path="art/resource-"+String(resident.portraitIndex).padStart(2,"0")+".webp";img.src=window.duoArt?duoArt(path):path;img.alt="";medal.append(img);
+    }else medal.append(glyph(secret?"mystery":it.symbol));
+    return medal;
+  }
+  function ratio(it,s){return reached(it.requiredEra,s)?Math.min(1,metric(it,s)/it.threshold):0;}
+  function updateMeter(card,s) {
+    const it=items.get(card.dataset.honor),value=isSecret(it)?0:ratio(it,s),percent=Math.floor(value*100);
+    if(card.dataset.percent===String(percent))return;
+    card.dataset.percent=String(percent);const bar=card.querySelector("progress"),number=card.querySelector(".hc-percent");
+    if(bar)bar.value=value;if(number)number.textContent=isSecret(it)?"?":percent+"%";
+  }
+  function render(container,opts={}){
+    stopObserving();lastContainer=container;
+    const previousRail=container.querySelector(".hc-eras");
+    const railScroll={x:previousRail?.scrollLeft||0,y:previousRail?.scrollTop||0};
+    const focusRail=previousRail?.contains(document.activeElement);
+    const s=game.snapshot();collect(s);lastEarned=unlocked.size;
+    if(firstChapter){chapter=currentChapter(s);firstChapter=false;}
+    resourceCache=new Map(s.resources.map((r,i)=>[r.id,{...r,portraitIndex:i}]));
+    const wrap=el("section","hc-gallery"),body=el("div","hc-content");
+    wrap.dataset.collection="achievements";
+    wrap.setAttribute("aria-label","Главы и достижения");
+    const eraRow=el("div","hc-eras");eraRow.setAttribute("role","group");eraRow.setAttribute("aria-label","Главы коллекции");
+    const current=currentChapter(s);
+    chapters.forEach((id,i)=>{
+      const list=catalogue.items.filter(it=>it.era===id),count=list.filter(it=>unlocked.has(it.id)).length;
+      const b=btn("",()=>{if(chapter===id&&!selectedHonor)return;chapter=id;selectedHonor=null;chapterScroll=0;render(container);},"hc-era");b.dataset.chapter=id;b.setAttribute("aria-pressed",String(chapter===id));
+      b.classList.toggle("hc-era-current",current===id);
+      b.setAttribute("aria-label",chapterName(id)+". "+(current===id?"Текущая глава. ":"")+count+" из "+list.length);
+      b.append(el("strong",null,ranks[i]),el("small",null,(current===id?"◆ ":"")+count+"/"+list.length));eraRow.append(b);
+    });
+    ChapterRails.bind(eraRow);
+    wrap.append(eraRow,body);container.replaceChildren(wrap);
+    eraRow.scrollLeft=railScroll.x;eraRow.scrollTop=railScroll.y;
+    ChapterRails.reveal(eraRow);
+    if(focusRail)eraRow.querySelector('[aria-pressed="true"]')?.focus({preventScroll:true});
+    if(selectedHonor){detail(body,items.get(selectedHonor),s);return;}
+    const sc=el("div","hc-gallery-scroll");body.append(sc);
+    const list=catalogue.items.filter(it=>it.era===chapter);
+    const done=list.filter(it=>unlocked.has(it.id));
+    const future=list.filter(it=>!unlocked.has(it.id)).sort((a,b)=>Number(isSecret(a))-Number(isSecret(b)) || ratio(b,s)-ratio(a,s) || catalogue.items.indexOf(a)-catalogue.items.indexOf(b));
+    const band=el("div","hc-chapter-summary"),ring=el("span","hc-ring"),copy=el("div");
+    ring.style.setProperty("--progress",done.length/list.length*360+"deg");ring.append(glyph("laurels"));ring.setAttribute("aria-hidden","true");
+    copy.append(el("h3",null,chapterName(chapter)),el("p",null,"Открытия главы · "+done.length+" из "+list.length));band.append(ring,copy);sc.append(band);
+    if(typeof IntersectionObserver==="function")observe=new IntersectionObserver(entries=>{const frame=game.snapshot();for(const x of entries){if(x.isIntersecting){visibleCards.add(x.target);updateMeter(x.target,frame);}else visibleCards.delete(x.target);}}, {root:sc,rootMargin:"80px"});
+    function section(name,group,earned) {
+      if(!group.length)return;
+      const label=el("h4","hc-group-title");label.append(el("span",null,name),el("small",null,String(group.length)));sc.append(label);
+      const grid=el("div","hc-medal-grid");grid.dataset.honorGroup=earned?"received":"upcoming";sc.append(grid);
+      for(const it of group){
+        const secret=isSecret(it),title=secret?"Неизвестное открытие":it.title;
+        const card=btn("",()=>{chapterScroll=sc.scrollTop;selectedHonor=it.id;focusAfter=it.id;render(container);},"hc-award"+(earned?" received":""));
+        card.dataset.honor=it.id;card.setAttribute("aria-label",title+" · "+(earned?"Получено":"Условие достижения"));
+        const top=el("span","hc-award-top");top.append(icon(it),el("strong",null,title));card.append(top);
+        if(earned)card.append(el("small","hc-paid","✓ Получено"));
+        else{const line=el("span","hc-meter"),meter=el("progress"),num=el("small","hc-percent");meter.max=1;
+          meter.setAttribute("aria-label","Прогресс: "+title);line.append(meter,num);card.append(line);updateMeter(card,s);if(observe)observe.observe(card);else visibleCards.add(card);}
+        grid.append(card);
+      }
+    }
+    section("Получены",done,true);section("Предстоит открыть",future,false);
+    sc.scrollTop=opts.scrollTop??chapterScroll;
+    if(opts.focus && focusAfter){const b=Array.from(sc.querySelectorAll("[data-honor]")).find(n=>n.dataset.honor===focusAfter);b?.focus({preventScroll:true});focusAfter=null;}
+  }
+  function detail(host,it,s){
+    const secret=isSecret(it), earned=unlocked.has(it.id),pane=el("div","hc-detail");pane.dataset.honorDetail=it.id;
+    const back=btn("К достижениям",()=>{selectedHonor=null;render(lastContainer,{focus:true});},"hc-return nav-control");
+    const lead=el("div","hc-detail-lead");lead.append(icon(it,true),el("small",null,chapterName(it.era)),el("h3",null,secret?"Неизвестное открытие":it.title));
+    const block=el("div","hc-detail-box");block.append(el("h4",null,"Условие"),el("p",null,secret?"Откройте новое направление лаборатории.":it.description));
+    if(!secret){const meter=el("progress");meter.max=1;meter.value=earned?1:ratio(it,s);meter.setAttribute("aria-label",it.title);const value=el("small","hc-detail-value");block.append(meter,value);updateDetail(block,it,s);}
+    pane.append(back,lead,block);
+    if(!secret){const gift=el("div","hc-detail-box hc-detail-gift");gift.append(el("h4",null,earned?"Награда получена":"Награда"),el("p",null,rewardText(reward(it))));pane.append(gift);}
+    host.append(pane);back.focus({preventScroll:true});
+  }
+  function updateDetail(block,it,s){
+    const meter=block.querySelector("progress"),label=block.querySelector(".hc-detail-value");
+    if(!meter||!label)return;
+    const complete=unlocked.has(it.id),value=complete?it.threshold:reached(it.requiredEra,s)?Math.min(metric(it,s),it.threshold):0;
+    meter.value=complete?1:ratio(it,s);const next=format(value)+" из "+format(it.threshold);
+    if(label.textContent!==next)label.textContent=next;
+  }
+  function dismissOverlay(){if(!overlay)return false;dismissDialog(overlay);overlay=null;return true;}
+  function close(){return window.App?.sheet==="honors"?window.App.closeSheet():dismissOverlay();}
+  function open(){
+    if(window.App?.openSheet){window.App.openSheet("honors");return;}
+    dismissOverlay();const d=dialog("Достижения",close);overlay=d.frame;
+    overlay.querySelector(".hc-standalone-head").prepend(el("h2","hc-fallback-title","Достижения"));
+    render(d.body);
+  }
+  function back(){
+    if(selectedHonor){selectedHonor=null;render(lastContainer,{focus:true});return true;}
+    return dismissOverlay();
+  }
+  window.Honors={open,render,close,back,collect,earned(id){if(!unlocked.has(id))collect();return unlocked.has(id);},
+    earnedCount(){collect();return unlocked.size;},unmount(){stopObserving();lastContainer=null;selectedHonor=null;focusAfter=null;chapterScroll=0;dismissOverlay();},
+    refresh(s=game.snapshot()){
+      if(window.App?.scrolling||Date.now()-lastRefresh<1500||!lastContainer?.isConnected)return;
+      lastRefresh=Date.now();collect(s);
+      if(lastEarned!==unlocked.size){const sc=lastContainer.querySelector(".hc-gallery-scroll");render(lastContainer,{scrollTop:sc?.scrollTop||0});return;}
+      if(selectedHonor){const block=lastContainer.querySelector(".hc-detail-box");if(block)updateDetail(block,items.get(selectedHonor),s);return;}
+      const discovered=new Set(s.resources.filter(r=>r.discovered).map(r=>r.id));
+      if([...resourceCache].some(([id,r])=>r.discovered!==discovered.has(id))){const sc=lastContainer.querySelector(".hc-gallery-scroll");render(lastContainer,{scrollTop:sc?.scrollTop||0});return;}
+      for(const card of visibleCards)updateMeter(card,s);
+    },
+    earnedIDs(){collect();return new Set(unlocked);},item:id=>items.get(id),catalog:kind=>catalogue[kind]||[],claimed:id=>received.has(id)};
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>collect(),{once:true});else collect();
+})();
+
+;
+// HowToPlayView, adapted for the Station. Page content is local and usable offline.
+window.Guide = (() => {
+  'use strict';
+  const pages = [
+    {title:'Всё начинается с клика',text:'Нажимайте на интеграл — каждое касание пополняет счёт. Улучшения делают ваш клик сильнее.',hint:'Ваш первый инструмент — один палец.',art:'disc'},
+    {title:'Собирайте лабораторию',text:'Ресурсы приносят интегралы каждую секунду, пока приложение открыто. Чтобы купить следующий вид, сначала приобретите предыдущий и накопите нужную сумму.',hint:'Первый бит информации стоит 15 ∫.',art:'resources'},
+    {title:'Усиливайте команду',text:'Личные улучшения усиливают один ресурс, командные — всю лабораторию. Участники пары помогают друг другу. Например, школьник и преподаватель вместе увеличивают доход школы.',hint:'Откройте район на карте, чтобы увидеть его жителей.',art:'team'},
+    {title:'Открывайте научный город',text:'В новых зданиях появляются задания. На каждый вопрос есть минута. Выберите ответ и подтвердите. Ошибка, выход или истечение времени стоят половины приза.',hint:'Ответьте верно на все вопросы, чтобы забрать весь приз.',art:'city'},
+    {title:'Поймайте удачу',text:'На главном экране иногда появляется золотой интеграл. Коснитесь его, пока он летит, чтобы получить бонус.',hint:'На поимку есть пять секунд.',art:'gold'},
+    {title:'Забирайте подарки',text:'Со второго календарного дня доступно одно вращение колеса в день. Чем больше сектор, тем выше шанс. Награды за достижения начисляются автоматически.',hint:'За достижения открываются темы фона и оформления интеграла.',art:'wheel'},
+    {title:'Начните новую эпоху',text:'Чёрная дыра открывает переход на следующий престиж. Текущие покупки сбросятся, а постоянные усиления и полученные дизайны останутся.',hint:'Переход всегда требует подтверждения.',art:'hole'}
+  ];
+  function tag(name,cls,copy){
+    const n=document.createElement(name);if(cls)n.className=cls;if(copy!==undefined)n.textContent=copy;return n;
+  }
+  function button(cls,label,cb){const b=tag('button',cls,label);b.type='button';b.onclick=cb;return b;}
+  function illustration(type) {
+    const art=tag('div','gd-art');
+    art.setAttribute('aria-hidden','true');
+    function add(filename) {const image=tag('img');image.alt='';image.draggable=false;image.src=window.duoArt('art/'+filename);art.append(image);return image;}
+    if(type==='disc'||type==='gold'){
+      art.classList.add(type==='disc'?'gd-disc':'gd-gold');
+      const image=add('formula.svg');
+      if(type==='disc'&&window.Appearance){
+        const v=Appearance.visual('skins',Appearance.selection().skins);
+        const plate=tag('span','gd-glyph-disc');plate.style.background=v.color;art.replaceChildren(plate);plate.append(image);
+        if(v.dark)image.className='ap-pale';
+      }
+    }else if(type==='resources'||type==='team'){
+      art.classList.add('gd-pair');(type==='resources'?['00','01','02']:['01','03']).forEach(i=>add('resource-'+i+'.webp'));
+    }else if(type==='city'){art.classList.add('gd-city');add('world-01.webp');}
+    else if(type==='wheel')art.append(tag('span','gd-wheel','∫'));
+    else if(type==='hole')art.append(tag('span','gd-hole','I → II'));
+    return art;
+  }
+  function render(container,onClose){
+    let page=0,x=0,y=0;
+    const frame=tag('div','gd-page'),body=tag('div','gd-reading');
+    const dots=tag('span','gd-dots'),position=tag('span','gd-position');
+    dots.setAttribute('aria-hidden','true');
+    position.setAttribute('role','status');
+    const slides=pages.map(item=>{
+      const slide=tag('section','gd-slide');
+      slide.append(illustration(item.art),tag('h3','',item.title),tag('p','gd-copy',item.text),tag('p','gd-tip',item.hint));
+      body.append(slide);dots.append(tag('i'));
+      return slide;
+    });
+    const foot=tag('div','gd-foot'),controls=tag('div','gd-controls');
+    const prev=button('gd-prev nav-control','',()=>show(page-1));
+    const nextButton=button('gd-next','Дальше',()=>{
+      if(page===pages.length-1)onClose?.();else show(page+1);
+    });
+    prev.setAttribute('aria-label','Предыдущая страница');
+    foot.append(dots,position);controls.append(prev,nextButton);frame.append(body,foot,controls);
+    container.replaceChildren(frame);
+    function show(next,restoreFocus=''){
+      page=Math.max(0,Math.min(pages.length-1,next));
+      slides.forEach((slide,index)=>{
+        const current=index===page;
+        slide.setAttribute('aria-hidden',String(!current));
+        dots.children[index].classList.toggle('on',current);
+      });
+      body.scrollTop=0;
+      position.textContent=(page+1)+' / '+pages.length;
+      position.setAttribute('aria-label','Страница '+(page+1)+' из '+pages.length);
+      prev.disabled=page===0;
+      nextButton.textContent=page===pages.length-1?'Понятно':'Дальше';
+      if(restoreFocus || (prev.disabled && document.activeElement===prev))nextButton.focus({preventScroll:true});
+    }
+    frame.ontouchstart=e=>{if(e.touches.length===1){x=e.touches[0].clientX;y=e.touches[0].clientY;}};
+    frame.ontouchend=e=>{if(!e.changedTouches.length)return;const dx=e.changedTouches[0].clientX-x,dy=e.changedTouches[0].clientY-y;if(Math.abs(dx)>48&&Math.abs(dx)>Math.abs(dy)*1.7)show(page+(dx<0?1:-1));};
+    frame.onkeydown=e=>{if(['ArrowRight','ArrowLeft'].includes(e.key)){e.preventDefault();show(page+(e.key==='ArrowRight'?1:-1),'next');}};
+    show(0);
+  }
+  return {render};
+})();
+
+;
+/* Integrals Clicker: русский каталог из оригинала iPhone. */
+(function () {
+  "use strict";
+  const definitions = [{"id":"school","title":"Домашнее задание","resource":"abacus","district":"school","subtitle":"Счёт, время и задачи из жизни","level":1,"minutes":30,"rewardSeconds":20},{"id":"student","title":"Математика на ходу","resource":"calculator","district":"university","subtitle":"Доли, скорость, площади и средние","level":2,"minutes":45,"rewardSeconds":30},{"id":"teacher","title":"Урок с находкой","resource":"algorithm","district":"school","subtitle":"Проценты, пропорции и обратные задачи","level":3,"minutes":60,"rewardSeconds":45},{"id":"binary","title":"Задача на семинар","resource":"neuron","district":"university","subtitle":"Уравнения и короткие задачи с неизвестным","level":4,"minutes":90,"rewardSeconds":60},{"id":"professor","title":"Точный расчёт","resource":"quantum","district":"academy","subtitle":"Дроби, отношения и несколько шагов решения","level":5,"minutes":120,"rewardSeconds":90},{"id":"ai","title":"Общий результат","resource":"singularity","district":"academy","subtitle":"Совместная работа и производительность","level":6,"minutes":150,"rewardSeconds":120},{"id":"portal","title":"Лабораторный опыт","resource":"dimension","district":"research","subtitle":"Смеси, измерения и средние значения","level":7,"minutes":180,"rewardSeconds":150},{"id":"time","title":"Научная задача","resource":"universe","district":"research","subtitle":"Два условия, движение и системы уравнений","level":8,"minutes":210,"rewardSeconds":180},{"id":"thought","title":"Вычислительный час","resource":"multiverse","district":"computing","subtitle":"Степени, корни и числовые закономерности","level":9,"minutes":240,"rewardSeconds":225},{"id":"supermind","title":"Данные и случайность","resource":"superintelligence","district":"computing","subtitle":"Вероятности, выборки и сочетания","level":10,"minutes":300,"rewardSeconds":275},{"id":"automaton","title":"Ритм открытий","resource":"automaton","district":"science-city","subtitle":"Последовательности, суммы и повторения","level":11,"minutes":360,"rewardSeconds":320},{"id":"navigator","title":"Математика города","resource":"navigator","district":"science-city","subtitle":"Проценты в несколько шагов и масштаб","level":12,"minutes":420,"rewardSeconds":390},{"id":"chronologist","title":"Геометрия наблюдений","resource":"chronologist","district":"accelerator","subtitle":"Координаты, расстояния и объёмные фигуры","level":13,"minutes":480,"rewardSeconds":460},{"id":"oracle","title":"Траектория функции","resource":"oracle","district":"accelerator","subtitle":"Графики, наклоны и экстремумы","level":14,"minutes":540,"rewardSeconds":545},{"id":"architect","title":"Скорость изменения","resource":"architect","district":"energy","subtitle":"Производные, касательные и движение","level":15,"minutes":600,"rewardSeconds":635},{"id":"nanoforge","title":"Площадь под кривой","resource":"nanoforge","district":"energy","subtitle":"Простые интегралы и накопленный результат","level":16,"minutes":720,"rewardSeconds":720}];
+  const bank = {"ai":{"science-deadline":{"title":"Новый срок","patterns":["%d одинаковых станков выполняют заказ за %d часов. За сколько часов выполнят его %d таких станков?","Станков вдвое больше, поэтому время вдвое меньше при той же работе.","%d ч"],"strings":["0:2:4:4","1","2:2","2:4","2:8","2:6","0:2:6:4","2:3","2:12","2:7","0:2:8:4","2:16","2:5","0:3:4:6","0:3:6:6","2:9","0:3:8:6","2:10","0:4:4:8","0:4:6:8","2:11","0:4:8:8","0:5:4:10","0:5:6:10","2:15","2:13","0:5:8:10","2:20","2:14"],"variants":[[6,0,1,2,3,4,5],[6,6,1,7,5,8,9],[6,10,1,3,4,11,7,12],[6,13,1,2,3,4,5],[6,14,1,7,5,8,15],[6,16,1,3,4,11,8,17],[6,18,1,2,3,4,17],[6,19,1,7,5,8,20],[6,21,1,3,4,11,8],[6,22,1,2,3,4,17,8],[6,23,1,7,5,8,24,25],[6,26,1,3,4,11,27,28]],"weight":72},"science-defect":{"title":"Проверка партии","patterns":["В каждой партии из %d деталей одна негодная. Сделали %d деталей. Сколько годных?","Всего %d партий и столько же негодных деталей. Вычитаем их из общего выпуска.","%d"],"strings":["0:3:9","1:3","2:6","2:3","2:8","2:5","0:4:12","2:9","2:11","0:5:15","2:12","2:14","0:6:18","2:15","2:17","0:3:12","1:4","2:4","2:7","0:4:16","0:5:20","2:16","2:19","0:6:24","2:20","2:23","0:3:15","1:5","2:10","0:4:20","0:5:25","2:24","0:6:30","2:25","2:29","0:3:18","1:6","0:4:24","2:18","0:5:30","0:6:36","2:30","2:35","0:3:21","1:7","2:13","0:4:28","2:21","2:27","0:5:35","2:28","2:34","0:6:42","2:41","0:3:24","1:8","0:4:32","2:31","0:5:40","2:32","2:39","0:6:48","2:40","2:47"],"variants":[[3,0,1,2,3,4,5],[3,6,1,7,3,8,2,4],[3,9,1,10,3,11,7,8],[3,12,1,13,3,14,10,11],[3,15,16,4,17,8,18],[3,19,16,10,17,13,4,8],[3,20,16,21,17,22,10,13],[3,23,16,24,17,25,21,22],[3,26,27,28,5,11,7],[3,29,27,13,5,22,28,11],[3,30,27,24,5,31,13,22],[3,32,27,33,5,34,24,31],[3,35,36,10,2,14,8],[3,37,36,38,2,25,10,14],[3,39,36,31,2,34,38,25],[3,40,36,41,2,42,31,34],[3,43,44,11,18,24,45],[3,46,44,47,18,48,11,24],[3,49,44,50,18,51,47,48],[3,52,44,42,18,53,50,51],[3,54,55,21,4,25,13],[3,56,55,31,4,57,21,25],[3,58,55,59,4,60,31,57],[3,61,55,62,4,63,59,60]],"weight":72},"science-fill":{"title":"Наполнение","patterns":["В пустой бак вливается %d л/мин, вытекает %d л/мин. За сколько минут наберётся %d литров?","Каждую минуту остаётся %d литров. Делим нужный объём на %d.","%d мин"],"strings":["0:5:2:6","1:3:3","2:2","2:3","2:6","2:4","0:5:2:9","2:9","2:5","0:5:2:12","2:12","2:8","0:6:3:6","0:6:3:9","0:6:3:12","2:7","0:7:4:6","0:7:4:9","0:7:4:12","2:16","0:8:5:6","2:10","0:8:5:9","2:15","0:8:5:12","2:20","0:6:2:8","1:4:4","2:1","0:6:2:12","0:6:2:16","0:7:3:8","0:7:3:12","0:7:3:16","0:8:4:8","0:8:4:12","0:8:4:16","0:9:5:8","0:9:5:12","0:9:5:16","0:7:2:10","1:5:5","0:7:2:15","0:7:2:20","0:8:3:10","0:8:3:15","0:8:3:20","0:9:4:10","0:9:4:15","0:9:4:20","0:10:5:10","0:10:5:15","0:10:5:20","0:8:2:12","1:6:6","0:8:2:18","2:18","0:8:2:24","2:24","0:9:3:12","0:9:3:18","0:9:3:24","0:10:4:12","0:10:4:18","0:10:4:24","0:11:5:12","0:11:5:18","0:11:5:24","0:9:2:14","1:7:7","2:14","0:9:2:21","2:21","0:9:2:28","2:28","0:10:3:14","0:10:3:21","0:10:3:28","0:11:4:14","0:11:4:21","0:11:4:28","0:12:5:14","0:12:5:21","0:12:5:28","0:10:2:16","1:8:8","0:10:2:24","0:10:2:32","2:32","0:11:3:16","0:11:3:24","0:11:3:32","0:12:4:16","0:12:4:24","0:12:4:32","0:13:5:16","0:13:5:24","0:13:5:32"],"variants":[[1,0,1,2,3,4,5],[1,6,1,3,7,4,8],[1,9,1,5,3,10,11,4],[1,12,1,2,3,4,8],[1,13,1,3,7,4,2,5],[1,14,1,5,3,10,15],[1,16,1,2,3,4,11],[1,17,1,3,7,10,15],[1,18,1,5,3,10,19,11],[1,20,1,2,3,4,21,15],[1,22,1,3,7,23,11],[1,24,1,5,3,10,25,7],[1,26,27,2,5,11,28,3],[1,29,27,3,5,10,4,8],[1,30,27,5,19,11,4],[1,31,27,2,5,11,4,8],[1,32,27,3,5,10,7,4],[1,33,27,5,19,10,15],[1,34,27,2,5,11,4],[1,35,27,3,5,10,15],[1,36,27,5,19,11,3,8],[1,37,27,2,5,11,21,15],[1,38,27,3,5,10,23,11],[1,39,27,5,19,25,7],[1,40,41,2,8,21,5],[1,42,41,3,8,23,4],[1,43,41,5,8,25,11,4],[1,44,41,2,8,21,4],[1,45,41,3,8,23,7,4],[1,46,41,5,8,25,10,15],[1,47,41,2,8,21,11,4],[1,48,41,3,8,23,10,15],[1,49,41,5,8,25,19,11],[1,50,41,2,8,21,15],[1,51,41,3,8,23,11],[1,52,41,5,8,25,7],[1,53,54,2,4,10,5],[1,55,54,3,4,56,8],[1,57,54,5,4,58,11],[1,59,54,2,4,10,8],[1,60,54,3,4,56,7],[1,61,54,5,4,58,10,15],[1,62,54,2,4,10,11],[1,63,54,3,4,56,10,15],[1,64,54,5,4,58,19,11],[1,65,54,2,4,10,21,15],[1,66,54,3,4,56,23,11],[1,67,54,5,4,58,25,7],[1,68,69,2,15,70,5],[1,71,69,3,15,72,4,8],[1,73,69,5,15,74,11,4],[1,75,69,2,15,70,4,8],[1,76,69,3,15,72,7,4],[1,77,69,5,15,74,10],[1,78,69,2,15,70,11,4],[1,79,69,3,15,72,10],[1,80,69,5,15,74,19,11],[1,81,69,2,15,70,21],[1,82,69,3,15,72,23,11],[1,83,69,5,15,74,25,7],[1,84,85,2,11,19,5],[1,86,85,3,11,58,4,8],[1,87,85,5,11,88,4],[1,89,85,2,11,19,4,8],[1,90,85,3,11,58,7,4],[1,91,85,5,11,88,10,15],[1,92,85,2,11,19,4],[1,93,85,3,11,58,10,15],[1,94,85,5,11,88,19],[1,95,85,2,11,19,21,15],[1,96,85,3,11,58,23],[1,97,85,5,11,88,25,7]],"weight":72},"science-handshakes":{"title":"Знакомство","patterns":["На встрече %d исследователей. Каждый пожал руку каждому другому один раз. Сколько было рукопожатий?","У каждого %d партнёров, но каждую пару мы посчитали дважды. Делим произведение на %d.","%d"],"strings":["0:3","1:2:2","2:3","2:6","2:1","2:9","0:4","1:3:2","2:12","2:10","2:16","0:5","1:4:2","2:20","2:15","2:25","0:6","1:5:2","2:30","2:21","2:36","0:7","1:6:2","2:42","2:28","2:49","0:8","1:7:2","2:56","2:64"],"variants":[[12,0,1,2,3,4,5],[12,6,7,3,8,9,2,10],[12,11,12,9,13,14,3,15],[12,16,17,14,18,19,9,20],[12,21,22,19,23,24,14,25],[12,26,27,24,28,20,19,29]],"weight":72},"science-opposite":{"title":"Два потока","patterns":["Каждую минуту на склад прибывает %d коробок, а увозят %d. На сколько коробок вырастет запас за %d минуты?","Чистый прирост — %d коробок/мин. Умножаем на время.","%d"],"strings":["0:5:2:4","1:3","2:12","2:20","2:6","2:7","2:28","0:5:2:5","2:15","2:25","2:9","2:8","2:35","0:5:2:6","2:18","2:30","2:42","0:6:3:4","2:24","2:36","0:6:3:5","2:45","0:6:3:6","2:54","0:7:4:4","2:44","0:7:4:5","2:55","0:7:4:6","2:66","0:8:5:4","2:32","2:52","0:8:5:5","2:40","2:65","0:8:5:6","2:48","2:78","0:6:2:4","1:4","2:16","0:6:2:5","0:6:2:6","2:10","0:7:3:4","0:7:3:5","2:50","0:7:3:6","2:60","0:8:4:4","0:8:4:5","0:8:4:6","2:72","0:9:5:4","2:56","0:9:5:5","2:70","0:9:5:6","2:84","0:7:2:4","1:5","0:7:2:5","0:7:2:6","2:11","0:8:3:4","0:8:3:5","0:8:3:6","0:9:4:4","0:9:4:5","0:9:4:6","0:10:5:4","0:10:5:5","2:75","0:10:5:6","2:90","0:8:2:4","1:6","0:8:2:5","0:8:2:6","0:9:3:4","0:9:3:5","0:9:3:6","0:10:4:4","0:10:4:5","0:10:4:6","0:11:5:4","2:64","0:11:5:5","2:80","0:11:5:6","2:96","0:9:2:4","1:7","2:14","0:9:2:5","2:21","0:9:2:6","2:13","0:10:3:4","0:10:3:5","0:10:3:6","0:11:4:4","0:11:4:5","0:11:4:6","0:12:5:4","2:68","0:12:5:5","2:85","0:12:5:6","2:102","0:10:2:4","1:8","0:10:2:5","0:10:2:6","0:11:3:4","0:11:3:5","0:11:3:6","0:12:4:4","0:12:4:5","0:12:4:6","0:13:5:4","0:13:5:5","0:13:5:6","2:108"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,8,9,10,11,12],[1,13,1,14,15,2,10,16],[1,17,1,2,18,4,5,19],[1,20,1,8,15,10,11,21],[1,22,1,14,19,2,10,23],[1,24,1,2,6,4,5,25],[1,26,1,8,12,10,11,27],[1,28,1,14,16,2,10,29],[1,30,1,2,31,4,5,32],[1,33,1,8,34,10,11,35],[1,36,1,14,37,2,10,38],[1,39,40,41,18,11,31],[1,42,40,3,15,2,10,34],[1,43,40,18,19,41,44,37],[1,45,40,41,6,11,34],[1,46,40,3,12,2,10,47],[1,48,40,18,16,41,44,49],[1,50,40,41,31,11,37],[1,51,40,3,34,2,10,49],[1,52,40,18,37,41,44,53],[1,54,40,41,19,11,55],[1,56,40,3,21,2,10,57],[1,58,40,18,23,41,44,59],[1,60,61,3,6,44,10,19],[1,62,61,9,12,8,44,21],[1,63,61,15,16,3,64,23],[1,65,61,3,31,44,10,25],[1,66,61,9,34,8,44,27],[1,67,61,15,37,3,64,29],[1,68,61,3,19,44,10,32],[1,69,61,9,21,8,44,35],[1,70,61,15,23,3,64,38],[1,71,61,3,34,44,10,49],[1,72,61,9,47,8,44,73],[1,74,61,15,49,3,64,75],[1,76,77,18,31,2,44,34],[1,78,77,15,34,14,64,47],[1,79,77,19,37,18,2,49],[1,80,77,18,19,2,44,37],[1,81,77,15,21,14,64,49],[1,82,77,19,23,18,2,53],[1,83,77,18,34,2,44,55],[1,84,77,15,47,14,64,57],[1,85,77,19,49,18,2,59],[1,86,77,18,25,2,44,87],[1,88,77,15,27,14,64,89],[1,90,77,19,29,18,2,91],[1,92,93,6,19,94,64,25],[1,95,93,12,21,96,2,27],[1,97,93,16,23,6,98,29],[1,99,93,6,34,94,64,32],[1,100,93,12,47,96,2,35],[1,101,93,16,49,6,98,38],[1,102,93,6,25,94,64,49],[1,103,93,12,27,96,2,73],[1,104,93,16,29,6,98,75],[1,105,93,6,37,94,64,106],[1,107,93,12,49,96,2,108],[1,109,93,16,53,6,98,110],[1,111,112,31,34,41,2,37],[1,113,112,34,47,18,98,49],[1,114,112,37,49,31,94,53],[1,115,112,31,25,41,2,55],[1,116,112,34,27,18,98,57],[1,117,112,37,29,31,94,59],[1,118,112,31,37,41,2,87],[1,119,112,34,49,18,98,89],[1,120,112,37,53,31,94,91],[1,121,112,31,32,41,2,53],[1,122,112,34,35,18,98,75],[1,123,112,37,38,31,94,124]],"weight":72},"science-parallel":{"title":"Параллельные этапы","patterns":["Две проверки идут одновременно и занимают %d и %d минут. Затем общий отчёт занимает ещё %d минуты. Когда всё закончится?","Нужно дождаться более долгой проверки — %d минут. Затем прибавляем время отчёта.","%d мин"],"strings":["0:3:5:2","1:5","2:7","2:10","2:5","2:4","0:3:5:3","2:8","2:11","2:6","0:3:5:4","2:9","2:12","0:3:6:2","1:6","0:3:6:3","0:3:6:4","2:13","0:3:7:2","1:7","0:3:7:3","0:3:7:4","2:14","0:3:8:2","1:8","0:3:8:3","0:3:8:4","2:15","0:4:6:2","0:4:6:3","0:4:6:4","0:4:7:2","0:4:7:3","0:4:7:4","0:4:8:2","0:4:8:3","0:4:8:4","2:16","0:4:9:2","1:9","0:4:9:3","0:4:9:4","2:17","0:5:7:2","0:5:7:3","0:5:7:4","0:5:8:2","0:5:8:3","0:5:8:4","0:5:9:2","0:5:9:3","0:5:9:4","2:18","0:5:10:2","1:10","0:5:10:3","0:5:10:4","2:19","0:6:8:2","0:6:8:3","0:6:8:4","0:6:9:2","0:6:9:3","0:6:9:4","0:6:10:2","0:6:10:3","0:6:10:4","2:20","0:6:11:2","1:11","0:6:11:3","0:6:11:4","2:21","0:7:9:2","0:7:9:3","0:7:9:4","0:7:10:2","0:7:10:3","0:7:10:4","0:7:11:2","0:7:11:3","0:7:11:4","2:22","0:7:12:2","1:12","0:7:12:3","0:7:12:4","2:23","0:8:10:2","0:8:10:3","0:8:10:4","0:8:11:2","0:8:11:3","0:8:11:4","0:8:12:2","0:8:12:3","0:8:12:4","2:24","0:8:13:2","1:13","0:8:13:3","0:8:13:4","2:25"],"variants":[[1,0,1,2,3,4,5],[1,6,1,7,8,4,9],[1,10,1,11,12,4,2,9],[1,13,14,7,8,9,4],[1,15,14,11,12,9,7,3],[1,16,14,3,17,9,2],[1,18,19,11,12,2,4,9],[1,20,19,3,17,2,9],[1,21,19,8,22,2,7],[1,23,24,3,17,7,4,2],[1,25,24,8,22,7,9],[1,26,24,12,27,7,2,11],[1,28,14,7,12,9,5],[1,29,14,11,17,9,2,4],[1,30,14,3,22,9,7],[1,31,19,11,17,2,9,4],[1,32,19,3,22,2,9],[1,33,19,8,27,2,7],[1,34,24,3,22,7,9],[1,35,24,8,27,7,2],[1,36,24,12,37,7,8,17],[1,38,39,8,27,11,9,2],[1,40,39,12,37,11,2,7],[1,41,39,17,42,11,7],[1,43,19,11,22,2,5],[1,44,19,3,27,2,7,4],[1,45,19,8,37,2,11,9],[1,46,24,3,27,7,2,4],[1,47,24,8,37,7,9],[1,48,24,12,42,7,11,2],[1,49,39,8,37,11,2,9],[1,50,39,12,42,11,7,2],[1,51,39,17,52,11,7],[1,53,54,12,42,3,2],[1,55,54,17,52,3,7],[1,56,54,22,57,3,11],[1,58,24,3,37,7,5],[1,59,24,8,42,7,11,4],[1,60,24,12,52,7,3,9],[1,61,39,8,42,11,7,4],[1,62,39,12,52,11,9],[1,63,39,17,57,11,3,2],[1,64,54,12,52,3,7,9],[1,65,54,17,57,3,11,2],[1,66,54,22,67,3,7],[1,68,69,17,57,8,7,2],[1,70,69,22,67,8,11,7],[1,71,69,27,72,8,3,11],[1,73,39,8,52,11,5],[1,74,39,12,57,11,3,4],[1,75,39,17,67,11,8,9],[1,76,54,12,57,3,11,4],[1,77,54,17,67,3,9],[1,78,54,22,72,3,8,2],[1,79,69,17,67,8,11,9],[1,80,69,22,72,8,3,2],[1,81,69,27,82,8,7],[1,83,84,22,72,12,11,2],[1,85,84,27,82,12,3,7],[1,86,84,37,87,12,8,11],[1,88,54,12,67,3,5],[1,89,54,17,72,3,8,4],[1,90,54,22,82,3,12,9],[1,91,69,17,72,8,3,4],[1,92,69,22,82,8,9],[1,93,69,27,87,8,12,2],[1,94,84,22,82,12,3,9],[1,95,84,27,87,12,8,2],[1,96,84,37,97,12,7],[1,98,99,27,87,17,3,2],[1,100,99,37,97,17,8,7],[1,101,99,42,102,17,12,11]],"weight":72},"science-pipeline":{"title":"Конвейер","patterns":["Первый образец выходит с линии через %d минут, каждый следующий — через %d. Через сколько минут выйдет %d-й образец?","После первого нужны ещё %d интервалов по %d минут.","%d мин"],"strings":["0:3:2:4","1:3:2","2:9","2:11","2:8","2:7","2:20","0:3:2:5","1:4:2","2:13","2:10","2:25","0:3:2:6","1:5:2","2:15","2:12","2:30","0:3:3:4","1:3:3","2:24","0:3:3:5","1:4:3","2:18","0:3:3:6","1:5:3","2:21","2:36","0:3:4:4","1:3:4","2:19","2:16","2:28","0:3:4:5","1:4:4","2:23","2:35","0:3:4:6","1:5:4","2:27","2:42","0:3:5:4","1:3:5","2:32","0:3:5:5","1:4:5","2:40","0:3:5:6","1:5:5","2:33","2:48","0:4:2:4","0:4:2:5","2:14","0:4:2:6","0:4:3:4","0:4:3:5","0:4:3:6","2:22","0:4:4:4","0:4:4:5","0:4:4:6","0:4:5:4","0:4:5:5","2:29","2:45","0:4:5:6","2:34","2:54","0:5:2:4","0:5:2:5","0:5:2:6","2:17","0:5:3:4","0:5:3:5","0:5:3:6","0:5:4:4","0:5:4:5","0:5:4:6","0:5:5:4","0:5:5:5","2:50","0:5:5:6","2:60","0:6:2:4","0:6:2:5","0:6:2:6","0:6:3:4","0:6:3:5","0:6:3:6","0:6:4:4","0:6:4:5","2:26","0:6:4:6","0:6:5:4","2:44","0:6:5:5","2:31","2:55","0:6:5:6","2:66","0:7:2:4","0:7:2:5","0:7:2:6","0:7:3:4","0:7:3:5","0:7:3:6","0:7:4:4","0:7:4:5","0:7:4:6","0:7:5:4","0:7:5:5","0:7:5:6","2:37","2:72","0:8:2:4","0:8:2:5","0:8:2:6","0:8:3:4","0:8:3:5","0:8:3:6","0:8:4:4","0:8:4:5","0:8:4:6","0:8:5:4","2:52","0:8:5:5","2:65","0:8:5:6","2:38","2:78"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,3,9,10,2,11],[1,12,13,9,14,15,3,16],[1,17,18,15,14,2,19],[1,20,21,14,22,15,16],[1,23,24,22,25,14,26],[1,27,28,14,29,30,3,31],[1,32,33,29,34,6,14,35],[1,36,37,34,38,19,29,39],[1,40,41,22,34,6,9,42],[1,43,44,34,31,11,22,45],[1,46,47,31,48,16,34,49],[1,50,1,10,15,4,19],[1,51,8,15,52,10,16],[1,53,13,52,30,15,26],[1,54,18,9,30,15,10,31],[1,55,21,30,29,14,9,35],[1,56,24,29,57,22,30,39],[1,58,28,30,6,15,42],[1,59,33,6,19,30,45],[1,60,37,19,31,6,49],[1,61,41,29,19,6,52,26],[1,62,44,19,63,11,29,64],[1,65,47,63,66,16,19,67],[1,68,1,3,9,4,2,31],[1,69,8,9,14,10,3,35],[1,70,13,14,71,15,9,39],[1,72,18,52,71,15,3,42],[1,73,21,71,6,14,52,45],[1,74,24,6,34,22,71,49],[1,75,28,71,25,30,9,26],[1,76,33,25,11,6,71,64],[1,77,37,11,63,19,25,67],[1,78,41,6,11,14,45],[1,79,44,11,16,6,80],[1,81,47,16,35,11,82],[1,83,1,15,52,4,10,42],[1,84,8,52,30,10,15,45],[1,85,13,30,22,15,52,49],[1,86,18,14,22,15,26],[1,87,21,22,25,14,64],[1,88,24,25,19,22,67],[1,89,28,22,57,30,52,45],[1,90,33,57,91,6,22,80],[1,92,37,91,16,19,57,82],[1,93,41,25,91,6,30,94],[1,95,44,91,96,11,25,97],[1,98,47,96,26,16,91,99],[1,100,1,9,14,4,3,26],[1,101,8,14,71,10,9,64],[1,102,13,71,29,15,14,67],[1,103,18,30,29,15,9,45],[1,104,21,29,57,14,30,80],[1,105,24,57,11,22,29,82],[1,106,28,29,34,30,14,94],[1,107,33,34,38,6,29,97],[1,108,37,38,96,19,34,99],[1,109,41,57,38,6,71,49],[1,110,44,38,42,11,57,82],[1,111,47,42,112,16,38,113],[1,114,1,52,30,4,15,45],[1,115,8,30,22,10,52,80],[1,116,13,22,6,15,30,82],[1,117,18,71,6,15,52,94],[1,118,21,6,34,14,71,97],[1,119,24,34,91,22,6,99],[1,120,28,6,19,30,49],[1,121,33,19,31,6,82],[1,122,37,31,42,19,113],[1,123,41,34,31,6,22,124],[1,125,44,31,48,11,34,126],[1,127,47,48,128,16,31,129]],"weight":72},"science-production":{"title":"Смена темпа","patterns":["Первые %d часа производили по %d деталей/ч, затем %d часа — по %d. Сколько деталей сделали?","Считаем выпуск на каждом этапе и складываем: %d + %d.","%d"],"strings":["0:2:3:2:5","1:6:10","2:16","2:12","2:20","2:10","2:14","0:2:3:3:5","1:6:15","2:21","2:15","2:25","2:17","0:2:3:4:5","1:6:20","2:26","2:18","2:30","0:3:3:2:5","1:9:10","2:19","2:13","0:3:3:3:5","1:9:15","2:24","0:3:3:4:5","1:9:20","2:29","2:35","2:23","0:4:3:2:5","1:12:10","2:22","0:4:3:3:5","1:12:15","2:27","0:4:3:4:5","1:12:20","2:32","2:40","0:5:3:2:5","1:15:10","0:5:3:3:5","1:15:15","0:5:3:4:5","1:15:20","2:45","0:2:4:2:6","1:8:12","0:2:4:3:6","1:8:18","0:2:4:4:6","1:8:24","2:36","0:3:4:2:6","1:12:12","0:3:4:3:6","1:12:18","0:3:4:4:6","1:12:24","2:28","2:42","0:4:4:2:6","1:16:12","0:4:4:3:6","1:16:18","2:34","0:4:4:4:6","1:16:24","2:48","0:5:4:2:6","1:20:12","0:5:4:3:6","1:20:18","2:38","0:5:4:4:6","1:20:24","2:44","2:54","0:2:5:2:7","1:10:14","0:2:5:3:7","1:10:21","2:31","0:2:5:4:7","1:10:28","0:3:5:2:7","1:15:14","0:3:5:3:7","1:15:21","0:3:5:4:7","1:15:28","2:43","2:49","2:37","0:4:5:2:7","1:20:14","0:4:5:3:7","1:20:21","2:41","0:4:5:4:7","1:20:28","2:56","0:5:5:2:7","1:25:14","2:39","0:5:5:3:7","1:25:21","2:46","0:5:5:4:7","1:25:28","2:53","2:63","2:33","2:47","0:2:6:2:8","1:12:16","0:2:6:3:8","0:2:6:4:8","1:12:32","0:3:6:2:8","1:18:16","0:3:6:3:8","1:18:24","0:3:6:4:8","1:18:32","2:50","0:4:6:2:8","1:24:16","0:4:6:3:8","1:24:24","0:4:6:4:8","1:24:32","2:64","0:5:6:2:8","1:30:16","0:5:6:3:8","1:30:24","0:5:6:4:8","1:30:32","2:62","2:72","0:2:7:2:9","1:14:18","0:2:7:3:9","1:14:27","0:2:7:4:9","1:14:36","0:3:7:2:9","1:21:18","0:3:7:3:9","1:21:27","0:3:7:4:9","1:21:36","2:57","2:51","0:4:7:2:9","1:28:18","0:4:7:3:9","1:28:27","2:55","0:4:7:4:9","1:28:36","2:58","0:5:7:2:9","1:35:18","0:5:7:3:9","1:35:27","0:5:7:4:9","1:35:36","2:71","2:81","2:65","0:2:8:2:10","1:16:20","0:2:8:3:10","1:16:30","0:2:8:4:10","1:16:40","2:60","0:3:8:2:10","1:24:20","0:3:8:3:10","1:24:30","0:3:8:4:10","1:24:40","2:70","0:4:8:2:10","1:32:20","2:52","0:4:8:3:10","1:32:30","0:4:8:4:10","1:32:40","2:80","2:66","0:5:8:2:10","1:40:20","0:5:8:3:10","1:40:30","0:5:8:4:10","1:40:40","2:90","2:74"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,9,10,11,3,12],[1,13,14,15,16,17,6,4],[1,18,19,20,10,11,21,12],[1,22,23,24,16,17,10,4],[1,25,26,27,9,28,12,29],[1,30,31,32,16,17,2,4],[1,33,34,35,9,28,16,29],[1,36,37,38,24,39,4,15],[1,40,41,11,9,28,20,29],[1,42,43,17,24,39,9,15],[1,44,45,28,35,46,29,27],[1,47,48,4,2,24,3,16],[1,49,50,15,4,17,6,32],[1,51,52,38,24,53,2,15],[1,54,55,24,4,17,2,32],[1,56,57,17,24,53,16,15],[1,58,59,53,60,61,4,17],[1,62,63,60,24,53,4,15],[1,64,65,66,60,61,32,17],[1,67,68,39,38,69,24,66],[1,70,71,38,60,61,24,17],[1,72,73,74,38,69,15,66],[1,75,76,77,53,78,60,74],[1,79,80,24,4,60,6,32],[1,81,82,83,11,28,2,35],[1,84,85,74,17,61,16,38],[1,86,87,27,11,28,20,35],[1,88,89,53,17,61,9,38],[1,90,91,92,28,93,29,94],[1,95,96,66,17,61,24,38],[1,97,98,99,28,93,15,94],[1,100,101,69,39,102,60,61],[1,103,104,105,28,93,27,94],[1,106,107,108,39,102,83,61],[1,109,110,111,46,112,113,114],[1,115,116,60,24,38,2,15],[1,117,59,53,17,39,16,38],[1,118,119,77,53,69,4,74],[1,120,121,66,17,39,32,38],[1,122,123,61,53,69,24,74],[1,124,125,126,61,102,15,77],[1,127,128,39,53,69,60,74],[1,129,130,69,61,102,17,77],[1,131,132,102,69,133,38,126],[1,134,135,108,61,102,66,77],[1,136,137,78,69,133,53,126],[1,138,139,140,78,141,74,102],[1,142,143,38,60,53,16,17],[1,144,145,99,28,46,4,94],[1,146,147,126,61,78,32,77],[1,148,149,105,28,46,11,94],[1,150,151,69,61,78,35,77],[1,152,153,154,93,112,27,155],[1,156,157,108,61,78,38,77],[1,158,159,160,93,112,66,155],[1,161,162,133,102,141,53,163],[1,164,165,111,93,112,105,155],[1,166,167,140,102,141,99,163],[1,168,169,170,112,171,92,172],[1,173,174,53,38,39,4,66],[1,175,176,108,39,126,32,61],[1,177,178,102,69,179,24,126],[1,180,181,77,39,126,60,61],[1,182,183,78,69,179,17,126],[1,184,185,133,102,186,38,163],[1,187,188,189,69,179,53,126],[1,190,191,140,102,186,74,163],[1,192,193,141,133,194,39,195],[1,196,197,179,102,186,77,163],[1,198,199,186,133,194,108,195],[1,200,201,194,141,202,69,203]],"weight":72},"science-shift":{"title":"Перерыв","patterns":["Смена длится %d часов, один час уходит на настройку. %d станков делают каждый по %d деталей в рабочий час. Сколько деталей за смену?","Рабочих часов %d, общий темп %d деталей/ч.","%d"],"strings":["0:3:2:2","1:2:4","2:8","2:12","2:4","2:11","0:3:2:3","1:2:6","2:18","2:17","2:6","0:3:2:4","1:2:8","2:16","2:24","2:23","0:3:3:2","0:3:3:3","1:2:9","2:27","2:26","0:3:3:4","1:2:12","2:36","2:35","0:3:4:2","0:3:4:3","0:3:4:4","1:2:16","2:32","2:48","2:47","0:3:5:2","1:2:10","2:20","2:30","2:10","2:29","0:3:5:3","1:2:15","2:45","2:44","0:3:5:4","1:2:20","2:40","2:60","2:59","0:4:2:2","1:3:4","2:15","0:4:2:3","1:3:6","2:9","0:4:2:4","1:3:8","2:31","0:4:3:2","0:4:3:3","1:3:9","0:4:3:4","1:3:12","0:4:4:2","0:4:4:3","0:4:4:4","1:3:16","2:64","2:63","0:4:5:2","1:3:10","2:39","0:4:5:3","1:3:15","0:4:5:4","1:3:20","2:80","2:79","0:5:2:2","1:4:4","2:19","0:5:2:3","1:4:6","0:5:2:4","1:4:8","0:5:3:2","0:5:3:3","1:4:9","0:5:3:4","1:4:12","0:5:4:2","0:5:4:3","0:5:4:4","1:4:16","0:5:5:2","1:4:10","2:50","2:49","0:5:5:3","1:4:15","2:75","2:74","0:5:5:4","1:4:20","2:100","2:99","0:6:2:2","1:5:4","0:6:2:3","1:5:6","0:6:2:4","1:5:8","0:6:3:2","0:6:3:3","1:5:9","2:54","2:53","0:6:3:4","1:5:12","2:72","2:71","0:6:4:2","0:6:4:3","0:6:4:4","1:5:16","2:96","2:95","0:6:5:2","1:5:10","2:25","0:6:5:3","1:5:15","2:90","2:89","0:6:5:4","1:5:20","2:120","2:119","0:7:2:2","1:6:4","2:28","0:7:2:3","1:6:6","2:42","2:41","0:7:2:4","1:6:8","2:56","2:55","0:7:3:2","0:7:3:3","1:6:9","2:62","0:7:3:4","1:6:12","2:84","2:83","0:7:4:2","0:7:4:3","0:7:4:4","1:6:16","2:112","2:111","0:7:5:2","1:6:10","2:70","2:69","0:7:5:3","1:6:15","2:105","2:104","0:7:5:4","1:6:20","2:140","2:139","0:8:2:2","1:7:4","2:14","0:8:2:3","1:7:6","2:21","0:8:2:4","1:7:8","0:8:3:2","0:8:3:3","1:7:9","0:8:3:4","1:7:12","0:8:4:2","0:8:4:3","0:8:4:4","1:7:16","2:128","2:127","0:8:5:2","1:7:10","0:8:5:3","1:7:15","0:8:5:4","1:7:20","2:160","2:159"],"variants":[[1,0,1,2,3,4,5],[1,6,7,3,8,4,9,10],[1,11,12,13,14,4,15,2],[1,16,7,3,8,10,9,4],[1,17,18,8,19,10,20],[1,21,22,14,23,10,24,2],[1,25,12,13,14,2,15,4],[1,26,22,14,23,2,24,10],[1,27,28,29,30,2,31],[1,32,33,34,35,36,37,4],[1,38,39,35,40,36,41,10],[1,42,43,44,45,36,46,2],[1,47,48,3,13,10,49],[1,50,51,8,14,10,15,52],[1,53,54,14,29,10,55,3],[1,56,51,8,14,52,15,10],[1,57,58,19,23,52,24],[1,59,60,23,30,52,31,3],[1,61,54,14,29,3,55,10],[1,62,60,23,30,3,31,52],[1,63,64,30,65,3,66],[1,67,68,35,44,49,69,10],[1,70,71,40,45,49,46,52],[1,72,73,45,74,49,75,3],[1,76,77,13,34,2,78],[1,79,80,14,35,2,37,3],[1,81,82,29,44,2,69,13],[1,83,80,14,35,3,37,2],[1,84,85,23,40,3,41],[1,86,87,30,45,3,46,13],[1,88,82,29,44,13,69,2],[1,89,87,30,45,13,46,3],[1,90,91,65,74,13,75],[1,92,93,44,94,34,95,2],[1,96,97,45,98,34,99,3],[1,100,101,74,102,34,103,13],[1,104,105,34,14,36,15],[1,106,107,35,23,36,24,49],[1,108,109,44,30,36,31,34],[1,110,107,35,23,49,24,36],[1,111,112,40,113,49,114],[1,115,116,45,117,49,118,34],[1,119,109,44,30,34,31,36],[1,120,116,45,117,34,118,49],[1,121,122,74,123,34,124],[1,125,126,94,45,127,46,36],[1,128,129,98,130,127,131,49],[1,132,133,102,134,127,135,34],[1,136,137,14,138,3,19],[1,139,140,23,141,3,142,8],[1,143,144,30,145,3,146,14],[1,147,140,23,141,8,142,3],[1,148,149,113,66,8,150],[1,151,152,117,153,8,154,14],[1,155,144,30,145,14,146,3],[1,156,152,117,153,14,154,8],[1,157,158,123,159,14,160],[1,161,162,45,163,35,164,3],[1,165,166,130,167,35,168,8],[1,169,170,134,171,35,172,14],[1,173,174,138,29,175,55],[1,176,177,141,30,175,31,178],[1,179,180,145,65,175,66,138],[1,181,177,141,30,178,31,175],[1,182,183,66,117,178,118],[1,184,185,153,123,178,124,138],[1,186,180,145,65,138,66,175],[1,187,185,153,123,138,124,178],[1,188,189,159,190,138,191],[1,192,193,163,74,24,75,175],[1,194,195,167,134,24,135,178],[1,196,197,171,198,24,199,138]],"weight":72},"science-teams":{"title":"Работа по группам","patterns":["%d человек разбили на группы по %d. Каждая группа решает %d задач в час. Сколько задач решат все за %d часа?","Получилось %d групп. Умножаем число групп на темп и время.","%d"],"strings":["0:6:2:2:2","1:3","2:12","2:6","2:8","2:11","2:13","0:6:2:3:2","2:18","2:9","2:17","2:19","0:6:2:4:2","2:24","2:16","2:10","0:9:3:2:2","0:9:3:3:2","2:27","0:9:3:4:2","2:36","0:12:4:2:2","0:12:4:3:2","0:12:4:4:2","2:48","2:32","0:15:5:2:2","2:30","2:20","0:15:5:3:2","2:45","0:15:5:4:2","2:60","2:40","0:8:2:2:2","1:4","2:15","0:8:2:3:2","2:23","2:25","0:8:2:4:2","2:31","2:33","0:12:3:2:2","0:12:3:3:2","0:12:3:4:2","0:16:4:2:2","0:16:4:3:2","0:16:4:4:2","2:64","0:20:5:2:2","0:20:5:3:2","0:20:5:4:2","2:80","0:10:2:2:2","1:5","0:10:2:3:2","0:10:2:4:2","2:14","0:15:3:2:2","0:15:3:3:2","0:15:3:4:2","0:20:4:2:2","0:20:4:3:2","0:20:4:4:2","0:25:5:2:2","2:50","0:25:5:3:2","2:75","0:25:5:4:2","2:100","0:12:2:2:2","1:6","0:12:2:3:2","0:12:2:4:2","2:47","2:49","0:18:3:2:2","0:18:3:3:2","2:54","0:18:3:4:2","2:72","0:24:4:2:2","0:24:4:3:2","0:24:4:4:2","2:96","0:30:5:2:2","0:30:5:3:2","2:90","0:30:5:4:2","2:120","0:14:2:2:2","1:7","2:28","0:14:2:3:2","2:42","2:21","0:14:2:4:2","2:56","0:21:3:2:2","0:21:3:3:2","2:63","0:21:3:4:2","2:84","0:28:4:2:2","0:28:4:3:2","0:28:4:4:2","2:112","0:35:5:2:2","2:70","0:35:5:3:2","2:105","0:35:5:4:2","2:140","0:16:2:2:2","1:8","0:16:2:3:2","0:16:2:4:2","0:24:3:2:2","0:24:3:3:2","0:24:3:4:2","0:32:4:2:2","0:32:4:3:2","0:32:4:4:2","2:128","0:40:5:2:2","0:40:5:3:2","0:40:5:4:2","2:160"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,8,9,2,10,11],[1,12,1,13,2,14,15],[1,16,1,2,3,8,4],[1,17,1,8,9,18,10,11],[1,19,1,13,2,20,15],[1,21,1,2,3,13,14,4],[1,22,1,8,9,20,13],[1,23,1,13,2,24,25,15],[1,26,1,2,3,27,28,4],[1,29,1,8,9,30,27],[1,31,1,13,2,32,33,15],[1,34,35,14,4,15,36,10],[1,37,35,13,2,5,38,39],[1,40,35,25,14,2,41,42],[1,43,35,14,4,13,2,15],[1,44,35,13,2,20,8,5],[1,45,35,25,14,24,13,2],[1,46,35,14,4,25,15],[1,47,35,13,2,24,5],[1,48,35,25,14,49,2],[1,50,35,14,4,33,28,15],[1,51,35,13,2,32,27,5],[1,52,35,25,14,53,33,2],[1,54,55,28,15,4,2],[1,56,55,27,36,2,6],[1,57,55,33,28,14,58],[1,59,55,28,15,27,2],[1,60,55,27,36,30,8,6],[1,61,55,33,28,32,13,58],[1,62,55,28,15,33,14,2],[1,63,55,27,36,32,13,6],[1,64,55,33,28,53,25,58],[1,65,55,28,15,66,2],[1,67,55,27,36,68,6],[1,69,55,33,28,70,58],[1,71,72,13,2,4,58],[1,73,72,20,8,2,36],[1,74,72,24,13,14,75,76],[1,77,72,13,2,20,58],[1,78,72,20,8,79,36],[1,80,72,24,13,81,14],[1,82,72,13,2,24,14,58],[1,83,72,20,8,81,13,36],[1,84,72,24,13,85,25,14],[1,86,72,13,2,32,28,58],[1,87,72,20,8,88,27,36],[1,89,72,24,13,90,33,14],[1,91,92,93,58,4,14],[1,94,92,95,96,2,10],[1,97,92,98,93,14,8],[1,99,92,93,58,95,2,14],[1,100,92,95,96,101,8,10],[1,102,92,98,93,103,13,8],[1,104,92,93,58,98,14],[1,105,92,95,96,103,13,10],[1,106,92,98,93,107,25,8],[1,108,92,93,58,109,28,14],[1,110,92,95,96,111,27,10],[1,112,92,98,93,113,33,8],[1,114,115,25,14,4,8],[1,116,115,24,13,2,11],[1,117,115,49,25,14,28],[1,118,115,25,14,24,2,8],[1,119,115,24,13,81,8,11],[1,120,115,49,25,85,13,28],[1,121,115,25,14,49,8],[1,122,115,24,13,85,11],[1,123,115,49,25,124,28],[1,125,115,25,14,53,28,8],[1,126,115,24,13,90,27,11],[1,127,115,49,25,128,33,28]],"weight":72},"science-together":{"title":"Вместе быстрее","patterns":["Первая установка делает %d деталей/ч, вторая — %d. За сколько часов вместе они сделают %d деталей?","Общий темп — %d деталей/ч. Делим объём работы на этот темп.","%d ч"],"strings":["0:3:2:10","1:5","2:2","2:4","2:6","2:3","0:3:2:15","2:9","0:3:2:20","2:8","2:12","2:5","0:3:3:12","1:6","0:3:3:18","0:3:3:24","0:3:4:14","1:7","0:3:4:21","0:3:4:28","2:16","0:3:5:16","1:8","2:10","0:3:5:24","2:15","0:3:5:32","2:20","0:4:2:12","0:4:2:18","0:4:2:24","0:4:3:14","0:4:3:21","0:4:3:28","0:4:4:16","0:4:4:24","0:4:4:32","0:4:5:18","1:9","0:4:5:27","0:4:5:36","0:5:2:14","0:5:2:21","0:5:2:28","0:5:3:16","0:5:3:24","0:5:3:32","0:5:4:18","0:5:4:27","0:5:4:36","0:5:5:20","1:10","0:5:5:30","0:5:5:40","0:6:2:16","0:6:2:24","2:18","0:6:2:32","2:24","0:6:3:18","0:6:3:27","0:6:3:36","0:6:4:20","0:6:4:30","0:6:4:40","0:6:5:22","1:11","0:6:5:33","0:6:5:44","0:7:2:18","2:14","0:7:2:27","2:21","0:7:2:36","2:28","0:7:3:20","0:7:3:30","0:7:3:40","0:7:4:22","0:7:4:33","0:7:4:44","0:7:5:24","1:12","0:7:5:36","0:7:5:48","0:8:2:20","0:8:2:30","0:8:2:40","2:32","0:8:3:22","0:8:3:33","0:8:3:44","0:8:4:24","0:8:4:36","0:8:4:48","0:8:5:26","1:13","0:8:5:39","0:8:5:52"],"variants":[[1,0,1,2,3,4,5],[1,6,1,5,4,7,3],[1,8,1,3,9,10,11],[1,12,13,2,3,4,5],[1,14,13,5,4,7,3],[1,15,13,3,9,10,11],[1,16,17,2,3,4,9,5],[1,18,17,5,4,7,10,3],[1,19,17,3,9,10,20,11],[1,21,22,2,3,4,23,5],[1,24,22,5,4,7,25,3],[1,26,22,3,9,10,27,11],[1,28,13,2,3,9,5],[1,29,13,5,4,10,3],[1,30,13,3,9,20,11],[1,31,17,2,3,9,4,5],[1,32,17,5,4,10,7,3],[1,33,17,3,9,20,10,11],[1,34,22,2,3,9,5],[1,35,22,5,4,10,3],[1,36,22,3,9,20,11],[1,37,38,2,3,9,23,5],[1,39,38,5,4,10,25,3],[1,40,38,3,9,20,27,11],[1,41,17,2,3,23,5],[1,42,17,5,4,25,3],[1,43,17,3,9,27,11],[1,44,22,2,3,23,4,5],[1,45,22,5,4,25,7,3],[1,46,22,3,9,27,10,11],[1,47,38,2,3,23,9,5],[1,48,38,5,4,25,10,3],[1,49,38,3,9,27,20,11],[1,50,51,2,3,23,5],[1,52,51,5,4,25,3],[1,53,51,3,9,27,11],[1,54,22,2,3,10,5],[1,55,22,5,4,56,3],[1,57,22,3,9,58,11],[1,59,38,2,3,10,4,5],[1,60,38,5,4,56,7,3],[1,61,38,3,9,58,10,11],[1,62,51,2,3,10,9,5],[1,63,51,5,4,56,10,3],[1,64,51,3,9,58,20,11],[1,65,66,2,3,10,23,5],[1,67,66,5,4,56,25,3],[1,68,66,3,9,58,27,11],[1,69,38,2,3,70,5],[1,71,38,5,4,72,3],[1,73,38,3,9,74,11],[1,75,51,2,3,70,4,5],[1,76,51,5,4,72,7,3],[1,77,51,3,9,74,10,11],[1,78,66,2,3,70,9,5],[1,79,66,5,4,72,10,3],[1,80,66,3,9,74,20,11],[1,81,82,2,3,70,23,5],[1,83,82,5,4,72,25,3],[1,84,82,3,9,74,27,11],[1,85,51,2,3,20,5],[1,86,51,5,4,58,3],[1,87,51,3,9,88,11],[1,89,66,2,3,20,4,5],[1,90,66,5,4,58,7,3],[1,91,66,3,9,88,10,11],[1,92,82,2,3,20,9,5],[1,93,82,5,4,58,10,3],[1,94,82,3,9,88,20,11],[1,95,96,2,3,20,23,5],[1,97,96,5,4,58,25,3],[1,98,96,3,9,88,27,11]],"weight":72},"science-workers":{"title":"Размер команды","patterns":["Один исследователь проверяет %d образцов в час. Сколько исследователей нужно, чтобы проверить %d образцов за %d часа?","Один человек за %d часа проверит %d образцов. Делим всю работу на этот объём.","%d"],"strings":["0:3:12:2","1:2:6","2:2","2:4","2:6","2:1","2:3","0:3:18:3","1:3:9","2:5","0:3:24:4","1:4:12","2:8","0:3:18:2","2:9","0:3:27:3","0:3:36:4","2:12","2:7","0:3:24:2","0:3:36:3","0:3:48:4","2:16","0:3:30:2","2:10","2:15","0:3:45:3","0:3:60:4","2:20","0:4:16:2","1:2:8","0:4:24:3","1:3:12","0:4:32:4","1:4:16","0:4:24:2","0:4:36:3","0:4:48:4","0:4:32:2","0:4:48:3","0:4:64:4","0:4:40:2","0:4:60:3","0:4:80:4","0:5:20:2","1:2:10","0:5:30:3","1:3:15","0:5:40:4","1:4:20","0:5:30:2","0:5:45:3","0:5:60:4","0:5:40:2","0:5:60:3","0:5:80:4","0:5:50:2","2:25","0:5:75:3","0:5:100:4","0:6:24:2","1:2:12","0:6:36:3","1:3:18","0:6:48:4","1:4:24","0:6:36:2","2:18","0:6:54:3","0:6:72:4","0:6:48:2","2:24","0:6:72:3","0:6:96:4","0:6:60:2","2:30","0:6:90:3","0:6:120:4","0:7:28:2","1:2:14","2:14","0:7:42:3","1:3:21","0:7:56:4","1:4:28","0:7:42:2","2:21","0:7:63:3","0:7:84:4","0:7:56:2","2:28","0:7:84:3","0:7:112:4","0:7:70:2","2:35","0:7:105:3","0:7:140:4","0:8:32:2","1:2:16","0:8:48:3","1:3:24","0:8:64:4","1:4:32","0:8:48:2","0:8:72:3","0:8:96:4","0:8:64:2","2:32","0:8:96:3","0:8:128:4","0:8:80:2","2:40","0:8:120:3","0:8:160:4"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,4,9,6],[1,10,11,2,12,4,3],[1,13,1,6,4,14,9,2],[1,15,8,6,14,4,2,3],[1,16,11,6,17,14,18,3],[1,19,1,3,12,17,4,2],[1,20,8,3,17,18,6],[1,21,11,3,22,17,12],[1,23,1,9,24,25,18,2],[1,26,8,9,25,12,6],[1,27,11,9,28,25,14,3],[1,29,30,2,3,12,5,6],[1,31,32,2,4,12,9,6],[1,33,34,2,12,4,3],[1,35,30,6,4,17,9,2],[1,36,32,6,14,17,4],[1,37,34,6,17,18,3],[1,38,30,3,12,22,4,2],[1,39,32,3,17,22,18,6],[1,40,34,3,22,12,6,9],[1,41,30,9,24,28,18,2],[1,42,32,9,25,28,12,6],[1,43,34,9,28,14,3],[1,44,45,2,3,24,5,6],[1,46,47,2,4,24,9,6],[1,48,49,2,12,24,4,3],[1,50,45,6,4,25,9,2],[1,51,47,6,14,25,4],[1,52,49,6,17,25,18,3],[1,53,45,3,12,28,4,2],[1,54,47,3,17,28,18,6],[1,55,49,3,22,28,12],[1,56,45,9,24,57,18,2],[1,58,47,9,25,57,12,6],[1,59,49,9,28,57,14,3],[1,60,61,2,3,17,5,6],[1,62,63,2,4,17,9,6],[1,64,65,2,12,17,4,3],[1,66,61,6,4,67,9,2],[1,68,63,6,14,67,4],[1,69,65,6,17,67,18,3],[1,70,61,3,12,71,4,2],[1,72,63,3,17,71,18,6],[1,73,65,3,22,71,12],[1,74,61,9,24,75,18,2],[1,76,63,9,25,75,12,6],[1,77,65,9,28,75,14,3],[1,78,79,2,3,80,5,6],[1,81,82,2,4,80,9,6],[1,83,84,2,12,80,4,3],[1,85,79,6,4,86,9,2],[1,87,82,6,14,86,4],[1,88,84,6,17,86,18,3],[1,89,79,3,12,90,4,2],[1,91,82,3,17,90,18,6],[1,92,84,3,22,90,12],[1,93,79,9,24,94,18,2],[1,95,82,9,25,94,12,6],[1,96,84,9,28,94,14,3],[1,97,98,2,3,22,5,6],[1,99,100,2,4,22,9,6],[1,101,102,2,12,22,4,3],[1,103,98,6,4,71,9,2],[1,104,100,6,14,71,4],[1,105,102,6,17,71,18,3],[1,106,98,3,12,107,4,2],[1,108,100,3,17,107,18,6],[1,109,102,3,22,107,12],[1,110,98,9,24,111,18,2],[1,112,100,9,25,111,12,6],[1,113,102,9,28,111,14,3]],"weight":72}},"architect":{"science-chain":{"title":"Сложная функция","patterns":["f(x) = (x + %d)². Чему равна f′(%d)?","Производная внешнего квадрата — %d(x + %d); производная внутренней функции равна %d.","%d"],"strings":["0:2:2","1:2:2:1","2:8","2:4","2:16","2:6","0:2:3","2:10","2:25","0:2:4","2:12","2:36","0:2:5","2:14","2:49","0:3:2","1:2:3:1","2:7","0:3:3","2:9","0:3:4","2:11","0:3:5","2:64","2:13","0:4:2","1:2:4:1","0:4:3","0:4:4","0:4:5","2:18","2:81","0:5:2","1:2:5:1","0:5:3","0:5:4","0:5:5","2:20","2:100","2:15"],"variants":[[3,0,1,2,3,4,5],[3,6,1,7,5,8,2,3],[3,9,1,10,2,11,7,3],[3,12,1,13,7,14,10,3],[3,15,16,7,3,8,17,5],[3,18,16,10,5,11,19],[3,20,16,13,2,14,21,5],[3,22,16,4,7,23,24,5],[3,25,26,10,3,11,2],[3,27,26,13,5,14,7,2],[3,28,26,4,2,23,10],[3,29,26,30,7,31,13,2],[3,32,33,13,3,14,19,7],[3,34,33,4,5,23,21,7],[3,35,33,30,2,31,24,7],[3,36,33,37,7,38,39]],"weight":48},"science-constant":{"title":"Постоянная величина","patterns":["f(x) = %d при любом x. Чему равна производная f′(%d)?","Постоянная не меняется при изменении аргумента, поэтому её производная равна нулю.","%d"],"strings":["0:6:2","1","2:0","2:1","2:6","2:2","0:7:2","2:7","2:3","0:8:2","2:8","2:4","0:9:2","2:9","0:10:2","2:10","0:11:2","2:11","0:12:2","2:12","0:13:2","2:13","0:14:2","2:14","0:8:3","0:9:3","0:10:3","0:11:3","0:12:3","0:13:3","0:14:3","0:15:3","2:15","0:16:3","2:16","0:17:3","2:17","0:18:3","2:18","0:19:3","2:19","0:10:4","0:11:4","0:12:4","0:14:4","0:15:4","0:16:4","0:18:4","0:19:4","0:20:4","2:20","0:22:4","2:22","0:23:4","2:23","0:24:4","2:24","0:12:5","2:5","0:13:5","0:14:5","0:17:5","0:18:5","0:19:5","0:22:5","0:23:5","0:24:5","0:27:5","2:27","0:28:5","2:28","0:29:5","2:29"],"variants":[[1,0,1,2,3,4,5],[1,6,1,2,3,7,5,8],[1,9,1,2,3,10,5,11],[1,9,1,2,3,10,5],[1,12,1,2,3,13,5,8],[1,14,1,2,3,15,5,11],[1,14,1,2,3,15,5],[1,16,1,2,3,17,5,8],[1,18,1,2,3,19,5,11],[1,18,1,2,3,19,5],[1,20,1,2,3,21,5,8],[1,22,1,2,3,23,5,11],[1,24,1,2,3,10,8,5],[1,25,1,2,3,13,8],[1,26,1,2,3,15,8,11],[1,27,1,2,3,17,8,5],[1,28,1,2,3,19,8],[1,29,1,2,3,21,8,11],[1,30,1,2,3,23,8,5],[1,31,1,2,3,32,8],[1,33,1,2,3,34,8,11],[1,35,1,2,3,36,8,5],[1,37,1,2,3,38,8],[1,39,1,2,3,40,8,11],[1,41,1,2,3,15,11,5],[1,42,1,2,3,17,11,8],[1,43,1,2,3,19,11],[1,44,1,2,3,23,11,5],[1,45,1,2,3,32,11,8],[1,46,1,2,3,34,11],[1,47,1,2,3,38,11,5],[1,48,1,2,3,40,11,8],[1,49,1,2,3,50,11],[1,51,1,2,3,52,11,5],[1,53,1,2,3,54,11,8],[1,55,1,2,3,56,11],[1,57,1,2,3,19,58,5],[1,59,1,2,3,21,58,8],[1,60,1,2,3,23,58,11],[1,61,1,2,3,36,58,5],[1,62,1,2,3,38,58,8],[1,63,1,2,3,40,58,11],[1,64,1,2,3,52,58,5],[1,65,1,2,3,54,58,8],[1,66,1,2,3,56,58,11],[1,67,1,2,3,68,58,5],[1,69,1,2,3,70,58,8],[1,71,1,2,3,72,58,11]],"weight":48},"science-linear":{"title":"Линейный рост","patterns":["f(x) = %dx + %d. Чему равна f′(%d)?","У линейной функции производная постоянна и равна коэффициенту при x.","%d"],"strings":["0:4:2:2","1","2:4","2:6","2:10","2:2","2:0","0:4:3:2","2:7","2:11","2:3","0:4:4:2","2:8","2:12","0:6:2:3","2:20","0:6:3:3","2:9","2:21","0:6:4:3","2:22","0:8:2:4","2:34","0:8:3:4","2:35","0:8:4:4","2:36","0:10:2:5","2:52","0:10:3:5","2:13","2:53","0:10:4:5","2:14","2:54","0:6:2:2","0:6:3:2","2:15","0:6:4:2","2:16","0:9:2:3","2:29","0:9:3:3","2:30","0:9:4:3","2:31","0:12:2:4","2:50","0:12:3:4","2:51","0:12:4:4","0:15:2:5","2:17","2:77","0:15:3:5","2:18","2:78","0:15:4:5","2:19","2:79","0:8:2:2","0:8:3:2","0:8:4:2","0:12:2:3","2:38","0:12:3:3","2:39","0:12:4:3","2:40","0:16:2:4","2:66","0:16:3:4","2:67","0:16:4:4","2:68","0:20:2:5","2:102","0:20:3:5","2:23","2:103","0:20:4:5","2:24","2:104","0:10:2:2","0:10:3:2","0:10:4:2","0:15:2:3","2:47","0:15:3:3","2:48","0:15:4:3","2:49","0:20:2:4","2:82","0:20:3:4","2:83","0:20:4:4","2:84","0:25:2:5","2:25","2:27","2:127","0:25:3:5","2:28","2:128","0:25:4:5","2:129"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,2,8,9,10,6],[1,11,1,2,12,13,6],[1,14,1,3,12,15,5,6],[1,16,1,3,17,18,10,6],[1,19,1,3,4,20,2,6],[1,21,1,12,4,22,5,6],[1,23,1,12,9,24,10,6],[1,25,1,12,13,26,2,6],[1,27,1,4,13,28,5,6],[1,29,1,4,30,31,10,6],[1,32,1,4,33,34,2,6],[1,35,1,3,12,33,5,6],[1,36,1,3,17,37,10,6],[1,38,1,3,4,39,2,6],[1,40,1,17,9,41,5,6],[1,42,1,17,13,43,10,6],[1,44,1,17,30,45,2,6],[1,46,1,13,33,47,5,6],[1,48,1,13,37,49,10,6],[1,50,1,13,39,28,2,6],[1,51,1,37,52,53,5,6],[1,54,1,37,55,56,10,6],[1,57,1,37,58,59,2,6],[1,60,1,12,4,55,5,6],[1,61,1,12,9,58,10,6],[1,62,1,12,13,15,2,6],[1,63,1,13,33,64,5,6],[1,65,1,13,37,66,10,6],[1,67,1,13,39,68,2,6],[1,69,1,39,55,70,5,6],[1,71,1,39,58,72,10,6],[1,73,1,39,15,74,2,6],[1,75,1,15,20,76,5,6],[1,77,1,15,78,79,10,6],[1,80,1,15,81,82,2,6],[1,83,1,4,13,20,5,6],[1,84,1,4,30,78,10,6],[1,85,1,4,33,81,2,6],[1,86,1,37,52,87,5,6],[1,88,1,37,55,89,10,6],[1,90,1,37,58,91,2,6],[1,92,1,15,20,93,5,6],[1,94,1,15,78,95,10,6],[1,96,1,15,81,97,2,6],[1,98,1,99,100,101,5,6],[1,102,1,99,103,104,10,6],[1,105,1,99,41,106,2,6]],"weight":48},"science-polynomial":{"title":"Кубическая функция","patterns":["f(x) = x³ − %dx. Чему равна f′(%d)?","f′(x) = %dx² − %d. При x = %d получаем %d.","%d","-%d"],"strings":["0:2:2","1:3:2:2:10","2:10","2:4","2:12","2:2","0:2:3","1:3:2:3:25","2:25","2:21","2:27","2:7","0:2:4","1:3:2:4:46","2:46","2:56","2:48","2:14","0:3:2","1:3:3:2:9","2:9","2:3","2:1","0:3:3","1:3:3:3:24","2:24","2:18","2:6","0:3:4","1:3:3:4:45","2:45","2:52","2:13","0:4:2","1:3:4:2:8","2:8","2:0","0:4:3","1:3:4:3:23","2:23","2:15","2:5","0:4:4","1:3:4:4:44","2:44","0:5:2","1:3:5:2:7","3:2","3:1","0:5:3","1:3:5:3:22","2:22","0:5:4","1:3:5:4:43","2:43","2:11"],"variants":[[4,0,1,2,3,4,5],[4,6,7,8,9,10,11],[4,12,13,14,15,16,2,17],[4,18,19,20,5,4,21,22],[4,23,24,25,26,10,27],[4,28,29,30,31,16,20,32],[4,33,34,35,36,4,5],[4,37,38,39,40,10,41],[4,42,43,44,16,35,4],[4,45,46,11,47,4,22,48],[4,49,50,51,4,10,3],[4,52,53,54,44,16,11,55]],"weight":48},"science-product":{"title":"Произведение","patterns":["f(x) = x(x + %d). Чему равна f′(%d)?","Раскрываем скобки: x² + %dx. Производная — %dx + %d.","%d"],"strings":["0:2:2","1:2:2:2","2:6","2:8","2:4","2:5","2:7","0:2:3","2:15","2:12","0:2:4","2:10","2:24","2:16","0:2:5","2:35","2:20","0:3:2","1:3:2:3","0:3:3","2:9","2:18","0:3:4","2:11","2:28","0:3:5","2:13","2:40","2:25","0:4:2","1:4:2:4","0:4:3","2:21","0:4:4","2:32","0:4:5","2:14","2:45","2:30","0:5:2","1:5:2:5","0:5:3","0:5:4","2:36","0:5:5","2:50"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,3,8,5,2,9],[3,10,1,11,12,2,3,13],[3,14,1,9,15,6,11,16],[3,17,18,6,11,5,4],[3,19,18,20,21,2,8],[3,22,18,23,24,6,3,16],[3,25,18,26,27,3,11,28],[3,29,30,3,9,2,4],[3,31,30,11,32,6,2,21],[3,33,30,9,34,3,12],[3,35,30,36,37,20,11,38],[3,39,40,20,36,6,4],[3,41,40,23,12,3,2,32],[3,42,40,26,43,20,3,24],[3,44,40,8,45,11,15]],"weight":48},"science-quadratic":{"title":"Два слагаемых","patterns":["f(x) = x² + %dx. Чему равна f′(%d)?","Производная суммы: f′(x) = %dx + %d. Подставляем %d.","%d"],"strings":["0:2:2","1:2:2:2","2:6","2:8","2:4","2:5","2:7","0:2:3","1:2:2:3","2:15","2:10","0:2:4","1:2:2:4","2:24","2:12","0:2:5","1:2:2:5","2:35","2:14","0:3:2","1:2:3:2","0:3:3","1:2:3:3","2:9","2:18","2:11","0:3:4","1:2:3:4","2:28","0:3:5","1:2:3:5","2:13","2:40","2:16","2:17","0:4:2","1:2:4:2","0:4:3","1:2:4:3","2:21","0:4:4","1:2:4:4","2:32","0:4:5","1:2:4:5","2:45","2:22","0:5:2","1:2:5:2","0:5:3","1:2:5:3","0:5:4","1:2:5:4","2:36","0:5:5","1:2:5:5","2:50","2:20","2:27"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,3,9,2,10],[3,11,12,10,13,3,14],[3,15,16,14,17,10,18],[3,19,20,6,10,4,3],[3,21,22,23,24,2,14,25],[3,26,27,25,28,3,18],[3,29,30,31,32,10,33,34],[3,35,36,3,14,4,10],[3,37,38,10,39,2,18],[3,40,41,14,42,3,33,24],[3,43,44,18,45,10,24,46],[3,47,48,23,18,4,14],[3,49,50,25,13,2,33,34],[3,51,52,31,53,3,24,46],[3,54,55,9,56,10,57,58]],"weight":48},"science-reciprocal":{"title":"Обратная зависимость","patterns":["f(x) = %d/x. Чему равна f′(%d)?","Производная k/x равна −k/x². Получаем −%d/%d = −%d.","-%d","%d"],"strings":["0:8:2","1:8:4:2","2:2","3:2","2:4","3:4","2:8","0:18:3","1:18:9:2","2:6","3:6","2:18","0:32:4","1:32:16:2","3:8","2:32","0:50:5","1:50:25:2","2:10","3:10","2:50","0:12:2","1:12:4:3","2:3","3:3","2:12","0:27:3","1:27:9:3","2:9","3:9","2:27","0:48:4","1:48:16:3","3:12","2:48","0:75:5","1:75:25:3","2:15","3:15","2:75","0:16:2","1:16:4:4","2:16","0:36:3","1:36:9:4","2:36","0:64:4","1:64:16:4","3:16","2:64","0:100:5","1:100:25:4","2:20","3:20","2:100","0:20:2","1:20:4:5","2:5","3:5","0:45:3","1:45:9:5","2:45","0:80:4","1:80:16:5","2:80","0:125:5","1:125:25:5","2:25","3:25","2:125"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,2,3,9,10,11],[3,12,13,2,3,6,14,15],[3,16,17,2,3,18,19,20],[3,21,22,23,24,9,10,25],[3,26,27,23,24,28,29,30],[3,31,32,23,24,25,33,34],[3,35,36,23,24,37,38,39],[3,40,41,4,5,6,14,42],[3,43,44,4,5,25,33,45],[3,46,47,4,5,42,48,49],[3,50,51,4,5,52,53,54],[3,55,56,57,58,18,19,52],[3,59,60,57,58,37,38,61],[3,62,63,57,58,52,53,64],[3,65,66,57,58,67,68,69]],"weight":48},"science-second":{"title":"Вторая производная","patterns":["f(x) = %dx³. Чему равна f″(%d)?","Первая производная — %dx², вторая — %dx. Подставляем %d.","%d"],"strings":["0:2:2","1:6:12:2","2:24","2:16","2:12","2:23","2:25","0:2:3","1:6:12:3","2:36","2:54","2:18","0:2:4","1:6:12:4","2:48","2:96","2:128","0:2:5","1:6:12:5","2:60","2:150","2:250","2:30","0:3:2","1:9:18:2","2:35","2:37","0:3:3","1:9:18:3","2:81","2:27","0:3:4","1:9:18:4","2:72","2:144","2:192","0:3:5","1:9:18:5","2:90","2:225","2:375","2:45","0:4:2","1:12:24:2","2:32","2:47","2:49","0:4:3","1:12:24:3","2:108","0:4:4","1:12:24:4","2:256","0:4:5","1:12:24:5","2:120","2:300","2:500","0:5:2","1:15:30:2","2:40","2:59","2:61","0:5:3","1:15:30:3","2:135","0:5:4","1:15:30:4","2:240","2:320","0:5:5","1:15:30:5","2:625","2:75"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,9,10,4,11],[3,12,13,14,15,16,4,2],[3,17,18,19,20,21,4,22],[3,23,24,9,2,11,25,26],[3,27,28,10,29,11,30],[3,31,32,33,34,35,11,9],[3,36,37,38,39,40,11,41],[3,42,43,14,44,2,45,46],[3,47,48,33,49,2,9],[3,50,51,15,35,52,2,14],[3,53,54,55,56,57,2,19],[3,58,59,19,60,22,61,62],[3,63,64,38,65,22,41],[3,66,67,55,68,69,22,19],[3,70,71,20,40,72,22,73]],"weight":48},"science-square":{"title":"Производная квадрата","patterns":["f(x) = %dx². Чему равна f′(%d)?","Производная равна %dx. Подставляем x = %d.","%d"],"strings":["0:2:2","1:4:2","2:8","2:4","2:7","2:9","0:2:3","1:4:3","2:12","2:18","2:6","0:2:4","1:4:4","2:16","2:32","0:2:5","1:4:5","2:20","2:50","2:10","0:3:2","1:6:2","2:11","2:13","0:3:3","1:6:3","2:27","0:3:4","1:6:4","2:24","2:48","0:3:5","1:6:5","2:30","2:75","2:15","0:4:2","1:8:2","2:17","0:4:3","1:8:3","2:36","0:4:4","1:8:4","2:64","0:4:5","1:8:5","2:40","2:100","0:5:2","1:10:2","2:19","2:21","0:5:3","1:10:3","2:45","0:5:4","1:10:4","2:80","0:5:5","1:10:5","2:125","2:25"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,9,10,3],[3,11,12,13,14,2,3],[3,15,16,17,18,19,3],[3,20,21,8,10,3,22,23],[3,24,25,9,26,5,10],[3,27,28,29,30,8,10,2],[3,31,32,33,34,35,10,19],[3,36,37,13,2,3,35,38],[3,39,40,29,41,8,2,10],[3,42,43,14,44,13,2],[3,45,46,47,48,17,2,19],[3,49,50,17,19,3,51,52],[3,53,54,33,55,35,19,10],[3,56,57,47,58,17,19,2],[3,59,60,18,61,62,19]],"weight":48},"science-stationary":{"title":"Нулевая производная","patterns":["f(x) = x² − %dx + %d. При каком x производная равна нулю?","f′(x) = %dx − %d. Решаем %dx − %d = %d.","%d","-%d"],"strings":["0:4:2","1:2:4:2:4:0","2:2","2:4","3:2","2:0","0:4:3","2:3","2:5","0:4:4","2:6","0:4:5","2:7","0:6:2","1:2:6:2:6:0","3:3","0:6:3","0:6:4","0:6:5","2:8","0:8:2","1:2:8:2:8:0","3:4","0:8:3","0:8:4","0:8:5","2:9","0:10:2","1:2:10:2:10:0","2:10","3:5","0:10:3","0:10:4","0:10:5"],"variants":[[3,0,1,2,3,4,5],[3,6,1,2,3,4,5,7,8],[3,9,1,2,3,4,5,10],[3,11,1,2,3,4,5,8,12],[3,13,14,7,10,15,5,2,8],[3,16,14,7,10,15,5],[3,17,14,7,10,15,5,3,12],[3,18,14,7,10,15,5,8,19],[3,20,21,3,19,22,5,2,10],[3,23,21,3,19,22,5,7,12],[3,24,21,3,19,22,5],[3,25,21,3,19,22,5,8,26],[3,27,28,8,29,30,5,2,12],[3,31,28,8,29,30,5,7,19],[3,32,28,8,29,30,5,3,26],[3,33,28,8,29,30,5]],"weight":48},"science-tangent":{"title":"Касательная","patterns":["Для y = x² провели касательную в точке x = %d. Каково значение y на этой касательной при x = %d?","В точке касания y = %d, наклон равен %d. При увеличении x на %d значение y вырастет на %d.","%d"],"strings":["0:2:4","1:4:4:2:8","2:12","2:16","2:8","2:4","0:2:5","1:4:4:3:12","2:25","2:10","0:2:6","1:4:4:4:16","2:20","2:36","0:2:7","1:4:4:5:20","2:24","2:49","2:14","0:3:5","1:9:6:2:12","2:21","2:15","2:6","0:3:6","1:9:6:3:18","2:27","2:18","0:3:7","1:9:6:4:24","2:33","0:3:8","1:9:6:5:30","2:39","2:64","2:30","0:4:6","1:16:8:2:16","2:32","0:4:7","1:16:8:3:24","2:40","2:28","0:4:8","1:16:8:4:32","2:48","0:4:9","1:16:8:5:40","2:56","2:81","0:5:7","1:25:10:2:20","2:45","2:35","0:5:8","1:25:10:3:30","2:55","0:5:9","1:25:10:4:40","2:65","0:5:10","1:25:10:5:50","2:75","2:100","2:50"],"variants":[[3,0,1,2,3,4,5],[3,6,7,3,8,2,9,5],[3,10,11,12,13,3,2,5],[3,14,15,16,17,12,18,5],[3,19,20,21,8,2,22,23],[3,24,25,26,13,27,23],[3,28,29,30,17,16,21,23],[3,31,32,33,34,35,16,23],[3,36,37,38,13,3,16,4],[3,39,40,41,17,16,42,4],[3,43,44,45,34,38,4],[3,46,47,48,49,41,13,4],[3,50,51,52,17,12,53,9],[3,54,55,56,34,35,41,9],[3,57,58,59,49,41,52,9],[3,60,61,62,63,64,9]],"weight":48},"science-velocity":{"title":"Мгновенная скорость","patterns":["Путь s(t) = %dt² + %dt метров. Какова скорость при t = %d с?","Скорость — производная пути: v(t) = %dt + %d. Подставляем время.","%d м/с"],"strings":["0:2:2:2","1:4:2","2:10","2:12","2:6","2:8","0:2:2:3","2:14","2:24","0:2:2:4","2:18","2:40","2:16","0:2:3:2","1:4:3","2:11","2:7","0:2:3:3","2:15","2:27","2:9","0:2:3:4","2:19","2:44","0:2:4:2","1:4:4","2:13","0:2:4:3","2:30","0:2:4:4","2:20","2:48","0:2:5:2","1:4:5","0:2:5:3","2:17","2:33","0:2:5:4","2:21","2:52","0:3:2:2","1:6:2","0:3:2:3","0:3:2:4","2:26","2:56","0:3:3:2","1:6:3","0:3:3:3","2:36","0:3:3:4","2:60","0:3:4:2","1:6:4","0:3:4:3","2:22","2:39","0:3:4:4","2:28","2:64","0:3:5:2","1:6:5","0:3:5:3","2:23","2:42","0:3:5:4","2:29","2:68","0:4:2:2","1:8:2","0:4:2:3","0:4:2:4","2:34","2:72","2:32","0:4:3:2","1:8:3","0:4:3:3","2:45","0:4:3:4","2:35","2:76","0:4:4:2","1:8:4","0:4:4:3","0:4:4:4","2:80","0:4:5:2","1:8:5","0:4:5:3","2:51","0:4:5:4","2:37","2:84","0:5:2:2","1:10:2","0:5:2:3","0:5:2:4","2:88","0:5:3:2","1:10:3","0:5:3:3","2:54","0:5:3:4","2:43","2:92","0:5:4:2","1:10:4","0:5:4:3","2:57","0:5:4:4","2:96","0:5:5:2","1:10:5","2:25","0:5:5:3","0:5:5:4","2:100"],"variants":[[1,0,1,2,3,4,5],[1,6,1,7,8,5,3,4],[1,9,1,10,11,2,12,4],[1,13,14,15,7,16,5],[1,17,14,18,19,20,3,16],[1,21,14,22,23,15,12,16],[1,24,25,3,12,5,15,26],[1,27,25,12,28,2,3,5],[1,29,25,30,31,3,12,5],[1,32,33,26,10,20,5],[1,34,33,35,36,15,3,20],[1,37,33,38,39,26,12,20],[1,40,41,7,12,5,3],[1,42,41,30,36,15,10,5],[1,43,41,44,45,7,8,5],[1,46,47,18,10,20,3],[1,48,47,38,49,3,10,20],[1,50,47,19,51,18,8,20],[1,52,53,12,30,2,3],[1,54,53,55,56,26,10,2],[1,57,53,58,59,12,8,2],[1,60,61,35,55,15,3],[1,62,61,63,64,7,10,15],[1,65,61,66,67,35,8,15],[1,68,69,10,30,2,12],[1,70,69,44,64,7,8,2],[1,71,69,72,73,10,74,2],[1,75,76,22,55,15,12],[1,77,76,19,78,18,8,15],[1,79,76,80,81,22,74,15],[1,82,83,30,8,3,12],[1,84,83,58,31,12,8,3],[1,85,83,49,86,30,74,3],[1,87,88,38,44,26,12],[1,89,88,66,90,35,8,26],[1,91,88,92,93,38,74,26],[1,94,95,55,8,3,30],[1,96,95,74,90,35,28,3],[1,97,95,64,98,55,11,3],[1,99,100,63,44,26,30],[1,101,100,36,102,10,28,26],[1,103,100,104,105,63,11,26],[1,106,107,8,58,7,30],[1,108,107,72,109,22,28,7],[1,110,107,23,111,8,11,7],[1,112,113,114,28,18,30],[1,115,113,80,51,30,28,18],[1,116,113,78,117,114,11,18]],"weight":48}},"automaton":{"science-cycle":{"title":"Цикл","patterns":["По кругу повторяются числа %d, %d, %d, %d. Какое число стоит на %d-м месте, если отсчёт начинается с %d?","Цикл имеет длину %d. Остаток от деления номера минус один на %d задаёт позицию внутри цикла.","%d"],"strings":["0:2:5:8:11:14:1","1:4:4","2:5","2:2","2:8","2:11","0:2:5:8:11:15:1","0:2:5:8:11:16:1","0:2:5:8:11:17:1","0:2:5:8:11:18:1","0:2:5:8:11:19:1","0:2:5:8:11:20:1","0:2:5:8:11:21:1","0:2:5:8:11:22:1","0:2:5:8:11:23:1","0:2:5:8:11:24:1","0:2:5:8:11:25:1","0:2:5:8:11:26:1","0:2:5:8:11:27:1","0:2:5:8:11:28:1","0:2:5:8:11:29:1","0:2:5:8:11:30:1","0:2:5:8:11:31:1","0:2:5:8:11:32:1","0:2:5:8:11:33:1","0:2:5:8:11:34:1","0:2:5:8:11:35:1","0:2:5:8:11:36:1","0:2:5:8:11:37:1"],"variants":[[4,0,1,2,3,4,5],[4,6,1,4,3,2,5],[4,7,1,5,3,2,4],[4,8,1,3,2,4,5],[4,9,1,2,3,4,5],[4,10,1,4,3,2,5],[4,11,1,5,3,2,4],[4,12,1,3,2,4,5],[4,13,1,2,3,4,5],[4,14,1,4,3,2,5],[4,15,1,5,3,2,4],[4,16,1,3,2,4,5],[4,17,1,2,3,4,5],[4,18,1,4,3,2,5],[4,19,1,5,3,2,4],[4,20,1,3,2,4,5],[4,21,1,2,3,4,5],[4,22,1,4,3,2,5],[4,23,1,5,3,2,4],[4,24,1,3,2,4,5],[4,25,1,2,3,4,5],[4,26,1,4,3,2,5],[4,27,1,5,3,2,4],[4,28,1,3,2,4,5]],"weight":96},"science-decrease":{"title":"Убывание","patterns":["Первый член равен %d, каждый следующий меньше на %d. Чему равен %d-й член?","Нужно выполнить %d уменьшений по %d, всего вычесть %d.","%d"],"strings":["0:9:2:4","1:3:2:6","2:3","2:5","2:7","2:9","0:11:2:5","1:4:2:8","2:11","0:13:2:6","1:5:2:10","2:13","0:15:2:7","1:6:2:12","2:15","0:12:3:4","1:3:3:9","2:6","2:12","0:15:3:5","1:4:3:12","0:18:3:6","1:5:3:15","2:18","0:21:3:7","1:6:3:18","2:21","0:15:4:4","1:3:4:12","0:19:4:5","1:4:4:16","2:19","0:23:4:6","1:5:4:20","2:23","0:27:4:7","1:6:4:24","2:27","0:18:5:4","1:3:5:15","2:8","0:23:5:5","1:4:5:20","0:28:5:6","1:5:5:25","2:28","0:33:5:7","1:6:5:30","2:33","0:10:2:4","2:4","2:10","0:12:2:5","0:14:2:6","2:14","0:16:2:7","2:16","0:13:3:4","0:16:3:5","0:19:3:6","0:22:3:7","2:22","0:16:4:4","0:20:4:5","2:20","0:24:4:6","2:24","0:28:4:7","0:19:5:4","0:24:5:5","0:29:5:6","2:29","0:34:5:7","2:34","0:11:2:4","0:13:2:5","0:15:2:6","0:17:2:7","2:17","0:14:3:4","0:17:3:5","0:20:3:6","0:23:3:7","0:17:4:4","0:21:4:5","0:25:4:6","2:25","0:29:4:7","0:20:5:4","0:25:5:5","0:30:5:6","2:30","0:35:5:7","2:35","0:12:2:4","0:14:2:5","0:16:2:6","0:18:2:7","0:15:3:4","0:18:3:5","0:21:3:6","0:24:3:7","0:18:4:4","0:22:4:5","0:26:4:6","2:26","0:30:4:7","0:21:5:4","0:26:5:5","0:31:5:6","2:31","0:36:5:7","2:36","0:13:2:4","0:15:2:5","0:17:2:6","0:19:2:7","0:16:3:4","0:19:3:5","0:22:3:6","0:25:3:7","0:19:4:4","0:23:4:5","0:27:4:6","0:31:4:7","0:22:5:4","0:27:5:5","0:32:5:6","2:32","0:37:5:7","2:37","0:14:2:4","0:16:2:5","0:18:2:6","0:20:2:7","0:17:3:4","0:20:3:5","0:23:3:6","0:26:3:7","0:20:4:4","0:24:4:5","0:28:4:6","0:32:4:7","0:23:5:4","0:28:5:5","0:33:5:6","0:38:5:7","2:38"],"variants":[[1,0,1,2,3,4,5],[1,6,7,2,3,4,5,8],[1,9,10,2,3,4,8,11],[1,12,13,2,3,4,11,14],[1,15,16,2,17,5,18],[1,19,20,2,17,5,18,14],[1,21,22,2,17,5,14,23],[1,24,25,2,17,5,23,26],[1,27,28,2,4,8,14],[1,29,30,2,4,8,14,31],[1,32,33,2,4,8,31,34],[1,35,36,2,4,8,34,37],[1,38,39,2,40,11,23],[1,41,42,2,40,11,23,34],[1,43,44,2,40,11,34,45],[1,46,47,2,40,11,45,48],[1,49,1,50,17,40,51],[1,52,7,50,17,40,51,18],[1,53,10,50,17,40,18,54],[1,55,13,50,17,40,54,56],[1,57,16,50,4,51,11],[1,58,20,50,4,51,11,56],[1,59,22,50,4,51,56,31],[1,60,25,50,4,51,31,61],[1,62,28,50,40,18,56],[1,63,30,50,40,18,56,64],[1,65,33,50,40,18,64,66],[1,67,36,50,40,18,66,45],[1,68,39,50,5,54,31],[1,69,42,50,5,54,31,66],[1,70,44,50,5,54,66,71],[1,72,47,50,5,54,71,73],[1,74,1,3,4,5,8],[1,75,7,3,4,5,8,11],[1,76,10,3,4,5,11,14],[1,77,13,3,4,5,14,78],[1,79,16,3,40,8,54],[1,80,20,3,40,8,54,78],[1,81,22,3,40,8,78,64],[1,82,25,3,40,8,64,34],[1,83,28,3,5,11,78],[1,84,30,3,5,11,78,26],[1,85,33,3,5,11,26,86],[1,87,36,3,5,11,86,71],[1,88,39,3,51,14,64],[1,89,42,3,51,14,64,86],[1,90,44,3,51,14,86,91],[1,92,47,3,51,14,91,93],[1,94,1,17,40,51,18],[1,95,7,17,40,51,18,54],[1,96,10,17,40,51,54,56],[1,97,13,17,40,51,56,23],[1,98,16,17,5,18,14],[1,99,20,17,5,18,14,23],[1,100,22,17,5,18,23,26],[1,101,25,17,5,18,26,66],[1,102,28,17,51,54,23],[1,103,30,17,51,54,23,61],[1,104,33,17,51,54,61,105],[1,106,36,17,51,54,105,91],[1,107,39,17,8,56,26],[1,108,42,17,8,56,26,105],[1,109,44,17,8,56,105,110],[1,111,47,17,8,56,110,112],[1,113,1,4,5,8,11],[1,114,7,4,5,8,11,14],[1,115,10,4,5,8,14,78],[1,116,13,4,5,8,78,31],[1,117,16,4,51,11,56],[1,118,20,4,51,11,56,31],[1,119,22,4,51,11,31,61],[1,120,25,4,51,11,61,86],[1,121,28,4,8,14,31],[1,122,30,4,8,14,31,34],[1,123,33,4,8,14,34,37],[1,124,36,4,8,14,37,110],[1,125,39,4,18,78,61],[1,126,42,4,18,78,61,37],[1,127,44,4,18,78,37,128],[1,129,47,4,18,78,128,130],[1,131,1,40,51,18,54],[1,132,7,40,51,18,54,56],[1,133,10,40,51,18,56,23],[1,134,13,40,51,18,23,64],[1,135,16,40,8,54,78],[1,136,20,40,8,54,78,64],[1,137,22,40,8,54,64,34],[1,138,25,40,8,54,34,105],[1,139,28,40,18,56,64],[1,140,30,40,18,56,64,66],[1,141,33,40,18,56,66,45],[1,142,36,40,18,56,45,128],[1,143,39,40,11,23,34],[1,144,42,40,11,23,34,45],[1,145,44,40,11,23,45,48],[1,146,47,40,11,23,48,147]],"weight":96},"science-doubling-sum":{"title":"Сумма удвоений","patterns":["Найдите сумму %d чисел: %d, %d, %d, … (каждое следующее вдвое больше).","Сумма первых %d степеней двойки на единицу меньше следующей: %d^%d − %d.","%d"],"strings":["0:3:1:2:4","1:3:2:3:1","2:7","2:3","2:15","2:8","2:4","0:4:1:2:4","1:4:2:4:1","2:31","2:16","0:5:1:2:4","1:5:2:5:1","2:63","2:32","0:6:1:2:4","1:6:2:6:1","2:127","2:64"],"variants":[[24,0,1,2,3,4,5,6],[24,7,8,4,2,9,10,5],[24,11,12,9,4,13,14,10],[24,15,16,13,9,17,18,14]],"weight":96},"science-geometric":{"title":"Геометрический ряд","patterns":["Первое число — %d, каждый следующий член вдвое больше. Чему равен %d-й член?","До %d-го члена происходит %d удвоений.","%d"],"strings":["0:3:3","1:3:2","2:12","2:3","2:6","2:24","2:48","0:3:4","1:4:3","2:96","0:3:5","1:5:4","2:192","0:3:6","1:6:5","2:384","0:4:3","2:16","2:4","2:8","2:32","2:64","0:4:4","2:128","0:4:5","2:256","0:4:6","2:512","0:5:3","2:20","2:5","2:10","2:40","2:80","0:5:4","2:160","0:5:5","2:320","0:5:6","2:640","0:6:3","0:6:4","0:6:5","0:6:6","2:768","0:7:3","2:28","2:7","2:14","2:56","2:112","0:7:4","2:224","0:7:5","2:448","0:7:6","2:896","0:8:3","0:8:4","0:8:5","0:8:6","2:1024"],"variants":[[4,0,1,2,3,4,5,6],[4,7,8,5,3,4,2,6,9],[4,10,11,6,4,2,5,9,12],[4,13,14,9,2,5,6,12,15],[4,16,1,17,18,19,20,21],[4,22,8,20,18,19,17,21,23],[4,24,11,21,19,17,20,23,25],[4,26,14,23,17,20,21,25,27],[4,28,1,29,30,31,32,33],[4,34,8,32,30,31,29,33,35],[4,36,11,33,31,29,32,35,37],[4,38,14,35,29,32,33,37,39],[4,40,1,5,4,2,6,9],[4,41,8,6,4,2,5,9,12],[4,42,11,9,2,5,6,12,15],[4,43,14,12,5,6,9,15,44],[4,45,1,46,47,48,49,50],[4,51,8,49,47,48,46,50,52],[4,53,11,50,48,46,49,52,54],[4,55,14,52,46,49,50,54,56],[4,57,1,20,19,17,21,23],[4,58,8,21,19,17,20,23,25],[4,59,11,23,17,20,21,25,27],[4,60,14,25,20,21,23,27,61]],"weight":96},"science-missing":{"title":"Восстановить шаг","patterns":["В арифметическом ряду первый член %d, пятый — %d. Чему равен третий?","Между первым и пятым четыре одинаковых шага, значит шаг %d. Третий отстоит от первого на два шага.","%d"],"strings":["0:3:11","1:2","2:7","2:5","2:9","2:11","2:4","0:3:15","1:3","2:6","2:12","2:15","0:3:19","1:4","2:19","2:8","0:3:23","1:5","2:13","2:18","2:23","2:10","0:4:12","0:4:16","2:16","0:4:20","2:20","0:4:24","2:14","2:24","0:5:13","0:5:17","2:17","0:5:21","2:21","0:5:25","2:25","0:6:14","0:6:18","0:6:22","2:22","0:6:26","2:26","0:7:15","0:7:19","0:7:23","0:7:27","2:27","0:8:16","0:8:20","0:8:24","0:8:28","2:28"],"variants":[[4,0,1,2,3,4,5,6],[4,7,8,4,9,10,11],[4,12,13,5,2,11,14,15],[4,16,17,18,15,19,20,21],[4,22,1,15,9,21,10,6],[4,23,8,21,2,18,24,9],[4,25,13,10,15,24,26],[4,27,17,28,4,14,29,21],[4,30,1,4,2,5,18,6],[4,31,8,5,15,28,32,9],[4,33,13,18,4,32,34,15],[4,35,17,11,21,26,36],[4,37,1,21,15,10,28,6],[4,38,8,10,4,11,19,9],[4,39,13,28,21,19,40,15],[4,41,17,24,5,34,42,21],[4,43,1,5,4,18,11,6],[4,44,8,18,21,24,14,9],[4,45,13,11,5,14,20,15],[4,46,17,32,10,40,47,21],[4,48,1,10,21,28,24,6],[4,49,8,28,5,32,26,9],[4,50,13,24,10,26,29,15],[4,51,17,19,18,20,52,21]],"weight":96},"science-nth":{"title":"Нужный член","patterns":["Первое число ряда — %d, каждый следующий член больше на %d. Чему равен %d-й член?","От первого до %d-го члена %d переходов. Прибавляем %d столько раз.","%d"],"strings":["0:3:2:3","1:3:2:2","2:7","2:9","2:5","2:8","2:11","0:3:2:4","1:4:3:2","2:14","0:3:2:5","1:5:4:2","2:13","2:10","2:17","0:3:2:6","1:6:5:2","2:15","2:20","0:3:3:3","1:3:2:3","2:12","2:6","0:3:3:4","1:4:3:3","0:3:3:5","1:5:4:3","2:18","0:3:3:6","1:6:5:3","2:21","0:3:4:3","1:3:2:4","0:3:4:4","1:4:3:4","2:19","2:16","0:3:4:5","1:5:4:4","2:23","0:3:4:6","1:6:5:4","2:27","2:22","0:3:5:3","1:3:2:5","0:3:5:4","1:4:3:5","0:3:5:5","1:5:4:5","2:28","0:3:5:6","1:6:5:5","2:33","0:4:2:3","0:4:2:4","0:4:2:5","0:4:2:6","2:26","0:4:3:3","0:4:3:4","0:4:3:5","0:4:3:6","0:4:4:3","0:4:4:4","0:4:4:5","2:24","0:4:4:6","0:4:5:3","0:4:5:4","0:4:5:5","2:29","2:25","0:4:5:6","2:34","0:5:2:3","0:5:2:4","0:5:2:5","0:5:2:6","2:32","0:5:3:3","0:5:3:4","0:5:3:5","0:5:3:6","0:5:4:3","0:5:4:4","0:5:4:5","0:5:4:6","0:5:5:3","0:5:5:4","0:5:5:5","2:30","0:5:5:6","2:35","0:6:2:3","0:6:2:4","0:6:2:5","0:6:2:6","2:38","0:6:3:3","0:6:3:4","0:6:3:5","0:6:3:6","2:39","0:6:4:3","0:6:4:4","0:6:4:5","0:6:4:6","2:40","0:6:5:3","0:6:5:4","0:6:5:5","2:31","0:6:5:6","2:36","2:41","0:7:2:3","0:7:2:4","0:7:2:5","2:37","0:7:2:6","2:44","0:7:3:3","0:7:3:4","0:7:3:5","0:7:3:6","2:45","0:7:4:3","0:7:4:4","0:7:4:5","0:7:4:6","2:46","0:7:5:3","0:7:5:4","0:7:5:5","0:7:5:6","2:47","0:8:2:3","0:8:2:4","0:8:2:5","2:42","0:8:2:6","2:50","0:8:3:3","0:8:3:4","0:8:3:5","2:43","0:8:3:6","2:51","0:8:4:3","0:8:4:4","0:8:4:5","0:8:4:6","2:52","0:8:5:3","0:8:5:4","0:8:5:5","0:8:5:6","2:53"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,3,6,2,9],[1,10,11,6,12,3,13,14],[1,15,16,12,17,6,18],[1,19,20,3,21,22,5,13],[1,23,24,21,17,3,13],[1,25,26,17,27,21,6],[1,28,29,27,30,17,21],[1,31,32,6,17,2,13,12],[1,33,34,17,35,6,36],[1,37,38,35,39,17,21],[1,40,41,39,42,35,12,43],[1,44,45,12,27,5,6,9],[1,46,47,27,39,12,21,14],[1,48,49,39,50,27,12,18],[1,51,52,50,53,39,9],[1,54,1,5,13,22,3,9],[1,55,8,13,21,5,27],[1,56,11,21,9,13,6,43],[1,57,16,9,36,21,58],[1,59,20,13,12,2,17],[1,60,24,12,36,13,6,35],[1,61,26,36,35,12,21,39],[1,62,29,35,43,36,12,42],[1,63,32,21,36,5,6],[1,64,34,36,18,21,17,14],[1,65,38,18,66,36,12],[1,67,41,66,50,18,9],[1,68,45,9,35,3,21,14],[1,69,47,35,66,9,12,30],[1,70,49,66,71,35,9,72],[1,73,52,71,74,66,17],[1,75,1,3,6,2,13,14],[1,76,8,6,12,3,43],[1,77,11,12,17,6,21,42],[1,78,16,17,14,12,79],[1,80,20,6,9,5,27],[1,81,24,9,14,6,21,39],[1,82,26,14,18,9,12,50],[1,83,29,18,39,14,9,53],[1,84,32,12,14,3,21,35],[1,85,34,14,30,12,66],[1,86,38,30,72,14,9,71],[1,87,41,72,71,30,17,74],[1,88,45,17,18,13,12],[1,89,47,18,72,17,9],[1,90,49,72,91,18,17],[1,92,52,91,93,72,36],[1,94,1,13,21,5,6,18],[1,95,8,21,9,13,58],[1,96,11,9,36,21,12,79],[1,97,16,36,27,9,98],[1,99,20,21,17,3,30],[1,100,24,17,27,21,12,42],[1,101,26,27,30,17,9,53],[1,102,29,30,66,27,17,103],[1,104,32,9,27,13,12,43],[1,105,34,27,43,9,50],[1,106,38,43,58,27,17,74],[1,107,41,58,91,43,36,108],[1,109,45,36,30,6,9,39],[1,110,47,30,58,36,17,71],[1,111,49,58,112,30,36,93],[1,113,52,112,114,58,14,115],[1,116,1,6,12,3,21,39],[1,117,8,12,17,6,91],[1,118,11,17,14,12,9,119],[1,120,16,14,35,17,121],[1,122,20,12,36,13,66],[1,123,24,36,35,12,9,112],[1,124,26,35,43,36,17,98],[1,125,29,43,72,35,36,126],[1,127,32,17,35,6,9,72],[1,128,34,35,39,17,79],[1,129,38,39,42,35,36,103],[1,130,41,42,112,39,14,131],[1,132,45,14,43,21,17,58],[1,133,47,43,42,14,36,53],[1,134,49,42,79,43,14,108],[1,135,52,79,119,42,27,136],[1,137,1,21,9,13,12,58],[1,138,8,9,36,21,74],[1,139,11,36,27,9,17,140],[1,141,16,27,18,36,142],[1,143,20,9,14,6,42],[1,144,24,14,18,9,17,93],[1,145,26,18,39,14,36,146],[1,147,29,39,58,18,14,148],[1,149,32,36,18,21,17,50],[1,150,34,18,66,36,114],[1,151,38,66,50,18,14,121],[1,152,41,50,79,66,27,153],[1,154,45,27,39,12,36,71],[1,155,47,39,50,27,14,119],[1,156,49,50,53,39,27,126],[1,157,52,53,98,50,35,158]],"weight":96},"science-odd-sum":{"title":"Нечётные числа","patterns":["Чему равна сумма первых %d положительных нечётных чисел: %d + %d + %d + …?","Сумма первых n нечётных чисел равна n². Здесь n = %d.","%d"],"strings":["0:3:1:3:5","1:3","2:9","2:4","2:16","2:6","2:5","0:4:1:3:5","1:4","2:25","2:10","2:7","0:5:1:3:5","1:5","2:36","2:15","0:6:1:3:5","1:6","2:49","2:21","2:11","0:7:1:3:5","1:7","2:64","2:28","2:13","0:8:1:3:5","1:8","2:81"],"variants":[[16,0,1,2,3,4,5,6],[16,7,8,4,2,9,10,11],[16,12,13,9,4,14,15,2],[16,16,17,14,9,18,19,20],[16,21,22,18,14,23,24,25],[16,26,27,23,18,28,14,15]],"weight":96},"science-period":{"title":"Период встречи","patterns":["Два прибора посылают импульс каждые %d и %d секунд. Сейчас импульсы совпали. Через сколько секунд будет следующее совпадение?","Ищем наименьшее общее кратное %d и %d: это %d.","%d с"],"strings":["0:4:6","1:4:6:12","2:12","2:4","2:6","2:10","2:24","0:6:9","1:6:9:18","2:18","2:9","2:15","2:54","2:36","0:8:12","1:8:12:24","2:8","2:20","2:96","2:48","0:10:15","1:10:15:30","2:30","2:25","2:150","2:60"],"variants":[[24,0,1,2,3,4,5,6],[24,7,8,9,4,10,11,12,13],[24,14,15,6,16,2,17,18,19],[24,20,21,22,5,11,23,24,25]],"weight":96},"science-recurrence":{"title":"Два предыдущих","patterns":["Каждое следующее число равно сумме двух предыдущих. Ряд начинается с %d, %d. Чему равен пятый член?","Третий — %d, четвёртый — %d, пятый — %d.","%d"],"strings":["0:3:2","1:5:7:12","2:12","2:7","2:5","2:19","2:10","0:3:3","1:6:9:15","2:15","2:9","2:6","2:24","0:3:4","1:7:11:18","2:18","2:11","2:29","2:14","0:3:5","1:8:13:21","2:21","2:13","2:8","2:34","2:16","0:4:2","1:6:8:14","2:22","0:4:3","1:7:10:17","2:17","2:27","0:4:4","1:8:12:20","2:20","2:32","0:4:5","1:9:14:23","2:23","2:37","0:5:2","1:7:9:16","2:25","0:5:3","1:8:11:19","2:30","0:5:4","1:9:13:22","2:35","0:5:5","1:10:15:25","2:40","0:6:2","1:8:10:18","2:28","0:6:3","1:9:12:21","2:33","0:6:4","1:10:14:24","2:38","0:6:5","1:11:16:27","2:43","0:7:2","1:9:11:20","2:31","0:7:3","1:10:13:23","2:36","0:7:4","1:11:15:26","2:26","2:41","0:7:5","1:12:17:29","2:46","0:8:2","1:10:12:22","0:8:3","1:11:14:25","2:39","0:8:4","1:12:16:28","2:44","0:8:5","1:13:18:31","2:49"],"variants":[[4,0,1,2,3,4,5,6],[4,7,8,9,10,11,12,2],[4,13,14,15,16,3,17,18],[4,19,20,21,22,23,24,25],[4,26,27,18,23,11,28,2],[4,29,30,31,6,3,32,18],[4,33,34,35,2,23,36,25],[4,37,38,39,18,10,40,15],[4,41,42,25,10,3,43,18],[4,44,45,5,16,23,46,25],[4,47,48,28,22,10,49,15],[4,50,51,43,9,6,52,35],[4,53,54,15,6,23,55,25],[4,56,57,21,2,10,58,15],[4,59,60,12,18,6,61,35],[4,62,63,32,25,16,64,28],[4,65,66,35,16,10,67,15],[4,68,69,39,22,6,70,35],[4,71,72,73,9,16,74,28],[4,75,76,17,31,2,77,12],[4,78,79,28,2,6,24,35],[4,80,81,43,18,16,82,28],[4,83,84,55,25,2,85,12],[4,86,87,67,15,22,88,73]],"weight":96},"science-squares":{"title":"Квадраты","patterns":["В ряду квадратов чисел после %d идёт какое число?","%d — это %d². Следующим будет квадрат %d.","%d"],"strings":["0:9","1:9:3:4","2:16","2:9","2:25","2:36","2:4","0:16","1:16:4:5","2:49","0:25","1:25:5:6","2:64","0:36","1:36:6:7","2:81","0:49","1:49:7:8","2:100","0:64","1:64:8:9","2:121"],"variants":[[16,0,1,2,3,4,5,6],[16,7,8,4,2,5,9,3],[16,10,11,5,4,9,12,2],[16,13,14,9,5,12,15,4],[16,16,17,12,9,15,18,5],[16,19,20,15,12,18,21,9]],"weight":96},"science-sum":{"title":"Сумма ряда","patterns":["Найдите сумму первых %d членов ряда: %d, %d, %d, …","Последний член — %d. Сумма равна (первый + последний) × число членов ÷ %d.","%d"],"strings":["0:3:3:5:7","1:7:2","2:15","2:30","2:7","2:9","2:21","0:4:3:5:7","1:9:2","2:24","2:48","2:12","2:36","0:5:3:5:7","1:11:2","2:35","2:70","2:11","2:55","0:6:3:5:7","1:13:2","2:96","2:13","2:18","2:78","0:3:3:6:9","2:27","0:4:3:6:9","1:12:2","2:60","0:5:3:6:9","1:15:2","2:45","2:90","2:75","0:6:3:6:9","1:18:2","2:63","2:126","2:108","0:3:3:7:11","2:42","2:33","0:4:3:7:11","2:72","0:5:3:7:11","1:19:2","2:110","2:19","2:95","0:6:3:7:11","1:23:2","2:156","2:23","2:138","0:3:3:8:13","2:39","0:4:3:8:13","2:84","0:5:3:8:13","2:65","2:130","2:115","0:6:3:8:13","1:28:2","2:93","2:186","2:28","2:168","0:3:4:6:8","1:8:2","2:8","0:4:4:6:8","1:10:2","2:56","2:10","2:16","2:40","0:5:4:6:8","2:80","2:20","0:6:4:6:8","1:14:2","2:54","2:14","0:3:4:7:10","0:4:4:7:10","2:34","2:68","2:52","0:5:4:7:10","1:16:2","2:50","2:100","0:6:4:7:10","2:69","2:114","0:3:4:8:12","0:4:4:8:12","2:64","0:5:4:8:12","1:20:2","2:120","0:6:4:8:12","1:24:2","2:144","0:3:4:9:14","0:4:4:9:14","2:46","2:92","2:76","0:5:4:9:14","2:140","0:6:4:9:14","1:29:2","2:99","2:198","2:29","2:174","0:3:5:7:9","0:4:5:7:9","2:32","2:44","0:5:5:7:9","2:25","0:6:5:7:9","0:3:5:8:11","0:4:5:8:11","2:38","0:5:5:8:11","1:17:2","2:17","2:85","0:6:5:8:11","2:150","0:3:5:9:13","0:4:5:9:13","2:88","0:5:5:9:13","1:21:2","2:105","0:6:5:9:13","1:25:2","2:180","0:3:5:10:15","0:4:5:10:15","0:5:5:10:15","2:125","0:6:5:10:15","1:30:2","2:210","0:3:6:8:10","0:4:6:8:10","0:5:6:8:10","0:6:6:8:10","2:66","2:132","0:3:6:9:12","0:4:6:9:12","0:5:6:9:12","0:6:6:9:12","2:81","2:162","0:3:6:10:14","0:4:6:10:14","0:5:6:10:14","1:22:2","2:22","0:6:6:10:14","1:26:2","2:192","2:26","0:3:6:11:16","0:4:6:11:16","0:5:6:11:16","2:160","0:6:6:11:16","1:31:2","2:111","2:222","2:31","0:3:7:9:11","0:4:7:9:11","0:5:7:9:11","0:6:7:9:11","2:102","0:3:7:10:13","0:4:7:10:13","0:5:7:10:13","0:6:7:10:13","2:87","0:3:7:11:15","0:4:7:11:15","2:104","0:5:7:11:15","0:6:7:11:15","1:27:2","2:204","0:3:7:12:17","2:51","0:4:7:12:17","2:58","2:116","0:5:7:12:17","2:170","2:135","0:6:7:12:17","1:32:2","2:117","2:234","0:3:8:10:12","0:4:8:10:12","0:5:8:10:12","0:6:8:10:12","0:3:8:11:14","0:4:8:11:14","0:5:8:11:14","0:6:8:11:14","0:3:8:12:16","0:4:8:12:16","2:112","0:5:8:12:16","0:6:8:12:16","2:216","0:3:8:13:18","0:4:8:13:18","2:62","2:124","0:5:8:13:18","0:6:8:13:18","1:33:2","2:123","2:246"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,9,10,5,11,12],[1,13,14,15,16,17,2,18],[1,19,20,10,21,22,23,24],[1,25,8,23,12,5,26],[1,27,28,3,29,11,10],[1,30,31,32,33,2,34],[1,35,36,37,38,23,39],[1,40,14,6,41,17,5,42],[1,43,31,12,44,2,11,29],[1,45,46,18,47,48,2,49],[1,50,51,24,52,53,23,54],[1,55,20,9,10,22,5,56],[1,57,36,41,58,23,11,44],[1,59,51,60,61,53,2,62],[1,63,64,65,66,67,23,68],[1,69,70,23,12,71,11,9],[1,72,73,67,74,75,76,77],[1,78,28,77,79,11,80,29],[1,81,82,83,39,84,9,58],[1,85,73,6,41,75,11,3],[1,86,20,87,88,22,76,89],[1,90,91,92,93,76,80,79],[1,94,46,95,54,48,9,96],[1,97,28,9,10,11,12],[1,98,91,77,79,76,99],[1,100,101,29,102,80,93],[1,103,104,58,68,9,105],[1,106,82,26,83,84,11,41],[1,107,46,108,109,48,76,110],[1,111,104,16,112,9,80,102],[1,113,114,115,116,117,9,118],[1,119,8,6,41,5,2,26],[1,120,14,121,99,17,80,122],[1,123,20,32,33,22,124,60],[1,125,31,29,102,2,3,33],[1,126,14,9,10,17,2,42],[1,127,82,128,110,84,80,74],[1,129,130,18,47,131,124,132],[1,133,101,34,134,80,3,102],[1,135,20,26,83,22,2,56],[1,136,130,122,137,131,80,88],[1,138,139,60,61,6,124,140],[1,141,142,33,143,124,3,134],[1,144,31,3,29,2,32],[1,145,101,92,93,80,79],[1,146,142,34,134,124,147],[1,148,149,140,150,3,143],[1,151,73,9,10,75,23,3],[1,152,28,12,44,11,9,10],[1,153,82,92,93,84,3,16],[1,154,91,155,156,76,12,21],[1,157,28,26,83,11,23,12],[1,158,31,41,58,2,9,29],[1,159,36,29,102,23,3,33],[1,160,139,161,162,6,12,38],[1,163,82,3,29,84,23,41],[1,164,36,10,21,23,9,44],[1,165,166,16,112,167,3,47],[1,168,169,21,170,171,12,52],[1,172,91,42,155,76,23,10],[1,173,139,83,39,6,9,58],[1,174,169,79,175,171,3,61],[1,176,177,178,179,180,12,66],[1,181,14,26,83,17,6,42],[1,182,20,77,79,22,67,89],[1,183,31,18,47,2,15,34],[1,184,130,44,105,131,41,185],[1,186,20,3,29,22,6,56],[1,187,91,108,109,76,67,99],[1,188,46,60,61,48,15,49],[1,189,166,190,118,167,41,156],[1,191,31,42,155,2,6,32],[1,192,46,89,193,48,67,110],[1,194,51,34,134,53,15,62],[1,195,196,185,197,26,41,162],[1,198,130,12,44,131,6,199],[1,200,166,201,202,167,67,137],[1,203,196,132,204,26,15,205],[1,206,207,208,209,121,41,170],[1,210,28,3,29,11,9,12],[1,211,82,122,137,84,121,74],[1,212,91,29,102,76,77,79],[1,213,36,24,52,23,10,39],[1,214,82,42,155,84,9,41],[1,215,130,92,93,131,121,88],[1,216,101,16,112,80,77,93],[1,217,51,65,66,53,10,54],[1,218,91,12,44,76,9,10],[1,219,101,74,220,80,121,79],[1,221,104,79,175,9,77,102],[1,222,64,39,223,67,10,68],[1,224,36,56,24,23,9,83],[1,225,51,226,227,53,121,109],[1,228,64,33,143,67,77,112],[1,229,230,231,232,42,10,116]],"weight":96},"science-triangular":{"title":"Ряды мест","patterns":["В первом ряду %d место, во втором %d, и так до %d-го ряда. Сколько всего мест?","Сумма от %d до %d равна %d × %d ÷ %d.","%d"],"strings":["0:1:2:3","1:1:3:3:4:2","2:6","2:3","2:12","2:10","2:9","0:1:2:4","1:1:4:4:5:2","2:20","2:15","2:16","0:1:2:5","1:1:5:5:6:2","2:30","2:21","2:25","0:1:2:6","1:1:6:6:7:2","2:42","2:28","2:36","0:1:2:7","1:1:7:7:8:2","2:56","2:49","0:1:2:8","1:1:8:8:9:2","2:72","2:45","2:64"],"variants":[[16,0,1,2,3,4,5,6],[16,7,8,5,2,9,10,11],[16,12,13,10,5,14,15,16],[16,17,18,15,10,19,20,21],[16,22,23,20,15,24,21,25],[16,26,27,21,20,28,29,30]],"weight":96}},"binary":{"science-age":{"title":"Возраст","patterns":["Брат старше сестры на %d лет. Сумма их возрастов — %d. Сколько лет сестре?","Вычитаем разницу и делим сумму пополам: (%d − %d) ÷ %d.","%d"],"strings":["0:2:8","1:8:2:2","2:3","2:5","2:6","2:4","0:3:9","1:9:3:2","2:2","0:4:10","1:10:4:2","2:7","0:5:11","1:11:5:2","2:8","2:1","0:2:10","1:10:2:2","0:3:11","1:11:3:2","0:4:12","1:12:4:2","0:5:13","1:13:5:2","2:9","0:2:12","1:12:2:2","2:10","0:3:13","1:13:3:2","0:4:14","1:14:4:2","0:5:15","1:15:5:2","0:2:14","1:14:2:2","2:12","0:3:15","1:15:3:2","0:4:16","1:16:4:2","0:5:17","1:17:5:2","2:11","0:2:16","1:16:2:2","2:14","0:3:17","1:17:3:2","0:4:18","1:18:4:2","0:5:19","1:19:5:2","0:2:18","1:18:2:2","2:16","0:3:19","1:19:3:2","2:13","0:4:20","1:20:4:2","0:5:21","1:21:5:2","0:2:20","1:20:2:2","2:18","0:3:21","1:21:3:2","2:15","0:4:22","1:22:4:2","0:5:23","1:23:5:2"],"variants":[[4,0,1,2,3,4,5],[4,6,7,2,4,5,8],[4,9,10,2,11,4,3,8],[4,12,13,2,14,4,3,15],[4,16,17,5,4,14,3],[4,18,19,5,11,14,3],[4,20,21,5,14,4,2,3],[4,22,23,5,24,14,4,2],[4,25,26,3,11,27,4,14],[4,28,29,3,14,27,4,11],[4,30,31,3,24,27,11,4],[4,32,33,3,27,11,5,4],[4,34,35,4,14,36,11,27],[4,37,38,4,24,36,11],[4,39,40,4,27,36,14],[4,41,42,4,43,36,14,11],[4,44,45,11,24,46,14,36],[4,47,48,11,27,46,14,43],[4,49,50,11,43,46,24,27],[4,51,52,11,36,46,24],[4,53,54,14,27,55,24,46],[4,56,57,14,43,55,24,58],[4,59,60,14,36,55,27],[4,61,62,14,58,55,27,43],[4,63,64,24,43,65,27,55],[4,66,67,24,36,65,27,68],[4,69,70,24,58,65,43,46],[4,71,72,24,46,65,43,58]],"weight":112},"science-both-sides":{"title":"По обе стороны","patterns":["Решите: %dx + %d = %dx + %d.","Вычитаем %dx и %d из обеих частей. Остаётся x = %d.","%d","-%d"],"strings":["0:3:2:2:5","1:2:2:3","2:3","2:5","2:1","2:6","3:3","0:3:3:2:6","1:2:3:3","2:0","0:3:4:2:7","1:2:4:3","2:7","3:1","0:3:5:2:8","1:2:5:3","2:8","3:2","0:4:2:3:5","1:3:2:3","2:9","0:4:3:3:6","1:3:3:3","0:4:4:3:7","1:3:4:3","0:4:5:3:8","1:3:5:3","0:5:2:4:5","1:4:2:3","2:12","0:5:3:4:6","1:4:3:3","0:5:4:4:7","1:4:4:3","0:5:5:4:8","1:4:5:3","0:6:2:5:5","1:5:2:3","2:15","0:6:3:5:6","1:5:3:3","0:6:4:5:7","1:5:4:3","0:6:5:5:8","1:5:5:3","0:3:2:2:6","1:2:2:4","2:4","2:2","3:4","0:3:3:2:7","1:2:3:4","0:3:4:2:8","1:2:4:4","0:3:5:2:9","1:2:5:4","0:4:2:3:6","1:3:2:4","0:4:3:3:7","1:3:3:4","0:4:4:3:8","1:3:4:4","0:4:5:3:9","1:3:5:4","0:5:2:4:6","1:4:2:4","2:16","0:5:3:4:7","1:4:3:4","0:5:4:4:8","1:4:4:4","0:5:5:4:9","1:4:5:4","0:6:2:5:6","1:5:2:4","2:20","0:6:3:5:7","1:5:3:4","0:6:4:5:8","1:5:4:4","0:6:5:5:9","1:5:5:4","0:3:2:2:7","1:2:2:5","2:10","3:5","0:3:3:2:8","1:2:3:5","0:3:4:2:9","1:2:4:5","0:3:5:2:10","1:2:5:5","0:4:2:3:7","1:3:2:5","0:4:3:3:8","1:3:3:5","0:4:4:3:9","1:3:4:5","0:4:5:3:10","1:3:5:5","0:5:2:4:7","1:4:2:5","0:5:3:4:8","1:4:3:5","0:5:4:4:9","1:4:4:5","0:5:5:4:10","1:4:5:5","0:6:2:5:7","1:5:2:5","2:25","0:6:3:5:8","1:5:3:5","0:6:4:5:9","1:5:4:5","0:6:5:5:10","1:5:5:5","0:3:2:2:8","1:2:2:6","3:6","0:3:3:2:9","1:2:3:6","0:3:4:2:10","1:2:4:6","0:3:5:2:11","1:2:5:6","2:11","0:4:2:3:8","1:3:2:6","2:18","0:4:3:3:9","1:3:3:6","0:4:4:3:10","1:3:4:6","0:4:5:3:11","1:3:5:6","0:5:2:4:8","1:4:2:6","2:24","0:5:3:4:9","1:4:3:6","0:5:4:4:10","1:4:4:6","0:5:5:4:11","1:4:5:6","0:6:2:5:8","1:5:2:6","2:30","0:6:3:5:9","1:5:3:6","0:6:4:5:10","1:5:4:6","0:6:5:5:11","1:5:5:6","0:3:2:2:9","1:2:2:7","2:14","3:7","0:3:3:2:10","1:2:3:7","0:3:4:2:11","1:2:4:7","0:3:5:2:12","1:2:5:7","0:4:2:3:9","1:3:2:7","2:21","0:4:3:3:10","1:3:3:7","0:4:4:3:11","1:3:4:7","0:4:5:3:12","1:3:5:7","0:5:2:4:9","1:4:2:7","2:28","0:5:3:4:10","1:4:3:7","0:5:4:4:11","1:4:4:7","0:5:5:4:12","1:4:5:7","0:6:2:5:9","1:5:2:7","2:35","0:6:3:5:10","1:5:3:7","0:6:4:5:11","1:5:4:7","0:6:5:5:12","1:5:5:7","0:3:2:2:10","1:2:2:8","3:8","0:3:3:2:11","1:2:3:8","0:3:4:2:12","1:2:4:8","0:3:5:2:13","1:2:5:8","2:13","0:4:2:3:10","1:3:2:8","0:4:3:3:11","1:3:3:8","0:4:4:3:12","1:3:4:8","0:4:5:3:13","1:3:5:8","0:5:2:4:10","1:4:2:8","2:32","0:5:3:4:11","1:4:3:8","0:5:4:4:12","1:4:4:8","0:5:5:4:13","1:4:5:8","0:6:2:5:10","1:5:2:8","2:40","0:6:3:5:11","1:5:3:8","0:6:4:5:12","1:5:4:8","0:6:5:5:13","1:5:5:8","0:3:2:2:11","1:2:2:9","3:9","0:3:3:2:12","1:2:3:9","0:3:4:2:13","1:2:4:9","0:3:5:2:14","1:2:5:9","0:4:2:3:11","1:3:2:9","2:27","0:4:3:3:12","1:3:3:9","0:4:4:3:13","1:3:4:9","0:4:5:3:14","1:3:5:9","0:5:2:4:11","1:4:2:9","2:36","0:5:3:4:12","1:4:3:9","0:5:4:4:13","1:4:4:9","0:5:5:4:14","1:4:5:9","0:6:2:5:11","1:5:2:9","2:45","0:6:3:5:12","1:5:3:9","0:6:4:5:13","1:5:4:9","0:6:5:5:14","1:5:5:9"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,5,9,6],[1,10,11,2,12,13,5,6],[1,14,15,2,16,17,5,6],[1,18,19,2,3,4,20,6],[1,21,22,2,5,9,20,6],[1,23,24,2,12,13,20,6],[1,25,26,2,16,17,20,6],[1,27,28,2,3,4,29,6],[1,30,31,2,5,9,29,6],[1,32,33,2,12,13,29,6],[1,34,35,2,16,17,29,6],[1,36,37,2,3,4,38,6],[1,39,40,2,5,9,38,6],[1,41,42,2,12,13,38,6],[1,43,44,2,16,17,38,6],[1,45,46,47,5,48,16,49],[1,50,51,47,12,4,16,49],[1,52,53,47,16,9,49],[1,54,55,47,20,13,16,49],[1,56,57,47,5,48,29,49],[1,58,59,47,12,4,29,49],[1,60,61,47,16,9,29,49],[1,62,63,47,20,13,29,49],[1,64,65,47,5,48,66,49],[1,67,68,47,12,4,66,49],[1,69,70,47,16,9,66,49],[1,71,72,47,20,13,66,49],[1,73,74,47,5,48,75,49],[1,76,77,47,12,4,75,49],[1,78,79,47,16,9,75,49],[1,80,81,47,20,13,75,49],[1,82,83,3,12,2,84,85],[1,86,87,3,16,48,84,85],[1,88,89,3,20,4,84,85],[1,90,91,3,84,9,85],[1,92,93,3,12,2,38,85],[1,94,95,3,16,48,38,85],[1,96,97,3,20,4,38,85],[1,98,99,3,84,9,38,85],[1,100,101,3,12,2,75,85],[1,102,103,3,16,48,75,85],[1,104,105,3,20,4,75,85],[1,106,107,3,84,9,75,85],[1,108,109,3,12,2,110,85],[1,111,112,3,16,48,110,85],[1,113,114,3,20,4,110,85],[1,115,116,3,84,9,110,85],[1,117,118,5,16,47,29,119],[1,120,121,5,20,2,29,119],[1,122,123,5,84,48,29,119],[1,124,125,5,126,4,29,119],[1,127,128,5,16,47,129,119],[1,130,131,5,20,2,129,119],[1,132,133,5,84,48,129,119],[1,134,135,5,126,4,129,119],[1,136,137,5,16,47,138,119],[1,139,140,5,20,2,138,119],[1,141,142,5,84,48,138,119],[1,143,144,5,126,4,138,119],[1,145,146,5,16,47,147,119],[1,148,149,5,20,2,147,119],[1,150,151,5,84,48,147,119],[1,152,153,5,126,4,147,119],[1,154,155,12,20,3,156,157],[1,158,159,12,84,47,156,157],[1,160,161,12,126,2,156,157],[1,162,163,12,29,48,156,157],[1,164,165,12,20,3,166,157],[1,167,168,12,84,47,166,157],[1,169,170,12,126,2,166,157],[1,171,172,12,29,48,166,157],[1,173,174,12,20,3,175,157],[1,176,177,12,84,47,175,157],[1,178,179,12,126,2,175,157],[1,180,181,12,29,48,175,157],[1,182,183,12,20,3,184,157],[1,185,186,12,84,47,184,157],[1,187,188,12,126,2,184,157],[1,189,190,12,29,48,184,157],[1,191,192,16,84,5,66,193],[1,194,195,16,126,3,66,193],[1,196,197,16,29,47,66,193],[1,198,199,16,200,2,66,193],[1,201,202,16,84,5,138,193],[1,203,204,16,126,3,138,193],[1,205,206,16,29,47,138,193],[1,207,208,16,200,2,138,193],[1,209,210,16,84,5,211,193],[1,212,213,16,126,3,211,193],[1,214,215,16,29,47,211,193],[1,216,217,16,200,2,211,193],[1,218,219,16,84,5,220,193],[1,221,222,16,126,3,220,193],[1,223,224,16,29,47,220,193],[1,225,226,16,200,2,220,193],[1,227,228,20,126,12,129,229],[1,230,231,20,29,5,129,229],[1,232,233,20,200,3,129,229],[1,234,235,20,156,47,129,229],[1,236,237,20,126,12,238,229],[1,239,240,20,29,5,238,229],[1,241,242,20,200,3,238,229],[1,243,244,20,156,47,238,229],[1,245,246,20,126,12,247,229],[1,248,249,20,29,5,247,229],[1,250,251,20,200,3,247,229],[1,252,253,20,156,47,247,229],[1,254,255,20,126,12,256,229],[1,257,258,20,29,5,256,229],[1,259,260,20,200,3,256,229],[1,261,262,20,156,47,256,229]],"weight":112},"science-brackets":{"title":"Скобки","patterns":["Решите: %d(x + %d) = %d.","Делим обе части на %d, затем вычитаем %d.","%d","-%d"],"strings":["0:2:2:10","1:2:2","2:3","2:5","2:1","2:6","2:8","0:2:3:12","1:2:3","2:0","2:9","0:2:4:14","1:2:4","2:7","3:1","2:10","0:2:5:16","1:2:5","3:2","2:11","0:3:2:15","1:3:2","2:13","0:3:3:18","1:3:3","2:15","0:3:4:21","1:3:4","2:17","0:3:5:24","1:3:5","2:19","0:4:2:20","1:4:2","2:12","2:18","0:4:3:24","1:4:3","2:21","0:4:4:28","1:4:4","2:24","0:4:5:32","1:4:5","2:27","0:5:2:25","1:5:2","2:23","0:5:3:30","1:5:3","0:5:4:35","1:5:4","2:31","0:5:5:40","1:5:5","2:35","0:2:2:12","2:4","2:2","0:2:3:14","0:2:4:16","0:2:5:18","0:3:2:18","2:16","0:3:3:21","0:3:4:24","2:20","0:3:5:27","2:22","0:4:2:24","0:4:3:28","2:25","0:4:4:32","2:28","0:4:5:36","0:5:2:30","0:5:3:35","2:32","0:5:4:40","2:36","0:5:5:45","2:40","0:2:2:14","0:2:3:16","0:2:4:18","2:14","0:2:5:20","0:3:2:21","0:3:3:24","0:3:4:27","0:3:5:30","0:4:2:28","2:26","0:4:3:32","2:29","0:4:4:36","0:4:5:40","0:5:2:35","2:33","0:5:3:40","2:37","0:5:4:45","2:41","0:5:5:50","2:45","0:2:2:16","0:2:3:18","0:2:4:20","0:2:5:22","0:3:2:24","0:3:3:27","0:3:4:30","0:3:5:33","0:4:2:32","2:30","0:4:3:36","0:4:4:40","0:4:5:44","2:39","0:5:2:40","2:38","0:5:3:45","2:42","0:5:4:50","2:46","0:5:5:55","2:50","0:2:2:18","0:2:3:20","0:2:4:22","0:2:5:24","0:3:2:27","0:3:3:30","0:3:4:33","0:3:5:36","0:4:2:36","2:34","0:4:3:40","0:4:4:44","0:4:5:48","2:43","0:5:2:45","0:5:3:50","2:47","0:5:4:55","2:51","0:5:5:60","2:55","0:2:2:20","0:2:3:22","0:2:4:24","0:2:5:26","0:3:2:30","0:3:3:33","0:3:4:36","0:3:5:39","0:4:2:40","0:4:3:44","0:4:4:48","2:44","0:4:5:52","0:5:2:50","2:48","0:5:3:55","2:52","0:5:4:60","2:56","0:5:5:65","2:60","0:2:2:22","0:2:3:24","0:2:4:26","0:2:5:28","0:3:2:33","0:3:3:36","0:3:4:39","0:3:5:42","0:4:2:44","0:4:3:48","0:4:4:52","0:4:5:56","0:5:2:55","2:53","0:5:3:60","2:57","0:5:4:65","2:61","0:5:5:70","2:65"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,5,9,10],[1,11,12,2,13,14,5,15],[1,16,17,2,6,18,5,19],[1,20,21,2,3,4,10,22],[1,23,24,2,5,9,10,25],[1,26,27,2,13,14,10,28],[1,29,30,2,6,18,10,31],[1,32,33,2,3,4,34,35],[1,36,37,2,5,9,34,38],[1,39,40,2,13,14,34,41],[1,42,43,2,6,18,34,44],[1,45,46,2,3,4,25,47],[1,48,49,2,5,9,25,44],[1,50,51,2,13,14,25,52],[1,53,54,2,6,18,25,55],[1,56,1,57,5,58,6,15],[1,59,8,57,13,4,6,19],[1,60,12,57,6,9,34],[1,61,17,57,10,14,6,22],[1,62,21,57,5,58,34,63],[1,64,24,57,13,4,34,35],[1,65,27,57,6,9,34,66],[1,67,30,57,10,14,34,68],[1,69,33,57,5,58,63,68],[1,70,37,57,13,4,63,71],[1,72,40,57,6,9,63,73],[1,74,43,57,10,14,63,52],[1,75,46,57,5,58,66,73],[1,76,49,57,13,4,66,77],[1,78,51,57,6,9,66,79],[1,80,54,57,10,14,66,81],[1,82,1,3,13,2,15,34],[1,83,8,3,6,58,15,22],[1,84,12,3,10,4,15,85],[1,86,17,3,15,9,25],[1,87,21,3,13,2,25,31],[1,88,24,3,6,58,25,38],[1,89,27,3,10,4,25,47],[1,90,30,3,15,9,25,71],[1,91,33,3,13,2,66,92],[1,93,37,3,6,58,66,94],[1,95,40,3,10,4,66,77],[1,96,43,3,15,9,66,55],[1,97,46,3,13,2,71,98],[1,99,49,3,6,58,71,100],[1,101,51,3,10,4,71,102],[1,103,54,3,15,9,71,104],[1,105,1,5,6,57,34,85],[1,106,8,5,10,2,34,25],[1,107,12,5,15,58,34,63],[1,108,17,5,19,4,34,28],[1,109,21,5,6,57,35,68],[1,110,24,5,10,2,35,41],[1,111,27,5,15,58,35,92],[1,112,30,5,19,4,35,73],[1,113,33,5,6,57,41,114],[1,115,37,5,10,2,41,98],[1,116,40,5,15,58,41,79],[1,117,43,5,19,4,41,118],[1,119,46,5,6,57,114,120],[1,121,49,5,10,2,114,122],[1,123,51,5,15,58,114,124],[1,125,54,5,19,4,114,126],[1,127,1,13,10,3,85,63],[1,128,8,13,15,57,85,28],[1,129,12,13,19,2,85,35],[1,130,17,13,34,58,85,31],[1,131,21,13,10,3,38,71],[1,132,24,13,15,57,38,44],[1,133,27,13,19,2,38,94],[1,134,30,13,34,58,38,52],[1,135,33,13,10,3,73,136],[1,137,37,13,15,57,73,100],[1,138,40,13,19,2,73,81],[1,139,43,13,34,58,73,140],[1,141,46,13,10,3,55,140],[1,142,49,13,15,57,55,143],[1,144,51,13,19,2,55,145],[1,146,54,13,34,58,55,147],[1,148,1,6,15,5,63,35],[1,149,8,6,19,3,63,31],[1,150,12,6,34,57,63,66],[1,151,17,6,22,2,63,38],[1,152,21,6,15,5,41,73],[1,153,24,6,19,3,41,114],[1,154,27,6,34,57,41,77],[1,155,30,6,22,2,41,136],[1,156,33,6,15,5,77,120],[1,157,37,6,19,3,77,102],[1,158,40,6,34,57,77,159],[1,160,43,6,22,2,77,143],[1,161,46,6,15,5,81,162],[1,163,49,6,19,3,81,164],[1,165,51,6,34,57,81,166],[1,167,54,6,22,2,81,168],[1,169,1,10,19,13,35,66],[1,170,8,10,34,5,35,38],[1,171,12,10,22,3,35,68],[1,172,17,10,85,57,35,47],[1,173,21,10,19,13,44,52],[1,174,24,10,34,5,44,98],[1,175,27,10,22,3,44,55],[1,176,30,10,85,57,44,100],[1,177,33,10,19,13,79,122],[1,178,37,10,34,5,79,104],[1,179,40,10,22,3,79,162],[1,180,43,10,85,57,79,145],[1,181,46,10,19,13,104,182],[1,183,49,10,34,5,104,184],[1,185,51,10,22,3,104,186],[1,187,54,10,85,57,104,188]],"weight":112},"science-linear":{"title":"Уравнение","patterns":["Решите: %dx + %d = %d.","Вычитаем %d из обеих частей, затем делим на %d.","%d","-%d"],"strings":["0:2:2:8","1:2:2","2:3","2:6","2:5","2:1","2:8","0:2:3:9","1:3:2","2:0","2:9","0:2:4:10","1:4:2","2:7","3:1","2:10","0:2:5:11","1:5:2","3:2","2:11","0:3:2:11","1:2:3","0:3:3:12","1:3:3","2:12","0:3:4:13","1:4:3","2:13","0:3:5:14","1:5:3","2:14","0:4:2:14","1:2:4","0:4:3:15","1:3:4","2:15","0:4:4:16","1:4:4","2:16","0:4:5:17","1:5:4","2:17","0:5:2:17","1:2:5","0:5:3:18","1:3:5","2:18","0:5:4:19","1:4:5","2:19","0:5:5:20","1:5:5","2:20","0:2:2:10","2:4","2:2","0:2:3:11","0:2:4:12","0:2:5:13","0:3:2:14","0:3:3:15","0:3:4:16","0:3:5:17","0:4:2:18","0:4:3:19","0:4:4:20","0:4:5:21","2:21","0:5:2:22","2:22","0:5:3:23","2:23","0:5:4:24","2:24","0:5:5:25","2:25","0:2:2:12","0:2:3:13","0:2:4:14","0:2:5:15","0:3:2:17","0:3:3:18","0:3:4:19","0:3:5:20","0:4:2:22","0:4:3:23","0:4:4:24","0:4:5:25","0:5:2:27","2:27","0:5:3:28","2:28","0:5:4:29","2:29","0:5:5:30","2:30","0:2:2:14","0:2:3:15","0:2:4:16","0:2:5:17","0:3:2:20","0:3:3:21","0:3:4:22","0:3:5:23","0:4:2:26","2:26","0:4:3:27","0:4:4:28","0:4:5:29","0:5:2:32","2:32","0:5:3:33","2:33","0:5:4:34","2:34","0:5:5:35","2:35","0:2:2:16","0:2:3:17","0:2:4:18","0:2:5:19","0:3:2:23","0:3:3:24","0:3:4:25","0:3:5:26","0:4:2:30","0:4:3:31","2:31","0:4:4:32","0:4:5:33","0:5:2:37","2:37","0:5:3:38","2:38","0:5:4:39","2:39","0:5:5:40","2:40","0:2:2:18","0:2:3:19","0:2:4:20","0:2:5:21","0:3:2:26","0:3:3:27","0:3:4:28","0:3:5:29","0:4:2:34","0:4:3:35","0:4:4:36","2:36","0:4:5:37","0:5:2:42","2:42","0:5:3:43","2:43","0:5:4:44","2:44","0:5:5:45","2:45","0:2:2:20","0:2:3:21","0:2:4:22","0:2:5:23","0:3:2:29","0:3:3:30","0:3:4:31","0:3:5:32","0:4:2:38","0:4:3:39","0:4:4:40","0:4:5:41","2:41","0:5:2:47","2:47","0:5:3:48","2:48","0:5:4:49","2:49","0:5:5:50","2:50"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,3,9,10],[1,11,12,2,3,13,14,15],[1,16,17,2,3,6,18,19],[1,20,21,2,10,4,5,19],[1,22,23,2,10,3,9,24],[1,25,26,2,10,13,14,27],[1,28,29,2,10,6,18,30],[1,31,32,2,24,4,5,30],[1,33,34,2,24,3,9,35],[1,36,37,2,24,13,14,38],[1,39,40,2,24,6,18,41],[1,42,43,2,35,4,5,41],[1,44,45,2,35,3,9,46],[1,47,48,2,35,13,14,49],[1,50,51,2,35,6,18,52],[1,53,1,54,6,3,55,15],[1,56,8,54,6,13,5,19],[1,57,12,54,6,9,24],[1,58,17,54,6,10,14,27],[1,59,21,54,24,3,55,30],[1,60,23,54,24,13,5,35],[1,61,26,54,24,6,9,38],[1,62,29,54,24,10,14,41],[1,63,32,54,38,3,55,46],[1,64,34,54,38,13,5,49],[1,65,37,54,38,6,9,52],[1,66,40,54,38,10,14,67],[1,68,43,54,52,3,55,69],[1,70,45,54,52,13,5,71],[1,72,48,54,52,6,9,73],[1,74,51,54,52,10,14,75],[1,76,1,4,15,13,2,24],[1,77,8,4,15,6,55,27],[1,78,12,4,15,10,5,30],[1,79,17,4,15,9,35],[1,80,21,4,35,13,2,41],[1,81,23,4,35,6,55,46],[1,82,26,4,35,10,5,49],[1,83,29,4,35,15,9,52],[1,84,32,4,52,13,2,69],[1,85,34,4,52,6,55,71],[1,86,37,4,52,10,5,73],[1,87,40,4,52,15,9,75],[1,88,43,4,75,13,2,89],[1,90,45,4,75,6,55,91],[1,92,48,4,75,10,5,93],[1,94,51,4,75,15,9,95],[1,96,1,3,24,6,54,30],[1,97,8,3,24,10,2,35],[1,98,12,3,24,15,55,38],[1,99,17,3,24,19,5,41],[1,100,21,3,46,6,54,52],[1,101,23,3,46,10,2,67],[1,102,26,3,46,15,55,69],[1,103,29,3,46,19,5,71],[1,104,32,3,73,6,54,105],[1,106,34,3,73,10,2,89],[1,107,37,3,73,15,55,91],[1,108,40,3,73,19,5,93],[1,109,43,3,95,6,54,110],[1,111,45,3,95,10,2,112],[1,113,48,3,95,15,55,114],[1,115,51,3,95,19,5,116],[1,117,1,13,30,10,4,38],[1,118,8,13,30,15,54,41],[1,119,12,13,30,19,2,46],[1,120,17,13,30,24,55,49],[1,121,21,13,67,10,4,71],[1,122,23,13,67,15,54,73],[1,123,26,13,67,19,2,75],[1,124,29,13,67,24,55,105],[1,125,32,13,91,10,4,95],[1,126,34,13,91,15,54,127],[1,128,37,13,91,19,2,110],[1,129,40,13,91,24,55,112],[1,130,43,13,116,10,4,131],[1,132,45,13,116,15,54,133],[1,134,48,13,116,19,2,135],[1,136,51,13,116,24,55,137],[1,138,1,6,38,15,3,46],[1,139,8,6,38,19,4,49],[1,140,12,6,38,24,54,52],[1,141,17,6,38,27,2,67],[1,142,21,6,73,15,3,105],[1,143,23,6,73,19,4,89],[1,144,26,6,73,24,54,91],[1,145,29,6,73,27,2,93],[1,146,32,6,110,15,3,114],[1,147,34,6,110,19,4,116],[1,148,37,6,110,24,54,149],[1,150,40,6,110,27,2,131],[1,151,43,6,137,15,3,152],[1,153,45,6,137,19,4,154],[1,155,48,6,137,24,54,156],[1,157,51,6,137,27,2,158],[1,159,1,10,46,19,13,52],[1,160,8,10,46,24,3,67],[1,161,12,10,46,27,4,69],[1,162,17,10,46,30,54,71],[1,163,21,10,89,19,13,93],[1,164,23,10,89,24,3,95],[1,165,26,10,89,27,4,127],[1,166,29,10,89,30,54,110],[1,167,32,10,149,19,13,133],[1,168,34,10,149,24,3,135],[1,169,37,10,149,27,4,137],[1,170,40,10,149,30,54,171],[1,172,43,10,158,19,13,173],[1,174,45,10,158,24,3,175],[1,176,48,10,158,27,4,177],[1,178,51,10,158,30,54,179]],"weight":112},"science-machine":{"title":"Обратный ход","patterns":["Машина сначала прибавляет %d, потом умножает на %d. На выходе %d. Что было на входе?","Идём в обратном порядке: делим на %d, вычитаем %d.","%d","-%d"],"strings":["0:2:2:10","1:2:2","2:3","2:5","2:8","2:6","2:1","0:2:3:15","1:3:2","2:13","2:9","0:2:4:20","1:4:2","2:18","2:12","0:2:5:25","1:5:2","2:23","2:15","0:3:2:12","1:2:3","2:0","0:3:3:18","1:3:3","0:3:4:24","1:4:3","2:21","0:3:5:30","1:5:3","2:27","0:4:2:14","1:2:4","2:7","2:10","3:1","0:4:3:21","1:3:4","2:17","0:4:4:28","1:4:4","2:24","0:4:5:35","1:5:4","2:31","0:5:2:16","1:2:5","2:11","3:2","0:5:3:24","1:3:5","2:19","0:5:4:32","1:4:5","0:5:5:40","1:5:5","2:35","0:2:2:12","2:4","2:2","0:2:3:18","2:16","0:2:4:24","2:22","0:2:5:30","2:28","2:20","0:3:2:14","0:3:3:21","0:3:4:28","2:25","0:3:5:35","2:32","0:4:2:16","0:4:3:24","0:4:4:32","0:4:5:40","2:36","0:5:2:18","0:5:3:27","0:5:4:36","0:5:5:45","2:40","0:2:2:14","0:2:3:21","0:2:4:28","2:26","0:2:5:35","2:33","0:3:2:16","0:3:3:24","0:3:4:32","2:29","0:3:5:40","2:37","0:4:2:18","2:14","0:4:3:27","0:4:4:36","0:4:5:45","2:41","0:5:2:20","0:5:3:30","0:5:4:40","0:5:5:50","2:45","0:2:2:16","0:2:3:24","0:2:4:32","2:30","0:2:5:40","2:38","0:3:2:18","0:3:3:27","0:3:4:36","0:3:5:45","2:42","0:4:2:20","0:4:3:30","0:4:4:40","0:4:5:50","2:46","0:5:2:22","0:5:3:33","0:5:4:44","2:39","0:5:5:55","2:50","0:2:2:18","0:2:3:27","0:2:4:36","2:34","0:2:5:45","2:43","0:3:2:20","0:3:3:30","0:3:4:40","0:3:5:50","2:47","0:4:2:22","0:4:3:33","0:4:4:44","0:4:5:55","2:51","0:5:2:24","0:5:3:36","0:5:4:48","0:5:5:60","2:55","0:2:2:20","0:2:3:30","0:2:4:40","0:2:5:50","2:48","0:3:2:22","0:3:3:33","0:3:4:44","0:3:5:55","2:52","0:4:2:24","0:4:3:36","0:4:4:48","2:44","0:4:5:60","2:56","0:5:2:26","0:5:3:39","0:5:4:52","0:5:5:65","2:60","0:2:2:22","0:2:3:33","0:2:4:44","0:2:5:55","2:53","0:3:2:24","0:3:3:36","0:3:4:48","0:3:5:60","2:57","0:4:2:26","0:4:3:39","0:4:4:52","0:4:5:65","2:61","0:5:2:28","0:5:3:42","0:5:4:56","0:5:5:70","2:65"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,3,9,10,6],[1,11,12,2,3,13,14,6],[1,15,16,2,3,17,18,6],[1,19,20,2,5,10,21],[1,22,23,2,5,18,10,21],[1,24,25,2,5,26,14,21],[1,27,28,2,5,29,18,21],[1,30,31,2,32,33,5,34],[1,35,36,2,32,37,10,34],[1,38,39,2,32,40,14,34],[1,41,42,2,32,43,18,34],[1,44,45,2,4,46,5,47],[1,48,49,2,4,50,10,47],[1,51,52,2,4,29,14,47],[1,53,54,2,4,55,18,47],[1,56,1,57,5,33,4,58],[1,59,8,57,5,60,14,58],[1,61,12,57,5,62,60,58],[1,63,16,57,5,64,65,58],[1,66,20,57,32,46,4,6],[1,67,23,57,32,13,14,6],[1,68,25,57,32,69,60,6],[1,70,28,57,32,71,65,6],[1,72,31,57,4,14,21],[1,73,36,57,4,65,14,21],[1,74,39,57,4,64,60,21],[1,75,42,57,4,76,65,21],[1,77,45,57,10,9,4,34],[1,78,49,57,10,62,14,34],[1,79,52,57,10,43,60,34],[1,80,54,57,10,81,65,34],[1,82,1,3,32,14,33,2],[1,83,8,3,32,50,18,2],[1,84,12,3,32,85,65,2],[1,86,16,3,32,87,69,2],[1,88,20,3,4,9,33,58],[1,89,23,3,4,26,18,58],[1,90,25,3,4,91,65,58],[1,92,28,3,4,93,69,58],[1,94,31,3,10,95,33,6],[1,96,36,3,10,17,18,6],[1,97,39,3,10,71,65,6],[1,98,42,3,10,99,69,6],[1,100,45,3,33,18,21],[1,101,49,3,33,69,18,21],[1,102,52,3,33,55,65,21],[1,103,54,3,33,104,69,21],[1,105,1,5,4,95,14,57],[1,106,8,5,4,62,13,57],[1,107,12,5,4,108,40,57],[1,109,16,5,4,110,108,57],[1,111,20,5,10,18,14,2],[1,112,23,5,10,40,13,2],[1,113,25,5,10,87,40,2],[1,114,28,5,10,115,108,2],[1,116,31,5,33,60,14,58],[1,117,36,5,33,85,13,58],[1,118,39,5,33,76,40,58],[1,119,42,5,33,120,108,58],[1,121,45,5,46,37,14,6],[1,122,49,5,46,64,13,6],[1,123,52,5,46,124,40,6],[1,125,54,5,46,126,108,6],[1,127,1,32,10,60,95,3],[1,128,8,32,10,69,26,3],[1,129,12,32,10,130,64,3],[1,131,16,32,10,132,55,3],[1,133,20,32,33,37,95,57],[1,134,23,32,33,29,26,57],[1,135,25,32,33,93,64,57],[1,136,28,32,33,137,55,57],[1,138,31,32,46,13,95,2],[1,139,36,32,46,91,26,2],[1,140,39,32,46,81,64,2],[1,141,42,32,46,142,55,2],[1,143,45,32,14,50,95,58],[1,144,49,32,14,43,26,58],[1,145,52,32,14,132,64,58],[1,146,54,32,14,147,55,58],[1,148,1,4,33,13,60,5],[1,149,8,4,33,64,40,5],[1,150,12,4,33,110,71,5],[1,151,16,4,33,152,81,5],[1,153,20,4,46,50,60,3],[1,154,23,4,46,108,40,3],[1,155,25,4,46,99,71,3],[1,156,28,4,46,157,81,3],[1,158,31,4,14,65,60,57],[1,159,36,4,14,71,40,57],[1,160,39,4,14,161,71,57],[1,162,42,4,14,163,81,57],[1,164,45,4,9,26,60,2],[1,165,49,4,9,130,40,2],[1,166,52,4,9,137,71,2],[1,167,54,4,9,168,81,2],[1,169,1,10,46,65,13,32],[1,170,8,10,46,43,29,32],[1,171,12,10,46,115,76,32],[1,172,16,10,46,173,104,32],[1,174,20,10,14,26,13,5],[1,175,23,10,14,87,29,5],[1,176,25,10,14,104,76,5],[1,177,28,10,14,178,104,5],[1,179,31,10,9,62,13,3],[1,180,36,10,9,55,29,3],[1,181,39,10,9,152,76,3],[1,182,42,10,9,183,104,3],[1,184,45,10,95,17,13,57],[1,185,49,10,95,93,29,57],[1,186,52,10,95,142,76,57],[1,187,54,10,95,188,104,57]],"weight":112},"science-mean":{"title":"Четвёртое число","patterns":["Среднее четырёх чисел равно %d. Три из них: %d, %d, %d. Найдите четвёртое.","Все четыре в сумме дают %d. Из этой суммы вычитаем известные числа.","%d"],"strings":["0:3:2:4:5","1:12","2:1","2:3","2:5","2:4","2:2","0:4:3:5:6","1:16","2:6","0:5:4:6:7","1:20","2:7","2:8","0:6:5:7:8","1:24","2:10","0:7:6:8:9","1:28","2:9","2:12","0:8:7:9:10","1:32","2:14","0:9:8:10:11","1:36","2:11","2:16"],"variants":[[16,0,1,2,3,4,5,6],[16,7,8,6,5,9,3],[16,10,11,3,4,12,13,5],[16,14,15,5,9,13,16,4],[16,17,18,4,12,19,20,9],[16,21,22,9,13,16,23,12],[16,24,25,12,19,26,27,13]],"weight":112},"science-meeting":{"title":"Навстречу","patterns":["Два пешехода идут навстречу со скоростями %d и %d км/ч. Между ними %d км. Через сколько часов встретятся?","Скорость сближения — %d км/ч. Делим расстояние на эту скорость.","%d ч"],"strings":["0:3:2:10","1:5","2:2","2:5","2:4","2:1","2:3","0:3:2:15","2:6","0:3:2:20","2:8","2:7","0:3:2:25","2:10","0:3:3:12","1:6","0:3:3:18","0:3:3:24","0:3:3:30","0:3:4:14","1:7","0:3:4:21","0:3:4:28","0:3:4:35","2:9","0:3:5:16","1:8","0:3:5:24","0:3:5:32","0:3:5:40","0:4:2:12","0:4:2:18","0:4:2:24","0:4:2:30","0:4:3:14","0:4:3:21","0:4:3:28","0:4:3:35","0:4:4:16","0:4:4:24","0:4:4:32","0:4:4:40","0:4:5:18","1:9","0:4:5:27","0:4:5:36","0:4:5:45","0:5:2:14","0:5:2:21","0:5:2:28","0:5:2:35","0:5:3:16","0:5:3:24","0:5:3:32","0:5:3:40","0:5:4:18","0:5:4:27","0:5:4:36","0:5:4:45","0:5:5:20","1:10","0:5:5:30","0:5:5:40","0:5:5:50","0:6:2:16","0:6:2:24","0:6:2:32","0:6:2:40","2:11","0:6:3:18","0:6:3:27","0:6:3:36","0:6:3:45","0:6:4:20","0:6:4:30","0:6:4:40","0:6:4:50","0:6:5:22","1:11","0:6:5:33","0:6:5:44","0:6:5:55","0:7:2:18","0:7:2:27","0:7:2:36","0:7:2:45","2:12","0:7:3:20","0:7:3:30","0:7:3:40","0:7:3:50","0:7:4:22","0:7:4:33","0:7:4:44","0:7:4:55","0:7:5:24","1:12","0:7:5:36","0:7:5:48","0:7:5:60","0:8:2:20","0:8:2:30","0:8:2:40","0:8:2:50","2:13","0:8:3:22","0:8:3:33","0:8:3:44","0:8:3:55","0:8:4:24","0:8:4:36","0:8:4:48","0:8:4:60","0:8:5:26","1:13","0:8:5:39","0:8:5:52","0:8:5:65","0:9:2:22","0:9:2:33","0:9:2:44","0:9:2:55","2:14","0:9:3:24","0:9:3:36","0:9:3:48","0:9:3:60","0:9:4:26","0:9:4:39","0:9:4:52","0:9:4:65","0:9:5:28","1:14","0:9:5:42","0:9:5:56","0:9:5:70"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,6,3,8,2,4],[1,9,1,4,3,10,11,8],[1,12,1,3,13,10,11],[1,14,15,2,8,4,3],[1,16,15,6,8,2,4],[1,17,15,4,8,10,11],[1,18,15,3,8,13,10],[1,19,20,2,11,4,3,8],[1,21,20,6,11,8,2,4],[1,22,20,4,11,10,6,3],[1,23,20,3,11,13,10,24],[1,25,26,2,10,4,3,11],[1,27,26,6,10,8,2,4],[1,28,26,4,10,11,24],[1,29,26,3,10,13,4,8],[1,30,15,2,8,4,5,6],[1,31,15,6,8,11,3],[1,32,15,4,8,10,6,3],[1,33,15,3,8,13,24,11],[1,34,20,2,11,4,8,3],[1,35,20,6,11,8,2,4],[1,36,20,4,11,10,6,3],[1,37,20,3,11,13,24,10],[1,38,26,2,10,4,8],[1,39,26,6,10,8,11],[1,40,26,4,10,6,3],[1,41,26,3,10,13,24],[1,42,43,2,24,4,8,11],[1,44,43,6,24,8,11,10],[1,45,43,4,24,10,6,3],[1,46,43,3,24,13,4,8],[1,47,20,2,11,4,5,6],[1,48,20,6,11,8,10,3],[1,49,20,4,11,10,24,8],[1,50,20,3,11,13,4,8],[1,51,26,2,10,4,11,3],[1,52,26,6,10,8,2,4],[1,53,26,4,10,24,11],[1,54,26,3,10,13,4,8],[1,55,43,2,24,4,11,8],[1,56,43,6,24,8,10,11],[1,57,43,4,24,10,6,3],[1,58,43,3,24,13,4,8],[1,59,60,2,13,4,11],[1,61,60,6,13,8,10],[1,62,60,4,13,10,24],[1,63,60,3,13,4,8],[1,64,26,2,10,4,5,6],[1,65,26,6,10,8,24,3],[1,66,26,4,10,13,8],[1,67,26,3,10,13,68,11],[1,69,43,2,24,4,10,3],[1,70,43,6,24,8,2,4],[1,71,43,4,24,10,13,11],[1,72,43,3,24,13,68,10],[1,73,60,2,13,4,10,8],[1,74,60,6,13,8,24,11],[1,75,60,4,13,10,6,3],[1,76,60,3,13,68,24],[1,77,78,2,68,4,10,11],[1,79,78,6,68,8,24,10],[1,80,78,4,68,10,13,24],[1,81,78,3,68,13,4,8],[1,82,43,2,24,4,5,6],[1,83,43,6,24,8,13,3],[1,84,43,4,24,10,68,8],[1,85,43,3,24,13,86,11],[1,87,60,2,13,4,24,3],[1,88,60,6,13,8,2,4],[1,89,60,4,13,10,68,11],[1,90,60,3,13,86,10],[1,91,78,2,68,4,24,8],[1,92,78,6,68,8,13,11],[1,93,78,4,68,10,6,3],[1,94,78,3,68,13,86,24],[1,95,96,2,86,4,24,11],[1,97,96,6,86,8,13,10],[1,98,96,4,86,10,68,24],[1,99,96,3,86,13,4,8],[1,100,60,2,13,4,5,6],[1,101,60,6,13,8,68,3],[1,102,60,4,13,10,86,8],[1,103,60,3,13,104,11],[1,105,78,2,68,4,13,3],[1,106,78,6,68,8,2,4],[1,107,78,4,68,10,86,11],[1,108,78,3,68,13,104,10],[1,109,96,2,86,4,13,8],[1,110,96,6,86,8,68,11],[1,111,96,4,86,10,6,3],[1,112,96,3,86,13,104,24],[1,113,114,2,104,4,13,11],[1,115,114,6,104,8,68,10],[1,116,114,4,104,10,86,24],[1,117,114,3,104,13,4,8],[1,118,78,2,68,4,5,6],[1,119,78,6,68,8,86,3],[1,120,78,4,68,10,104,8],[1,121,78,3,68,13,122,11],[1,123,96,2,86,4,68,3],[1,124,96,6,86,8,2,4],[1,125,96,4,86,10,104,11],[1,126,96,3,86,13,122,10],[1,127,114,2,104,4,68,8],[1,128,114,6,104,8,86,11],[1,129,114,4,104,10,6,3],[1,130,114,3,104,13,122,24],[1,131,132,2,122,4,68,11],[1,133,132,6,122,8,86,10],[1,134,132,4,122,10,104,24],[1,135,132,3,122,13,4,8]],"weight":112},"science-negative":{"title":"Температура","patterns":["Было −%d °C. Температура выросла на %d градусов, а затем упала на %d. Сколько градусов стало?","После потепления стало %d °C. Вычитаем %d.","%d °C","-%d °C"],"strings":["0:3:5:2","1:2:2","2:0","2:4","2:3","3:3","2:2","0:3:5:3","1:2:3","3:1","2:5","2:1","3:4","0:3:5:4","1:2:4","3:2","2:6","3:5","0:3:5:5","1:2:5","2:7","3:6","0:3:6:2","1:3:2","0:3:6:3","1:3:3","0:3:6:4","1:3:4","0:3:6:5","1:3:5","2:8","0:3:7:2","1:4:2","0:3:7:3","1:4:3","0:3:7:4","1:4:4","0:3:7:5","1:4:5","2:9","0:3:8:2","1:5:2","0:3:8:3","1:5:3","0:3:8:4","1:5:4","0:3:8:5","1:5:5","2:10","0:4:6:2","0:4:6:3","0:4:6:4","0:4:6:5","3:7","0:4:7:2","0:4:7:3","0:4:7:4","0:4:7:5","0:4:8:2","0:4:8:3","0:4:8:4","0:4:8:5","0:4:9:2","0:4:9:3","0:4:9:4","0:4:9:5","0:5:7:2","0:5:7:3","0:5:7:4","0:5:7:5","3:8","0:5:8:2","0:5:8:3","0:5:8:4","0:5:8:5","0:5:9:2","0:5:9:3","0:5:9:4","0:5:9:5","0:5:10:2","0:5:10:3","0:5:10:4","0:5:10:5","0:6:8:2","0:6:8:3","0:6:8:4","0:6:8:5","3:9","0:6:9:2","0:6:9:3","0:6:9:4","0:6:9:5","0:6:10:2","0:6:10:3","0:6:10:4","0:6:10:5","0:6:11:2","0:6:11:3","0:6:11:4","0:6:11:5","0:7:9:2","0:7:9:3","0:7:9:4","0:7:9:5","3:10","0:7:10:2","0:7:10:3","0:7:10:4","0:7:10:5","0:7:11:2","0:7:11:3","0:7:11:4","0:7:11:5","0:7:12:2","0:7:12:3","0:7:12:4","0:7:12:5","0:8:10:2","0:8:10:3","0:8:10:4","0:8:10:5","3:11","0:8:11:2","0:8:11:3","0:8:11:4","0:8:11:5","0:8:12:2","0:8:12:3","0:8:12:4","0:8:12:5","0:8:13:2","2:11","0:8:13:3","0:8:13:4","0:8:13:5","0:9:11:2","0:9:11:3","0:9:11:4","0:9:11:5","3:12","0:9:12:2","0:9:12:3","0:9:12:4","0:9:12:5","0:9:13:2","0:9:13:3","0:9:13:4","0:9:13:5","0:9:14:2","2:12","0:9:14:3","0:9:14:4","0:9:14:5"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,9,10,11,6,12],[1,13,14,15,16,6,11,17],[1,18,19,5,20,4,2,21,6],[1,22,23,11,10,9,3,15,4],[1,24,25,2,16,4,5],[1,26,27,9,20,11,6,12,4],[1,28,29,15,30,6,11,17,4],[1,31,32,6,16,15,10,9,3],[1,33,34,11,20,9,3,15],[1,35,36,2,30,4,5,3],[1,37,38,9,39,11,6,12,3],[1,40,41,4,20,5,16,2,10],[1,42,43,6,30,15,10,9],[1,44,45,11,39,9,3,15,10],[1,46,47,2,48,4,5,10],[1,49,1,2,3,12,6],[1,50,8,9,10,11,4,17,6],[1,51,14,15,16,6,21],[1,52,19,5,20,4,11,53,6],[1,54,23,11,10,9,5,4],[1,55,25,2,16,3,12,4],[1,56,27,9,20,11,4,17],[1,57,29,15,30,6,21,4],[1,58,32,6,16,15,3],[1,59,34,11,20,9,10,5,3],[1,60,36,2,30,3,12],[1,61,38,9,39,11,4,17,3],[1,62,41,4,20,5,9,10],[1,63,43,6,30,15,16,10],[1,64,45,11,39,9,10,5],[1,65,47,2,48,3,12,10],[1,66,1,2,3,10,17,6],[1,67,8,9,10,11,3,21,6],[1,68,14,15,16,6,4,53],[1,69,19,5,20,4,6,70],[1,71,23,11,10,9,16,12,4],[1,72,25,2,16,10,17,4],[1,73,27,9,20,11,3,21,4],[1,74,29,15,30,6,4,53],[1,75,32,6,16,15,20,5,3],[1,76,34,11,20,9,16,12,3],[1,77,36,2,30,10,17,3],[1,78,38,9,39,11,3,21],[1,79,41,4,20,5,30,15,10],[1,80,43,6,30,15,20,5,10],[1,81,45,11,39,9,16,12,10],[1,82,47,2,48,10,17],[1,83,1,2,3,16,21,6],[1,84,8,9,10,11,53,6],[1,85,14,15,16,6,3,70],[1,86,19,5,20,4,87,6],[1,88,23,11,10,9,20,17,4],[1,89,25,2,16,21,4],[1,90,27,9,20,11,10,53,4],[1,91,29,15,30,6,3,70,4],[1,92,32,6,16,15,30,12,3],[1,93,34,11,20,9,17,3],[1,94,36,2,30,16,21,3],[1,95,38,9,39,11,10,53,3],[1,96,41,4,20,5,39,10],[1,97,43,6,30,15,12,10],[1,98,45,11,39,9,20,17,10],[1,99,47,2,48,16,21,10],[1,100,1,2,3,20,53,6],[1,101,8,9,10,11,16,70,6],[1,102,14,15,16,6,10,87],[1,103,19,5,20,4,3,104,6],[1,105,23,11,10,9,30,21,4],[1,106,25,2,16,20,53,4],[1,107,27,9,20,11,16,70,4],[1,108,29,15,30,6,10,87,4],[1,109,32,6,16,15,39,17,3],[1,110,34,11,20,9,30,21,3],[1,111,36,2,30,20,53,3],[1,112,38,9,39,11,16,70,3],[1,113,41,4,20,5,48,12,10],[1,114,43,6,30,15,39,17,10],[1,115,45,11,39,9,30,21,10],[1,116,47,2,48,20,53,10],[1,117,1,2,3,30,70,6],[1,118,8,9,10,11,20,87,6],[1,119,14,15,16,6,104],[1,120,19,5,20,4,10,121,6],[1,122,23,11,10,9,39,53,4],[1,123,25,2,16,30,70,4],[1,124,27,9,20,11,87,4],[1,125,29,15,30,6,16,104,4],[1,126,32,6,16,15,48,21,3],[1,127,34,11,20,9,39,53,3],[1,128,36,2,30,70,3],[1,129,38,9,39,11,20,87,3],[1,130,41,4,20,5,131,17,10],[1,132,43,6,30,15,48,21,10],[1,133,45,11,39,9,53,10],[1,134,47,2,48,30,70,10],[1,135,1,2,3,39,87,6],[1,136,8,9,10,11,30,104,6],[1,137,14,15,16,6,20,121],[1,138,19,5,20,4,16,139,6],[1,140,23,11,10,9,48,70,4],[1,141,25,2,16,39,87,4],[1,142,27,9,20,11,30,104,4],[1,143,29,15,30,6,20,121,4],[1,144,32,6,16,15,131,53,3],[1,145,34,11,20,9,48,70,3],[1,146,36,2,30,39,87,3],[1,147,38,9,39,11,30,104,3],[1,148,41,4,20,5,149,21,10],[1,150,43,6,30,15,131,53,10],[1,151,45,11,39,9,48,70,10],[1,152,47,2,48,39,87,10]],"weight":112},"science-ratio":{"title":"Отношение","patterns":["Числа относятся как %d к %d. Их сумма %d. Чему равно меньшее?","Всего %d частей; одна равна %d. Меньшее число содержит две части.","%d"],"strings":["0:2:4:18","1:6:3","2:6","2:3","2:12","2:8","0:2:5:21","1:7:3","2:15","2:9","0:2:6:24","1:8:3","2:18","2:10","0:2:7:27","1:9:3","2:21","2:11","0:2:4:24","1:6:4","2:4","2:16","0:2:5:28","1:7:4","2:20","0:2:6:32","1:8:4","2:24","0:2:7:36","1:9:4","2:28","2:13","0:2:4:30","1:6:5","2:5","0:2:5:35","1:7:5","2:25","0:2:6:40","1:8:5","2:30","2:14","0:2:7:45","1:9:5","2:35","0:2:4:36","1:6:6","0:2:5:42","1:7:6","0:2:6:48","1:8:6","2:36","0:2:7:54","1:9:6","2:42","2:17","0:2:4:42","1:6:7","2:7","0:2:5:49","1:7:7","0:2:6:56","1:8:7","0:2:7:63","1:9:7","2:49","2:19","0:2:4:48","1:6:8","2:32","0:2:5:56","1:7:8","2:40","0:2:6:64","1:8:8","2:48","0:2:7:72","1:9:8","2:56","0:2:4:54","1:6:9","0:2:5:63","1:7:9","2:45","2:27","0:2:6:72","1:8:9","2:54","2:22","0:2:7:81","1:9:9","2:63","2:23"],"variants":[[4,0,1,2,3,4,5],[4,6,7,2,3,8,9],[4,10,11,2,3,12,4,13],[4,14,15,2,3,16,8,17],[4,18,19,5,20,21,13],[4,22,23,5,20,24,4,17],[4,25,26,5,20,27,21,4],[4,28,29,5,20,30,24,31],[4,32,33,13,34,24,4],[4,35,36,13,34,37,8,31],[4,38,39,13,34,40,24,41],[4,42,43,13,34,44,37,8],[4,45,46,4,2,27,41],[4,47,48,4,2,40,12,8],[4,49,50,4,2,51,27,21],[4,52,53,4,2,54,40,55],[4,56,57,41,58,30,21],[4,59,60,41,58,44,16,55],[4,61,62,41,58,54,30,12],[4,63,64,41,58,65,44,66],[4,67,68,21,5,69,12],[4,70,71,21,5,72,27,66],[4,73,74,21,5,75,69,24],[4,76,77,21,5,78,72,16],[4,79,80,12,9,51,24],[4,81,82,12,9,83,84,16],[4,85,86,12,9,87,51,88],[4,89,90,12,9,91,83,92]],"weight":112},"science-rectangle":{"title":"Прямоугольник","patterns":["Длина прямоугольника в %d раза больше ширины. Периметр — %d м. Найдите ширину.","Полупериметр содержит %d одинаковых частей. Делим его на %d.","%d м"],"strings":["0:2:18","1:3:3","2:3","2:6","2:9","2:5","0:3:24","1:4:4","2:12","0:4:30","1:5:5","2:15","2:7","0:5:36","1:6:6","2:18","2:8","0:2:24","2:4","0:3:32","2:16","0:4:40","2:20","0:5:48","2:24","0:2:30","2:10","0:3:40","0:4:50","2:25","0:5:60","2:30","0:2:36","0:3:48","0:4:60","0:5:72","2:36","2:11","0:2:42","2:14","2:21","0:3:56","2:28","0:4:70","2:35","0:5:84","2:42","0:2:48","0:3:64","2:32","0:4:80","2:40","0:5:96","2:48","2:13","0:2:54","2:27","0:3:72","0:4:90","2:45","0:5:108","2:54"],"variants":[[4,0,1,2,3,4,5],[4,6,7,2,3,4,8],[4,9,10,2,3,8,11,12],[4,13,14,2,3,11,15,16],[4,17,1,18,16,8,3],[4,19,7,18,16,8,20,12],[4,21,10,18,16,20,22],[4,23,14,18,16,22,24,4],[4,25,1,5,26,11,12],[4,27,7,5,26,11,22,16],[4,28,10,5,26,22,29,4],[4,30,14,5,26,29,31],[4,32,1,3,8,15,16],[4,33,7,3,8,15,24,4],[4,34,10,3,8,24,31,26],[4,35,14,3,8,31,36,37],[4,38,1,12,39,40,4],[4,41,7,12,39,40,42,26],[4,43,10,12,39,42,44,37],[4,45,14,12,39,44,46,8],[4,47,1,16,20,24,26],[4,48,7,16,20,24,49,37],[4,50,10,16,20,49,51,8],[4,52,14,16,20,51,53,54],[4,55,1,4,15,56,37],[4,57,7,4,15,56,36,8],[4,58,10,4,15,36,59,54],[4,60,14,4,15,59,61,39]],"weight":112},"science-sequence":{"title":"Пропуск","patterns":["Числа идут с одинаковым шагом: %d, x, %d. Найдите x.","Среднее число находится ровно между крайними: складываем крайние и делим на два.","%d"],"strings":["0:3:7","1","2:5","2:7","2:4","2:10","0:3:9","2:6","2:9","2:12","0:3:11","2:11","2:8","2:14","0:3:13","2:13","2:16","0:4:8","0:4:10","0:4:12","0:4:14","2:18","0:5:9","0:5:11","0:5:13","0:5:15","2:15","2:20","0:6:10","0:6:12","0:6:14","0:6:16","2:22","0:7:11","0:7:13","0:7:15","0:7:17","2:17","2:24","0:8:12","0:8:14","0:8:16","0:8:18","2:26","0:9:13","0:9:15","0:9:17","0:9:19","2:19","2:28"],"variants":[[4,0,1,2,3,4,5],[4,6,1,7,8,9,4],[4,10,1,3,11,12,13,2],[4,14,1,12,15,5,16,2],[4,17,1,7,12,4,9,2],[4,18,1,3,5,7,13,2],[4,19,1,12,9,16,7],[4,20,1,8,13,5,21,7],[4,22,1,3,8,4,13,7],[4,23,1,12,11,7,16],[4,24,1,8,15,12,21,3],[4,25,1,5,26,27,3],[4,28,1,12,5,4,16,3],[4,29,1,8,9,7,21,3],[4,30,1,5,13,12,27],[4,31,1,11,16,5,32,12],[4,33,1,8,11,4,21,12],[4,34,1,5,15,7,27,12],[4,35,1,11,26,12,32,8],[4,36,1,9,37,5,38,8],[4,39,1,5,9,4,27,8],[4,40,1,11,13,7,32,8],[4,41,1,9,16,12,38,5],[4,42,1,15,21,5,43],[4,44,1,11,15,4,32,5],[4,45,1,9,26,7,38,5],[4,46,1,15,37,12,43,11],[4,47,1,13,48,5,49,11]],"weight":112},"science-tickets":{"title":"Билеты","patterns":["Купили %d одинаковых билета и заплатили сбор %d рублей. Всего %d рублей. Сколько стоит билет без сбора?","Убираем сбор и делим оставшуюся сумму на число билетов.","%d руб."],"strings":["0:2:2:8","1","2:3","2:5","2:6","2:4","0:2:3:9","2:2","0:2:4:10","2:7","0:2:5:11","2:8","2:1","0:3:2:11","2:9","0:3:3:12","0:3:4:13","0:3:5:14","0:4:2:14","2:12","2:10","0:4:3:15","0:4:4:16","0:4:5:17","0:5:2:17","2:15","2:13","0:5:3:18","0:5:4:19","2:11","0:5:5:20","0:2:2:10","0:2:3:11","0:2:4:12","0:2:5:13","0:3:2:14","0:3:3:15","0:3:4:16","0:3:5:17","0:4:2:18","2:16","2:14","0:4:3:19","0:4:4:20","0:4:5:21","0:5:2:22","2:20","2:18","0:5:3:23","2:17","0:5:4:24","0:5:5:25","0:2:2:12","0:2:3:13","0:2:4:14","0:2:5:15","0:3:2:17","0:3:3:18","0:3:4:19","0:3:5:20","0:4:2:22","0:4:3:23","0:4:4:24","0:4:5:25","0:5:2:27","2:25","2:23","0:5:3:28","2:22","0:5:4:29","2:21","0:5:5:30","0:2:2:14","0:2:3:15","0:2:4:16","0:2:5:17","0:3:2:20","0:3:3:21","0:3:4:22","0:3:5:23","0:4:2:26","2:24","0:4:3:27","0:4:4:28","0:4:5:29","2:19","0:5:2:32","2:30","2:28","0:5:3:33","2:27","0:5:4:34","2:26","0:5:5:35","0:2:2:16","0:2:3:17","0:2:4:18","0:2:5:19","0:3:2:23","0:3:3:24","0:3:4:25","0:3:5:26","0:4:2:30","0:4:3:31","0:4:4:32","0:4:5:33","0:5:2:37","2:35","2:33","0:5:3:38","2:32","0:5:4:39","2:31","0:5:5:40","0:2:2:18","0:2:3:19","0:2:4:20","0:2:5:21","0:3:2:26","0:3:3:27","0:3:4:28","0:3:5:29","0:4:2:34","0:4:3:35","2:29","0:4:4:36","0:4:5:37","0:5:2:42","2:40","2:38","0:5:3:43","2:37","0:5:4:44","2:36","0:5:5:45","0:2:2:20","0:2:3:21","0:2:4:22","0:2:5:23","0:3:2:29","0:3:3:30","0:3:4:31","0:3:5:32","0:4:2:38","2:34","0:4:3:39","0:4:4:40","0:4:5:41","0:5:2:47","2:45","2:43","0:5:3:48","2:42","0:5:4:49","2:41","0:5:5:50"],"variants":[[1,0,1,2,3,4,5],[1,6,1,2,4,3,7,5],[1,8,1,2,9,4,3,7],[1,10,1,2,11,4,3,12],[1,13,1,2,3,14,4,9],[1,15,1,2,4,14,7,5],[1,16,1,2,9,14,4,3],[1,17,1,2,11,14,4,5],[1,18,1,2,3,19,9,20],[1,21,1,2,4,19,9,14],[1,22,1,2,9,19,11],[1,23,1,2,11,19,9],[1,24,1,2,3,25,11,26],[1,27,1,2,4,25,11,19],[1,28,1,2,9,25,11,29],[1,30,1,2,11,25,20],[1,31,1,5,4,11,2,3],[1,32,1,5,9,11,4,3],[1,33,1,5,11,4,2,3],[1,34,1,5,14,11,4,2],[1,35,1,5,4,19,9,20],[1,36,1,5,9,19,14],[1,37,1,5,11,19,9],[1,38,1,5,14,19,9],[1,39,1,5,4,40,11,41],[1,42,1,5,9,40,11,26],[1,43,1,5,11,40,19],[1,44,1,5,14,40,11,29],[1,45,1,5,4,46,14,47],[1,48,1,5,9,46,14,49],[1,50,1,5,11,46,14,40],[1,51,1,5,14,46,25],[1,52,1,3,9,20,11],[1,53,1,3,11,20,9],[1,54,1,3,14,20,9,4],[1,55,1,3,20,9,5,4],[1,56,1,3,9,25,11,26],[1,57,1,3,11,25,19],[1,58,1,3,14,25,11,29],[1,59,1,3,20,25,11],[1,60,1,3,9,46,14,47],[1,61,1,3,11,46,14,49],[1,62,1,3,14,46,40],[1,63,1,3,20,46,14,25],[1,64,1,3,9,65,20,66],[1,67,1,3,11,65,20,68],[1,69,1,3,14,65,20,70],[1,71,1,3,20,65,46],[1,72,1,4,11,19,20],[1,73,1,4,14,19,11],[1,74,1,4,20,19,11],[1,75,1,4,29,19,11,9],[1,76,1,4,11,47,14,40],[1,77,1,4,14,47,25],[1,78,1,4,20,47,14,41],[1,79,1,4,29,47,14,26],[1,80,1,4,11,81,20,68],[1,82,1,4,14,81,20,70],[1,83,1,4,20,81,46],[1,84,1,4,29,81,20,85],[1,86,1,4,11,87,29,88],[1,89,1,4,14,87,29,90],[1,91,1,4,20,87,29,92],[1,93,1,4,29,87,65],[1,94,1,9,14,41,19],[1,95,1,9,20,41,14,29],[1,96,1,9,29,41,14,20],[1,97,1,9,19,41,14],[1,98,1,9,14,70,20,85],[1,99,1,9,20,70,47],[1,100,1,9,29,70,20,49],[1,101,1,9,19,70,20,40],[1,102,1,9,14,88,29,92],[1,103,1,9,20,88,29,65],[1,104,1,9,29,88,81],[1,105,1,9,19,88,29,66],[1,106,1,9,14,107,19,108],[1,109,1,9,20,107,19,110],[1,111,1,9,29,107,19,112],[1,113,1,9,19,107,87],[1,114,1,11,20,40,41],[1,115,1,11,29,40,20,26],[1,116,1,11,19,40,20],[1,117,1,11,26,40,20,29],[1,118,1,11,20,81,29,68],[1,119,1,11,29,81,70],[1,120,1,11,19,81,29,46],[1,121,1,11,26,81,29,85],[1,122,1,11,20,110,19,87],[1,123,1,11,29,110,19,124],[1,125,1,11,19,110,88],[1,126,1,11,26,110,19,90],[1,127,1,11,20,128,26,129],[1,130,1,11,29,128,26,131],[1,132,1,11,19,128,26,133],[1,134,1,11,26,128,107],[1,135,1,14,29,47,40],[1,136,1,14,19,47,29,25],[1,137,1,14,26,47,29,41],[1,138,1,14,41,47,29,26],[1,139,1,14,29,90,19,65],[1,140,1,14,19,90,81],[1,141,1,14,26,90,19,66],[1,142,1,14,41,90,19,68],[1,143,1,14,29,133,26,144],[1,145,1,14,19,133,26,108],[1,146,1,14,26,133,110],[1,147,1,14,41,133,26,112],[1,148,1,14,29,149,41,150],[1,151,1,14,19,149,41,152],[1,153,1,14,26,149,41,154],[1,155,1,14,41,149,128]],"weight":112}},"chronologist":{"science-angles":{"title":"Углы многоугольника","patterns":["В выпуклом многоугольнике %d стороны. Какова сумма его внутренних углов в градусах?","Сумма углов n-угольника равна (n − %d) × %d°.","%d°"],"strings":["0:5","1:2:180","2:540","2:720","2:900","2:360","2:1080","0:6","2:1440","0:7","2:1260","2:1800","0:8","2:2160"],"variants":[[9,0,1,2,3,4,5,6],[9,7,1,3,4,6,2,8],[9,9,1,4,6,10,3,11],[9,12,1,6,10,8,4,13]],"weight":36},"science-centroid":{"title":"Центр треугольника","patterns":["Вершины треугольника: (%d; %d), (%d; %d), (%d; %d). Какова x-координата точки пересечения медиан?","Координата центра — среднее координат трёх вершин: (%d + %d + %d) ÷ %d.","%d"],"strings":["0:0:0:6:0:0:6","1:0:6:0:3","2:2","2:6","2:4","2:1","2:3","0:0:0:6:0:0:9","2:5","0:0:0:6:0:0:12","0:0:0:9:0:0:6","1:0:9:0:3","2:9","0:0:0:9:0:0:9","0:0:0:9:0:0:12","2:7","0:0:0:12:0:0:6","1:0:12:0:3","2:12","2:8","0:0:0:12:0:0:9","0:0:0:12:0:0:12","0:0:0:15:0:0:6","1:0:15:0:3","2:15","2:10","0:0:0:15:0:0:9","0:0:0:15:0:0:12"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,2,3,4,8],[3,9,1,2,3,4,6],[3,10,11,6,12,3,8,2],[3,13,11,6,12,3,2,4],[3,14,11,6,12,3,15],[3,16,17,4,18,19,3,6],[3,20,17,4,18,19,15,6],[3,21,17,4,18,19,6,8],[3,22,23,8,24,25,15,6],[3,26,23,8,24,25,19,4],[3,27,23,8,24,25,12,4]],"weight":36},"science-diagonal":{"title":"Диагональ","patterns":["У прямоугольного параллелепипеда рёбра %d, %d и %d. Чему равна пространственная диагональ?","Квадрат диагонали — сумма квадратов трёх рёбер: %d. Корень равен %d.","%d"],"strings":["0:2:4:4","1:36:6","2:6","2:8","2:10","2:4","2:36","0:3:6:6","1:81:9","2:9","2:12","2:15","2:81","0:4:8:8","1:144:12","2:16","2:20","2:144","0:5:10:10","1:225:15","2:25","2:225"],"variants":[[9,0,1,2,3,4,5,6],[9,7,8,9,10,11,2,12],[9,13,14,10,15,16,3,17],[9,18,19,11,16,20,4,21]],"weight":36},"science-distance":{"title":"Расстояние","patterns":["Точки A(%d; %d) и B(%d; %d). Чему равно расстояние AB по прямой?","Разности координат — %d и %d. По теореме Пифагора расстояние равно %d.","%d"],"strings":["0:2:2:8:10","1:6:8:10","2:10","2:6","2:8","2:14","2:100","0:2:2:11:14","1:9:12:15","2:15","2:9","2:12","2:21","2:225","0:2:2:14:18","1:12:16:20","2:20","2:16","2:28","2:400","0:2:3:8:11","0:2:3:11:15","0:2:3:14:19","0:2:4:8:12","0:2:4:11:16","0:2:4:14:20","0:3:2:9:10","0:3:2:12:14","0:3:2:15:18","0:3:3:9:11","0:3:3:12:15","0:3:3:15:19","0:3:4:9:12","0:3:4:12:16","0:3:4:15:20","0:4:2:10:10","0:4:2:13:14","0:4:2:16:18","0:4:3:10:11","0:4:3:13:15","0:4:3:16:19","0:4:4:10:12","0:4:4:13:16","0:4:4:16:20","0:5:2:11:10","0:5:2:14:14","0:5:2:17:18","0:5:3:11:11","0:5:3:14:15","0:5:3:17:19","0:5:4:11:12","0:5:4:14:16","0:5:4:17:20"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,9,10,11,12,13],[1,14,15,16,11,17,18,19],[1,20,1,2,3,4,5,6],[1,21,8,9,10,11,12,13],[1,22,15,16,11,17,18,19],[1,23,1,2,3,4,5,6],[1,24,8,9,10,11,12,13],[1,25,15,16,11,17,18,19],[1,26,1,2,3,4,5,6],[1,27,8,9,10,11,12,13],[1,28,15,16,11,17,18,19],[1,29,1,2,3,4,5,6],[1,30,8,9,10,11,12,13],[1,31,15,16,11,17,18,19],[1,32,1,2,3,4,5,6],[1,33,8,9,10,11,12,13],[1,34,15,16,11,17,18,19],[1,35,1,2,3,4,5,6],[1,36,8,9,10,11,12,13],[1,37,15,16,11,17,18,19],[1,38,1,2,3,4,5,6],[1,39,8,9,10,11,12,13],[1,40,15,16,11,17,18,19],[1,41,1,2,3,4,5,6],[1,42,8,9,10,11,12,13],[1,43,15,16,11,17,18,19],[1,44,1,2,3,4,5,6],[1,45,8,9,10,11,12,13],[1,46,15,16,11,17,18,19],[1,47,1,2,3,4,5,6],[1,48,8,9,10,11,12,13],[1,49,15,16,11,17,18,19],[1,50,1,2,3,4,5,6],[1,51,8,9,10,11,12,13],[1,52,15,16,11,17,18,19]],"weight":36},"science-midpoint":{"title":"Середина отрезка","patterns":["A(%d; %d), B(%d; %d). Какова x-координата середины AB?","Координата середины — среднее соответствующих координат концов: (%d + %d) ÷ %d.","%d"],"strings":["0:2:2:6:6","1:2:6:2","2:4","2:6","2:2","2:8","0:2:2:8:6","1:2:8:2","2:5","2:3","2:10","0:2:2:10:6","1:2:10:2","2:12","0:2:3:6:7","0:2:3:8:7","0:2:3:10:7","0:2:4:6:8","0:2:4:8:8","0:2:4:10:8","0:3:2:7:8","1:3:7:2","2:7","0:3:2:9:8","1:3:9:2","2:9","0:3:2:11:8","1:3:11:2","2:11","2:14","0:3:3:7:9","0:3:3:9:9","0:3:3:11:9","0:3:4:7:10","0:3:4:9:10","0:3:4:11:10","0:4:2:8:10","1:4:8:2","0:4:2:10:10","1:4:10:2","0:4:2:12:10","1:4:12:2","2:16","0:4:3:8:11","0:4:3:10:11","0:4:3:12:11","0:4:4:8:12","0:4:4:10:12","0:4:4:12:12","0:5:2:9:12","1:5:9:2","0:5:2:11:12","1:5:11:2","0:5:2:13:12","1:5:13:2","2:13","2:18","0:5:3:9:13","0:5:3:11:13","0:5:3:13:13","0:5:4:9:14","0:5:4:11:14","0:5:4:13:14"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,5,9,10,2],[1,11,12,3,10,2,13],[1,14,1,2,3,4,5,8],[1,15,7,8,5,9,10],[1,16,12,3,10,2,13,8],[1,17,1,2,3,4,5],[1,18,7,8,5,9,10,3],[1,19,12,3,10,2,13],[1,20,21,8,22,4,10],[1,23,24,3,25,9,13,8],[1,26,27,22,28,2,29,8],[1,30,21,8,22,4,10,3],[1,31,24,3,25,9,13],[1,32,27,22,28,2,29,3],[1,33,21,8,22,4,10],[1,34,24,3,25,9,13,22],[1,35,27,22,28,2,29],[1,36,37,3,5,4,13],[1,38,39,22,10,9,29,3],[1,40,41,5,13,2,42,3],[1,43,37,3,5,4,13,22],[1,44,39,22,10,9,29],[1,45,41,5,13,2,42,22],[1,46,37,3,5,4,13],[1,47,39,22,10,9,29,5],[1,48,41,5,13,2,42],[1,49,50,22,25,4,29],[1,51,52,5,28,9,42,22],[1,53,54,25,55,2,56,22],[1,57,50,22,25,4,29,5],[1,58,52,5,28,9,42],[1,59,54,25,55,2,56,5],[1,60,50,22,25,4,29],[1,61,52,5,28,9,42,25],[1,62,54,25,55,2,56]],"weight":36},"science-pythagoras":{"title":"Катет","patterns":["Гипотенуза прямоугольного треугольника %d, один катет %d. Найдите второй катет.","Квадрат второго катета: %d − %d = %d. Корень равен %d.","%d"],"strings":["0:10:6","1:100:36:64:8","2:8","2:4","2:6","2:16","2:10","0:15:9","1:225:81:144:12","2:12","2:9","2:24","2:15","0:20:12","1:400:144:256:16","2:32","2:20","0:25:15","1:625:225:400:20","2:40","2:25"],"variants":[[9,0,1,2,3,4,5,6],[9,7,8,9,4,10,11,12],[9,13,14,5,2,9,15,16],[9,17,18,16,6,12,19,20]],"weight":36},"science-sector":{"title":"Сектор круга","patterns":["Радиус круга %d. Площадь его четверти равна kπ. Найдите k.","Четверть площади: π × %d² ÷ %d = %dπ.","%d"],"strings":["0:4","1:4:4:4","2:4","2:8","2:16","2:2","0:6","1:6:4:9","2:9","2:18","2:36","2:3","2:12","0:8","1:8:4:16","2:32","2:64","0:10","1:10:4:25","2:25","2:50","2:100","2:5","2:20"],"variants":[[9,0,1,2,3,4,5],[9,6,7,8,9,10,11,12],[9,13,14,4,15,16,2],[9,17,18,19,20,21,22,23]],"weight":36},"science-similarity":{"title":"Подобные фигуры","patterns":["Длина в модели увеличена в %d раза. Площадь исходного треугольника %d см². Какова площадь подобного увеличенного треугольника?","Площади подобных фигур относятся как квадрат масштаба: %d × %d².","%d см²"],"strings":["0:2:2","1:2:2","2:8","2:4","2:16","2:6","0:3:2","1:2:3","2:18","2:54","2:11","2:12","0:4:2","1:2:4","2:32","2:128","0:2:3","1:3:2","2:24","2:7","0:3:3","1:3:3","2:27","2:9","2:81","0:4:3","1:3:4","2:48","2:192","2:19","0:2:4","1:4:2","2:15","2:17","0:3:4","1:4:3","2:36","2:108","2:13","0:4:4","1:4:4","2:64","2:256","2:20","0:2:5","1:5:2","2:10","2:40","0:3:5","1:5:3","2:45","2:135","2:14","2:30","0:4:5","1:5:4","2:80","2:320","2:21"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,5,9,10,11],[3,12,13,14,2,15,8,4],[3,16,17,11,5,18,19],[3,20,21,22,23,24,11,8],[3,25,26,27,11,28,29,18],[3,30,31,4,2,14,32,33],[3,34,35,36,11,37,38,18],[3,39,40,41,4,42,43,14],[3,44,45,43,46,47,23],[3,48,49,50,32,51,52,53],[3,54,55,56,43,57,58,47]],"weight":36},"science-surface":{"title":"Поверхность куба","patterns":["Ребро куба равно %d см. Чему равна площадь всей его поверхности?","У куба %d квадратных граней, каждая площадью %d см².","%d см²"],"strings":["0:2","1:6:4","2:24","2:4","2:16","2:8","0:3","1:6:9","2:54","2:9","2:36","2:27","0:4","1:6:16","2:96","2:64","2:48","0:5","1:6:25","2:150","2:25","2:100","2:60","2:125"],"variants":[[9,0,1,2,3,4,5],[9,6,7,8,9,10,11],[9,12,13,14,4,15,16],[9,17,18,19,20,21,22,23]],"weight":36},"science-translation":{"title":"Перемещение","patterns":["Точка (%d; %d) сместилась на (%d; −%d). Чему равна сумма новых координат?","Новые координаты: (%d; −%d). Их сумма — %d.","%d","-%d"],"strings":["0:2:2:2:3","1:4:1:3","2:3","2:4","2:6","2:5","3:1","0:2:2:3:3","1:5:1:4","2:7","3:2","0:2:2:4:3","1:6:1:5","2:8","3:3","0:2:3:2:4","0:2:3:3:4","0:2:3:4:4","2:9","0:2:4:2:5","0:2:4:3:5","0:2:4:4:5","2:10","0:3:2:2:3","2:0","0:3:2:3:3","0:3:2:4:3","1:7:1:6","0:3:3:2:4","0:3:3:3:4","0:3:3:4:4","0:3:4:2:5","0:3:4:3:5","0:3:4:4:5","2:11","0:4:2:2:3","2:1","0:4:2:3:3","0:4:2:4:3","1:8:1:7","0:4:3:2:4","0:4:3:3:4","0:4:3:4:4","0:4:4:2:5","0:4:4:3:5","0:4:4:4:5","2:12","0:5:2:2:3","2:2","0:5:2:3:3","0:5:2:4:3","1:9:1:8","0:5:3:2:4","0:5:3:3:4","0:5:3:4:4","0:5:4:2:5","0:5:4:3:5","0:5:4:4:5","2:13"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,3,5,9,4,10],[1,11,12,5,4,13,9,14],[1,15,1,2,3,9,5,6],[1,16,8,3,5,13,4,10],[1,17,12,5,4,18,9,14],[1,19,1,2,3,13,5,6],[1,20,8,3,5,18,4,10],[1,21,12,5,4,22,9,14],[1,23,8,3,5,9,4,24],[1,25,12,5,4,13,9,6],[1,26,27,4,9,18,13,10],[1,28,8,3,5,13,4,24],[1,29,12,5,4,18,9,6],[1,30,27,4,9,22,13,10],[1,31,8,3,5,18,4,24],[1,32,12,5,4,22,9,6],[1,33,27,4,9,34,13,10],[1,35,12,5,4,13,9,36],[1,37,27,4,9,18,13,24],[1,38,39,9,13,22,18,6],[1,40,12,5,4,18,9,36],[1,41,27,4,9,22,13,24],[1,42,39,9,13,34,18,6],[1,43,12,5,4,22,9,36],[1,44,27,4,9,34,13,24],[1,45,39,9,13,46,18,6],[1,47,27,4,9,18,13,48],[1,49,39,9,13,22,18,36],[1,50,51,13,18,34,22,24],[1,52,27,4,9,22,13,48],[1,53,39,9,13,34,18,36],[1,54,51,13,18,46,22,24],[1,55,27,4,9,34,13,48],[1,56,39,9,13,46,18,36],[1,57,51,13,18,58,22,24]],"weight":36},"science-trapezoid":{"title":"Трапеция","patterns":["Основания трапеции %d и %d, высота %d. Чему равна площадь?","Полусумма оснований равна %d. Умножаем её на высоту.","%d"],"strings":["0:4:4:2","1:4","2:8","2:16","2:4","2:12","0:4:4:3","2:24","2:18","0:4:4:4","2:32","0:4:6:2","1:5","2:10","2:20","2:5","2:14","0:4:6:3","2:15","2:30","2:21","0:4:6:4","2:40","2:28","0:4:8:2","1:6","2:6","0:4:8:3","2:36","0:4:8:4","2:48","0:6:4:2","0:6:4:3","0:6:4:4","0:6:6:2","0:6:6:3","2:27","0:6:6:4","0:6:8:2","1:7","2:7","0:6:8:3","2:42","0:6:8:4","2:56","0:8:4:2","0:8:4:3","0:8:4:4","0:8:6:2","2:22","0:8:6:3","2:33","0:8:6:4","2:44","0:8:8:2","1:8","0:8:8:3","0:8:8:4","2:64","0:10:4:2","0:10:4:3","0:10:4:4","0:10:6:2","2:26","0:10:6:3","2:45","2:39","0:10:6:4","2:60","2:52","0:10:8:2","1:9","2:9","0:10:8:3","2:54","0:10:8:4","2:72","2:80"],"variants":[[1,0,1,2,3,4,5],[1,6,1,5,7,4,8],[1,9,1,3,10,4,7],[1,11,12,13,14,15,5,16],[1,17,12,18,19,15,8,20],[1,21,12,14,22,15,7,23],[1,24,25,5,7,26,3],[1,27,25,8,28,26,7],[1,29,25,7,30,26,10],[1,31,12,13,14,15,5,3],[1,32,12,18,19,15,8,7],[1,33,12,14,22,15,7,10],[1,34,25,5,7,26,8],[1,35,25,8,28,26,36],[1,37,25,7,30,26,28],[1,38,39,16,23,40,7,14],[1,41,39,20,42,40,28,19],[1,43,39,23,44,40,30,22],[1,45,25,5,7,26,3,14],[1,46,25,8,28,26,7,19],[1,47,25,7,30,26,10,22],[1,48,39,16,23,40,7,49],[1,50,39,20,42,40,28,51],[1,52,39,23,44,40,30,53],[1,54,55,3,10,2,7],[1,56,55,7,30,2,28],[1,57,55,10,58,2,30],[1,59,39,16,23,40,14,7],[1,60,39,20,42,40,19,28],[1,61,39,23,44,40,22,30],[1,62,55,3,10,2,19,63],[1,64,55,7,30,2,65,66],[1,67,55,10,58,2,68,69],[1,70,71,8,28,72,22,23],[1,73,71,36,74,72,68,42],[1,75,71,28,76,72,77,44]],"weight":36},"science-volume":{"title":"Полый блок","patterns":["Из куба с ребром %d см вырезали кубическую полость с ребром %d см. Каков объём оставшегося материала?","Вычитаем объём внутреннего куба из внешнего: %d³ − %d³.","%d см³"],"strings":["0:3:2","1:3:2","2:19","2:5","2:8","2:12","2:9","0:4:3","1:4:3","2:37","2:7","2:27","2:16","0:5:4","1:5:4","2:61","2:64","2:48","2:25","0:6:5","1:6:5","2:91","2:11","2:125","2:75","2:36"],"variants":[[9,0,1,2,3,4,5,6],[9,7,8,9,10,11,12],[9,13,14,15,6,16,17,18],[9,19,20,21,22,23,24,25]],"weight":36}},"nanoforge":{"science-affine":{"title":"Сумма функций","patterns":["Вычислите ∫ от %d до %d функции (%dx + %d) dx.","Первообразная — x² + %dx. На верхнем пределе это %d + %d, на нижнем — %d.","%d"],"strings":["0:0:2:2:2","1:2:4:4:0","2:8","2:6","2:12","2:4","0:0:3:2:2","1:2:9:6:0","2:15","2:24","2:11","2:9","0:0:4:2:2","1:2:16:8:0","2:10","2:40","2:18","2:16","0:0:2:2:3","1:3:4:6:0","2:7","2:14","0:0:3:2:3","1:3:9:9:0","2:27","0:0:4:2:3","1:3:16:12:0","2:28","2:44","2:19","0:0:2:2:4","1:4:4:8:0","0:0:3:2:4","1:4:9:12:0","2:21","2:30","2:13","0:0:4:2:4","1:4:16:16:0","2:32","2:48","2:20","0:0:2:2:5","1:5:4:10:0","0:0:3:2:5","1:5:9:15:0","2:33","0:0:4:2:5","1:5:16:20:0","2:36","2:52"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,2,9,10,11],[3,12,13,9,14,15,16,17],[3,18,19,14,20,21,5],[3,22,23,16,11,24,4],[3,25,26,27,10,28,29,17],[3,30,31,4,2,17,5],[3,32,33,34,14,35,36,11],[3,37,38,39,4,40,41,17],[3,42,43,21,11,16,5],[3,44,45,9,10,46,21,11],[3,47,48,49,36,50,34,17]],"weight":36},"science-average":{"title":"Среднее значение","patterns":["Найдите среднее значение f(x) = %dx на отрезке [%d; %d].","Среднее равно интегралу, делённому на длину отрезка. Для линейной функции это также среднее значений на концах: %d и %d.","%d"],"strings":["0:2:2:4","1:4:8","2:6","2:4","2:8","2:12","0:2:2:5","1:4:10","2:7","2:10","2:21","0:2:2:6","1:4:12","2:32","0:2:3:5","1:6:10","2:16","0:2:3:6","1:6:12","2:9","2:27","0:2:3:7","1:6:14","2:14","2:40","0:2:4:6","1:8:12","2:20","0:2:4:7","1:8:14","2:11","2:33","0:2:4:8","1:8:16","2:48","0:2:5:7","1:10:14","2:24","0:2:5:8","1:10:16","2:13","2:39","0:2:5:9","1:10:18","2:18","2:56"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,3,9,10],[3,11,12,4,3,5,13],[3,14,15,4,2,9,16],[3,17,18,19,2,5,20],[3,21,22,9,2,23,24],[3,25,26,9,4,5,27],[3,28,29,30,4,23,31],[3,32,33,5,4,16,34],[3,35,36,5,9,23,37],[3,38,39,40,9,16,41],[3,42,43,23,9,44,45]],"weight":36},"science-constant":{"title":"Постоянная функция","patterns":["Вычислите ∫ от %d до %d функции %d dx.","Площадь прямоугольника: высота %d, ширина %d − %d = %d.","%d"],"strings":["0:2:4:2","1:2:4:2:2","2:4","2:8","2:3","2:5","0:2:4:3","1:3:4:2:2","2:6","2:12","0:2:4:4","1:4:4:2:2","2:16","0:2:5:2","1:2:5:2:3","2:10","0:2:5:3","1:3:5:2:3","2:9","2:15","0:2:5:4","1:4:5:2:3","2:20","2:7","0:2:6:2","1:2:6:2:4","0:2:6:3","1:3:6:2:4","2:18","0:2:6:4","1:4:6:2:4","2:24","0:3:5:2","1:2:5:3:2","0:3:5:3","1:3:5:3:2","0:3:5:4","1:4:5:3:2","0:3:6:2","1:2:6:3:3","0:3:6:3","1:3:6:3:3","0:3:6:4","1:4:6:3:3","0:3:7:2","1:2:7:3:4","2:14","0:3:7:3","1:3:7:3:4","2:21","0:3:7:4","1:4:7:3:4","2:28","0:4:6:2","1:2:6:4:2","0:4:6:3","1:3:6:4:2","0:4:6:4","1:4:6:4:2","0:4:7:2","1:2:7:4:3","0:4:7:3","1:3:7:4:3","0:4:7:4","1:4:7:4:3","0:4:8:2","1:2:8:4:4","0:4:8:3","1:3:8:4:4","0:4:8:4","1:4:8:4:4","2:32","2:17","0:5:7:2","1:2:7:5:2","0:5:7:3","1:3:7:5:2","0:5:7:4","1:4:7:5:2","0:5:8:2","1:2:8:5:3","0:5:8:3","1:3:8:5:3","0:5:8:4","1:4:8:5:3","0:5:9:2","1:2:9:5:4","0:5:9:3","1:3:9:5:4","2:27","0:5:9:4","1:4:9:5:4","2:36"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,9,5,2],[1,10,11,3,12,8,2],[1,13,14,8,15,2,5],[1,16,17,18,19,8,5],[1,20,21,9,22,3,23,5],[1,24,25,3,9,2,8],[1,26,27,9,28,8,23],[1,29,30,12,31,3,8],[1,32,33,2,15,8,5],[1,34,35,8,19,18,5],[1,36,37,3,22,9,8,5],[1,38,39,8,9,5,23],[1,40,41,18,28,8,3,15],[1,42,43,9,31,23,8],[1,44,45,3,46,8,23],[1,47,48,9,49,18,23],[1,50,51,12,52,9,3,23],[1,53,54,2,9,3,8],[1,55,56,8,28,9,5],[1,57,58,3,31,12,8],[1,59,60,8,46,3,5,23],[1,61,62,18,49,9,8,23],[1,63,64,9,52,12,23],[1,65,66,3,12,8,23,18],[1,67,68,9,31,23,3],[1,69,70,12,71,3,19,72],[1,73,74,2,46,15,23],[1,75,76,8,49,19,5,23],[1,77,78,3,52,22,8,23],[1,79,80,8,12,15,5,3],[1,81,82,18,31,19,8,3],[1,83,84,9,71,22,23,3],[1,85,86,3,28,15,8,18],[1,87,88,9,89,19,23,18],[1,90,91,12,92,22,3,18]],"weight":36},"science-cube":{"title":"Куб под интегралом","patterns":["Вычислите ∫ от %d до %d функции %dx³ dx.","Первообразная — x⁴. Подставляем верхний и нижний пределы.","%d"],"strings":["0:0:2:4","1","2:16","2:8","2:32","2:64","2:4","0:0:3:4","2:81","2:27","2:108","2:324","2:9","0:0:4:4","2:256","2:1024"],"variants":[[12,0,1,2,3,4,5,6],[12,7,1,8,9,10,11,12],[12,13,1,14,5,15,2]],"weight":36},"science-difference":{"title":"Вычесть участок","patterns":["∫ от %d до %d функции f(x) dx = %d, а ∫ от %d до %d равен %d. Чему равен ∫ от %d до %d?","Из интеграла по всему отрезку вычитаем интеграл по первой части.","%d","-%d"],"strings":["0:0:4:6:0:2:2:2:4","1","2:4","2:6","2:8","2:2","3:4","0:0:4:7:0:2:3:2:4","2:7","2:10","2:3","0:0:4:8:0:2:4:2:4","2:12","0:0:5:8:0:2:2:2:5","3:6","0:0:5:9:0:2:3:2:5","2:9","0:0:5:10:0:2:4:2:5","2:14","0:0:6:10:0:2:2:2:6","3:8","0:0:6:11:0:2:3:2:6","2:11","0:0:6:12:0:2:4:2:6","2:16","0:0:5:8:0:3:2:3:5","0:0:5:9:0:3:3:3:5","0:0:5:10:0:3:4:3:5","0:0:6:11:0:3:2:3:6","2:13","3:9","0:0:6:12:0:3:3:3:6","2:15","0:0:6:13:0:3:4:3:6","2:17","0:0:7:14:0:3:2:3:7","3:12","0:0:7:15:0:3:3:3:7","2:18","0:0:7:16:0:3:4:3:7","2:20","0:0:6:10:0:4:2:4:6","0:0:6:11:0:4:3:4:6","0:0:6:12:0:4:4:4:6","0:0:7:14:0:4:2:4:7","0:0:7:15:0:4:3:4:7","0:0:7:16:0:4:4:4:7","0:0:8:18:0:4:2:4:8","3:16","0:0:8:19:0:4:3:4:8","2:19","2:22","0:0:8:20:0:4:4:4:8","2:24","0:0:7:12:0:5:2:5:7","3:10","0:0:7:13:0:5:3:5:7","0:0:7:14:0:5:4:5:7","0:0:8:17:0:5:2:5:8","3:15","0:0:8:18:0:5:3:5:8","2:21","0:0:8:19:0:5:4:5:8","2:23","0:0:9:22:0:5:2:5:9","3:20","0:0:9:23:0:5:3:5:9","2:26","0:0:9:24:0:5:4:5:9","2:28"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,2,8,9,10,6],[1,11,1,2,4,12,6],[1,13,1,3,4,9,5,14],[1,15,1,3,16,12,10,14],[1,17,1,3,9,18,2,14],[1,19,1,4,9,12,5,20],[1,21,1,4,22,18,10,20],[1,23,1,4,12,24,2,20],[1,25,1,3,4,9,5,14],[1,26,1,3,16,12,10,14],[1,27,1,3,9,18,2,14],[1,28,1,16,22,29,5,30],[1,31,1,16,12,32,10,30],[1,33,1,16,29,34,2,30],[1,35,1,12,18,24,5,36],[1,37,1,12,32,38,10,36],[1,39,1,12,24,40,2,36],[1,41,1,4,9,12,5,20],[1,42,1,4,22,18,10,20],[1,43,1,4,12,24,2,20],[1,44,1,12,18,24,5,36],[1,45,1,12,32,38,10,36],[1,46,1,12,24,40,2,36],[1,47,1,24,38,40,5,48],[1,49,1,24,50,51,10,48],[1,52,1,24,40,53,2,48],[1,54,1,9,12,18,5,55],[1,56,1,9,29,24,10,55],[1,57,1,9,18,38,2,55],[1,58,1,32,34,50,5,59],[1,60,1,32,38,61,10,59],[1,62,1,32,50,63,2,59],[1,64,1,40,51,53,5,65],[1,66,1,40,63,67,10,65],[1,68,1,40,53,69,2,65]],"weight":36},"science-distance":{"title":"Пройденный путь","patterns":["Скорость v(t) = %dt + %d м/с. Какой путь пройден с t = %d до t = %d с?","Путь — интеграл скорости. Первообразная t² + %dt даёт %d метров.","%d м"],"strings":["0:2:2:0:2","1:2:8","2:8","2:6","2:12","2:4","0:2:2:0:3","1:2:15","2:15","2:24","2:11","0:2:2:0:4","1:2:24","2:10","2:40","2:18","0:2:3:0:2","1:3:10","2:7","2:14","0:2:3:0:3","1:3:18","2:9","2:27","0:2:3:0:4","1:3:28","2:28","2:44","2:19","0:2:4:0:2","1:4:12","2:16","2:13","0:2:4:0:3","1:4:21","2:21","2:30","0:2:4:0:4","1:4:32","2:32","2:48","2:20","0:2:5:0:2","1:5:14","0:2:5:0:3","1:5:24","2:33","0:2:5:0:4","1:5:36","2:36","2:52"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,2,9,10,3],[3,11,12,9,13,14,15,2],[3,16,17,13,18,19,3],[3,20,21,15,22,23,4],[3,24,25,26,10,27,28,4],[3,29,30,4,2,31,10,32],[3,33,34,35,13,36,32,4],[3,37,38,39,4,40,41,31],[3,42,43,19,22,15,13],[3,44,45,9,10,46,19,8],[3,47,48,49,32,50,35,41]],"weight":36},"science-linear":{"title":"Площадь треугольника","patterns":["Вычислите ∫ от %d до %d функции %dx dx.","Первообразная — %dx². Подставляем верхний предел и вычитаем значение в нуле.","%d"],"strings":["0:0:2:4","1:2","2:8","2:16","2:4","2:7","2:9","0:0:3:4","2:18","2:12","2:36","2:6","2:54","0:0:4:4","2:32","2:64","2:128","0:0:2:6","1:3","2:24","2:11","2:13","0:0:3:6","2:27","2:81","0:0:4:6","2:48","2:96","2:192","0:0:2:8","1:4","2:15","2:17","0:0:3:8","2:72","2:108","0:0:4:8","2:256","0:0:2:10","1:5","2:20","2:40","2:10","2:19","2:21","0:0:3:10","2:45","2:30","2:90","2:135","0:0:4:10","2:80","2:160","2:320"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,8,9,10,11,12],[3,13,1,14,3,15,2,16],[3,17,18,9,19,11,20,21],[3,22,18,23,8,12,6,24],[3,25,18,26,19,27,9,28],[3,29,30,3,14,2,31,32],[3,33,30,10,19,34,9,35],[3,36,30,15,14,16,3,37],[3,38,39,40,41,42,43,44],[3,45,39,46,47,48,31,49],[3,50,39,51,41,52,40,53]],"weight":36},"science-odd":{"title":"Симметрия","patterns":["Вычислите ∫ от −%d до %d функции %dx³ dx.","Функция нечётная, пределы симметричны. Отрицательная и положительная части взаимно сокращаются.","%d","-%d"],"strings":["0:2:2:2","1","2:0","2:16","3:16","2:32","3:32","0:2:2:3","2:24","3:24","2:48","3:48","0:2:2:4","2:64","3:64","0:3:3:2","2:54","3:54","2:162","3:162","0:3:3:3","2:81","3:81","2:243","3:243","0:3:3:4","2:108","3:108","2:324","3:324","0:4:4:2","2:128","3:128","2:512","3:512","0:4:4:3","2:192","3:192","2:768","3:768","0:4:4:4","2:256","3:256","2:1024","3:1024","0:5:5:2","2:250","3:250","2:1250","3:1250","0:5:5:3","2:375","3:375","2:1875","3:1875","0:5:5:4","2:500","3:500","2:2500","3:2500"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,2,8,9,10,11],[3,12,1,2,5,6,13,14],[3,15,1,2,16,17,18,19],[3,20,1,2,21,22,23,24],[3,25,1,2,26,27,28,29],[3,30,1,2,31,32,33,34],[3,35,1,2,36,37,38,39],[3,40,1,2,41,42,43,44],[3,45,1,2,46,47,48,49],[3,50,1,2,51,52,53,54],[3,55,1,2,56,57,58,59]],"weight":36},"science-pieces":{"title":"Два участка","patterns":["Функция равна %d на [%d; %d) и %d на [%d; %d]. Чему равен её интеграл от %d до %d?","Складываем площади двух прямоугольников: %d × %d и %d × %d.","%d"],"strings":["0:2:0:2:2:2:4:0:4","1:2:2:2:2","2:8","2:6","2:16","2:4","0:2:0:2:3:2:4:0:4","1:2:2:3:2","2:10","2:7","2:20","0:2:0:2:4:2:4:0:4","1:2:2:4:2","2:12","2:24","0:2:0:3:2:3:5:0:5","1:2:3:2:2","0:2:0:3:3:3:5:0:5","1:2:3:3:2","2:9","2:25","2:15","0:2:0:3:4:3:5:0:5","1:2:3:4:2","2:14","2:30","2:18","0:2:0:4:2:4:6:0:6","1:2:4:2:2","0:2:0:4:3:4:6:0:6","1:2:4:3:2","2:11","0:2:0:4:4:4:6:0:6","1:2:4:4:2","2:36","0:3:0:2:2:2:4:0:4","1:3:2:2:2","0:3:0:2:3:2:4:0:4","1:3:2:3:2","0:3:0:2:4:2:4:0:4","1:3:2:4:2","2:28","0:3:0:3:2:3:5:0:5","1:3:3:2:2","2:13","0:3:0:3:3:3:5:0:5","1:3:3:3:2","0:3:0:3:4:3:5:0:5","1:3:3:4:2","2:17","2:35","2:21","0:3:0:4:2:4:6:0:6","1:3:4:2:2","0:3:0:4:3:4:6:0:6","1:3:4:3:2","0:3:0:4:4:4:6:0:6","1:3:4:4:2","2:42","0:4:0:2:2:2:4:0:4","1:4:2:2:2","0:4:0:2:3:2:4:0:4","1:4:2:3:2","0:4:0:2:4:2:4:0:4","1:4:2:4:2","2:32","0:4:0:3:2:3:5:0:5","1:4:3:2:2","0:4:0:3:3:3:5:0:5","1:4:3:3:2","0:4:0:3:4:3:5:0:5","1:4:3:4:2","2:40","0:4:0:4:2:4:6:0:6","1:4:4:2:2","0:4:0:4:3:4:6:0:6","1:4:4:3:2","2:22","2:19","0:4:0:4:4:4:6:0:6","1:4:4:4:2","2:48","0:5:0:2:2:2:4:0:4","1:5:2:2:2","0:5:0:2:3:2:4:0:4","1:5:2:3:2","0:5:0:2:4:2:4:0:4","1:5:2:4:2","0:5:0:3:2:3:5:0:5","1:5:3:2:2","0:5:0:3:3:3:5:0:5","1:5:3:3:2","0:5:0:3:4:3:5:0:5","1:5:3:4:2","2:23","2:45","2:27","0:5:0:4:2:4:6:0:6","1:5:4:2:2","0:5:0:4:3:4:6:0:6","1:5:4:3:2","2:26","0:5:0:4:4:4:6:0:6","1:5:4:4:2","2:54"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,9,10,5],[1,11,12,13,2,14,5],[1,15,16,8,2,10,3,13],[1,17,18,13,19,20,3,21],[1,22,23,24,8,25,3,26],[1,27,28,13,8,14,2,4],[1,29,30,24,31,25,2,10],[1,32,33,4,13,34,2,14],[1,35,36,8,2,10,3],[1,37,38,13,19,14,3],[1,39,40,24,8,41,3],[1,42,43,44,31,20,19,21],[1,45,46,21,13,25,19,26],[1,47,48,49,44,50,19,51],[1,52,53,4,24,25,13,10],[1,54,55,26,21,34,13,14],[1,56,57,10,4,58,13,41],[1,59,60,13,8,14,2],[1,61,62,24,31,41,2],[1,63,64,4,13,65,2],[1,66,67,4,24,25,13,26],[1,68,69,26,21,50,13,51],[1,70,71,10,4,72,13,14],[1,73,74,10,26,34,4,14],[1,75,76,77,78,58,4,41],[1,79,80,14,10,81,4,65],[1,82,83,24,13,41,8],[1,84,85,4,44,65,8],[1,86,87,26,24,34,8],[1,88,89,78,49,50,21,51],[1,90,91,51,26,72,21,14],[1,92,93,94,78,95,21,96],[1,97,98,14,77,58,10,41],[1,99,100,101,94,81,10,65],[1,102,103,41,14,104,10,34]],"weight":36},"science-primitive":{"title":"Первообразная с условием","patterns":["F′(x) = %dx, F(%d) = %d. Чему равно F(%d)?","F(x) = %dx² + C. Из F(%d) = %d находим C = %d, затем подставляем %d.","%d"],"strings":["0:4:0:2:2","1:2:0:2:2:2","2:10","2:8","2:6","2:18","0:4:0:3:2","1:2:0:3:3:2","2:11","2:7","2:19","0:4:0:4:2","1:2:0:4:4:2","2:12","2:20","2:13","0:4:0:2:3","1:2:0:2:2:3","2:14","2:38","0:4:0:3:3","1:2:0:3:3:3","2:21","2:15","2:9","2:39","0:4:0:4:3","1:2:0:4:4:3","2:22","2:16","2:40","0:4:0:2:4","1:2:0:2:2:4","2:34","2:32","2:66","0:4:0:3:4","1:2:0:3:3:4","2:35","2:67","0:4:0:4:4","1:2:0:4:4:4","2:36","2:68","0:6:0:2:2","1:3:0:2:2:2","2:26","0:6:0:3:2","1:3:0:3:3:2","2:27","0:6:0:4:2","1:3:0:4:4:2","2:28","0:6:0:2:3","1:3:0:2:2:3","2:29","2:56","0:6:0:3:3","1:3:0:3:3:3","2:30","2:57","0:6:0:4:3","1:3:0:4:4:3","2:31","2:58","0:6:0:2:4","1:3:0:2:2:4","2:50","2:48","2:98","0:6:0:3:4","1:3:0:3:3:4","2:51","2:99","0:6:0:4:4","1:3:0:4:4:4","2:52","2:100","0:8:0:2:2","1:4:0:2:2:2","0:8:0:3:2","1:4:0:3:3:2","0:8:0:4:2","1:4:0:4:4:2","0:8:0:2:3","1:4:0:2:2:3","2:74","0:8:0:3:3","1:4:0:3:3:3","2:75","0:8:0:4:3","1:4:0:4:4:3","2:76","0:8:0:2:4","1:4:0:2:2:4","2:64","2:130","0:8:0:3:4","1:4:0:3:3:4","2:131","0:8:0:4:4","1:4:0:4:4:4","2:132","0:10:0:2:2","1:5:0:2:2:2","2:42","0:10:0:3:2","1:5:0:3:3:2","2:23","2:43","0:10:0:4:2","1:5:0:4:4:2","2:24","2:44","0:10:0:2:3","1:5:0:2:2:3","2:47","2:45","2:17","2:92","0:10:0:3:3","1:5:0:3:3:3","2:33","2:93","0:10:0:4:3","1:5:0:4:4:3","2:49","2:94","0:10:0:2:4","1:5:0:2:2:4","2:82","2:80","2:162","0:10:0:3:4","1:5:0:3:3:4","2:83","2:163","0:10:0:4:4","1:5:0:4:4:4","2:84","2:164"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,3,9,10],[1,11,12,13,3,14,8,15],[1,16,17,14,5,18,3,19],[1,20,21,22,5,23,24,25],[1,26,27,28,5,29,2,30],[1,31,32,33,34,5,2,35],[1,36,37,38,34,10,8,39],[1,40,41,42,34,14,13,43],[1,44,45,18,13,3,46],[1,47,48,23,13,24,49],[1,50,51,29,13,2,52],[1,53,54,55,49,14,8,56],[1,57,58,59,49,22,13,60],[1,61,62,63,49,28,15,64],[1,65,66,67,68,46,18,69],[1,70,71,72,68,49,23,73],[1,74,75,76,68,52,29,77],[1,78,79,5,29,2,33],[1,80,81,10,29,8,38],[1,82,83,14,29,13,42],[1,84,85,19,42,46,18,86],[1,87,88,25,42,49,23,89],[1,90,91,30,42,52,29,92],[1,93,94,35,95,33,5,96],[1,97,98,39,95,38,10,99],[1,100,101,43,95,42,14,102],[1,103,104,28,14,13,105],[1,106,107,108,14,15,109],[1,110,111,112,14,18,113],[1,114,115,116,117,34,118,119],[1,120,121,68,117,122,5,123],[1,124,125,126,117,33,10,127],[1,128,129,130,131,105,28,132],[1,133,134,135,131,109,108,136],[1,137,138,139,131,113,112,140]],"weight":36},"science-reverse":{"title":"Пределы наоборот","patterns":["Известно: ∫ от %d до %d функции f(x) dx = %d. Чему равен интеграл той же функции от %d до %d?","При перестановке пределов определённый интеграл меняет знак.","-%d","%d"],"strings":["0:2:4:6:4:2","1","2:6","3:6","2:4","2:2","2:12","0:2:4:7:4:2","2:7","3:7","2:3","2:14","0:2:4:8:4:2","2:8","3:8","2:16","0:2:5:8:5:2","2:24","0:2:5:9:5:2","2:9","3:9","2:27","0:2:5:10:5:2","2:10","3:10","2:30","0:2:6:10:6:2","2:40","0:2:6:11:6:2","2:11","3:11","2:44","0:2:6:12:6:2","3:12","2:48","0:3:5:8:5:3","0:3:5:9:5:3","2:18","0:3:5:10:5:3","2:20","0:3:6:11:6:3","2:33","0:3:6:12:6:3","2:36","0:3:6:13:6:3","2:13","3:13","2:39","0:3:7:14:7:3","3:14","2:56","0:3:7:15:7:3","2:15","3:15","2:60","0:3:7:16:7:3","3:16","2:64","0:4:6:10:6:4","0:4:6:11:6:4","2:22","0:4:6:12:6:4","0:4:7:14:7:4","2:42","0:4:7:15:7:4","2:45","0:4:7:16:7:4","0:4:8:18:8:4","3:18","2:72","0:4:8:19:8:4","2:19","3:19","2:76","0:4:8:20:8:4","3:20","2:80","0:5:7:12:7:5","0:5:7:13:7:5","2:26","0:5:7:14:7:5","2:28","0:5:8:17:8:5","2:17","3:17","2:51","0:5:8:18:8:5","2:54","0:5:8:19:8:5","2:57","0:5:9:22:9:5","3:22","2:88","0:5:9:23:9:5","2:23","3:23","2:92","0:5:9:24:9:5","3:24","2:96"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,8,9,4,10,11],[1,12,1,13,14,4,15],[1,16,1,13,14,2,5,17],[1,18,1,19,20,2,10,21],[1,22,1,23,24,2,4,25],[1,26,1,23,24,13,5,27],[1,28,1,29,30,13,10,31],[1,32,1,6,33,13,4,34],[1,35,1,13,14,2,5,15],[1,36,1,19,20,2,10,37],[1,38,1,23,24,2,4,39],[1,40,1,29,30,19,5,41],[1,42,1,6,33,19,10,43],[1,44,1,45,46,19,4,47],[1,48,1,11,49,6,5,50],[1,51,1,52,53,6,10,54],[1,55,1,15,56,6,4,57],[1,58,1,23,24,13,5,39],[1,59,1,29,30,13,10,60],[1,61,1,6,33,13,4,17],[1,62,1,11,49,6,5,63],[1,64,1,52,53,6,10,65],[1,66,1,15,56,6,4,34],[1,67,1,37,68,15,5,69],[1,70,1,71,72,15,10,73],[1,74,1,39,75,15,4,76],[1,77,1,6,33,23,5,17],[1,78,1,45,46,23,10,79],[1,80,1,11,49,23,4,81],[1,82,1,83,84,52,5,85],[1,86,1,37,68,52,10,87],[1,88,1,71,72,52,4,89],[1,90,1,60,91,39,5,92],[1,93,1,94,95,39,10,96],[1,97,1,17,98,39,4,99]],"weight":36},"science-square":{"title":"Квадрат под интегралом","patterns":["Вычислите ∫ от %d до %d функции %dx² dx.","Первообразная %dx² — x³. Разность значений: %d³ − %d.","%d"],"strings":["0:0:2:3","1:3:2:0","2:8","2:4","2:12","2:24","2:16","0:0:3:3","1:3:3:0","2:27","2:9","2:81","2:26","2:28","0:0:4:3","1:3:4:0","2:64","2:48","2:192","2:256"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,10,11,12,13],[12,14,15,16,6,17,18,19]],"weight":36}},"navigator":{"science-area-scale":{"title":"Увеличенный план","patterns":["Квадратный участок увеличили: каждую сторону на %d%. На сколько процентов выросла площадь?","Новая площадь равна %d,%d² = %d,%d прежней. Прирост составляет %d,%d прежней площади, или %d%.","%d%"],"strings":["0:50","1:1:5:2:25:1:25:125","2:125","2:50","2:100","2:150","2:225"],"variants":[[72,0,1,2,3,4,5,6]],"weight":72},"science-average-speed":{"title":"Средняя скорость","patterns":["Половину времени поездки ехали со скоростью %d км/ч, вторую половину — %d. Какова средняя скорость за всю поездку?","Отрезки времени равны, поэтому усредняем скорости: (%d + %d) ÷ %d.","%d км/ч"],"strings":["0:30:20","1:30:20:2","2:25","2:30","2:20","2:50","0:30:30","1:30:30:2","2:60","2:24","2:29","2:31","0:30:40","1:30:40:2","2:35","2:40","2:70","2:28","0:30:50","1:30:50:2","2:80","2:32","0:40:20","1:40:20:2","0:40:30","1:40:30:2","0:40:40","1:40:40:2","2:39","2:41","0:40:50","1:40:50:2","2:45","2:90","2:36","0:50:20","1:50:20:2","0:50:30","1:50:30:2","0:50:40","1:50:40:2","0:50:50","1:50:50:2","2:100","2:49","2:51","0:60:20","1:60:20:2","0:60:30","1:60:30:2","0:60:40","1:60:40:2","0:60:50","1:60:50:2","2:55","2:110","2:44","0:70:20","1:70:20:2","0:70:30","1:70:30:2","0:70:40","1:70:40:2","0:70:50","1:70:50:2","2:120","2:48","0:80:20","1:80:20:2","0:80:30","1:80:30:2","0:80:40","1:80:40:2","0:80:50","1:80:50:2","2:65","2:130","2:52"],"variants":[[3,0,1,2,3,4,5],[3,6,7,3,8,9,10,11],[3,12,13,14,3,15,16,17],[3,18,19,15,3,5,20,21],[3,22,23,3,15,4,8,9],[3,24,25,14,15,3,16,17],[3,26,27,15,20,21,28,29],[3,30,31,32,15,5,33,34],[3,35,36,14,5,4,16,17],[3,37,38,15,5,3,20,21],[3,39,40,32,5,15,33,34],[3,41,42,5,43,15,44,45],[3,46,47,15,8,4,20,21],[3,48,49,32,8,3,33,34],[3,50,51,5,8,15,43],[3,52,53,54,8,5,55,56],[3,57,58,32,16,4,33,34],[3,59,60,5,16,3,43,15],[3,61,62,54,16,15,55,56],[3,63,64,8,16,5,65,66],[3,67,68,5,20,4,43,15],[3,69,70,54,20,3,55,56],[3,71,72,8,20,15,65,66],[3,73,74,75,20,5,76,77]],"weight":72},"science-border":{"title":"Край сетки","patterns":["Прямоугольная сетка имеет %d ряда и %d столбца клеток. Сколько клеток лежит на её внешней границе?","Складываем клетки четырёх сторон, затем вычитаем %d угла, посчитанных дважды.","%d"],"strings":["0:5:4","1:4","2:14","2:18","2:20","2:10","2:9","0:5:5","2:16","2:25","2:12","0:5:6","2:22","2:30","2:11","0:5:7","2:24","2:35","0:6:4","0:6:5","0:6:6","2:36","0:6:7","2:26","2:42","2:13","0:7:4","2:28","0:7:5","0:7:6","0:7:7","2:49","0:8:4","2:32","0:8:5","2:40","0:8:6","2:48","0:8:7","2:56","2:15","0:9:4","0:9:5","2:45","0:9:6","2:54","0:9:7","2:63","0:10:4","0:10:5","2:50","0:10:6","2:60","0:10:7","2:34","2:70","2:17"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,8,4,9,10,5],[3,11,1,3,12,13,2,14],[3,15,1,4,16,17,8,10],[3,18,1,8,4,16,10,5],[3,19,1,3,12,13,2,14],[3,20,1,4,16,21,8,10],[3,22,1,12,23,24,3,25],[3,26,1,3,12,27,2,14],[3,28,1,4,16,17,8,10],[3,29,1,12,23,24,3,25],[3,30,1,16,27,31,4,2],[3,32,1,4,16,33,8,10],[3,34,1,12,23,35,3,25],[3,36,1,16,27,37,4,2],[3,38,1,23,13,39,12,40],[3,41,1,12,23,21,3,25],[3,42,1,16,27,43,4,2],[3,44,1,23,13,45,12,40],[3,46,1,27,33,47,16,8],[3,48,1,16,27,35,4,2],[3,49,1,23,13,50,12,40],[3,51,1,27,33,52,16,8],[3,53,1,13,54,55,23,56]],"weight":72},"science-compound":{"title":"Два года роста","patterns":["В начале %d устройств. Их количество растёт на %d% в год. Сколько устройств будет через два года?","Каждый год умножаем на %d,%d. За два года множитель %d,%d.","%d"],"strings":["0:300:10","1:1:1:1:21","2:363","2:360","2:330","2:303","2:366","0:400:10","2:484","2:480","2:440","2:404","2:488","0:500:10","2:605","2:600","2:550","2:505","2:610","0:600:10","2:726","2:720","2:660","2:606","2:732","0:700:10","2:847","2:840","2:770","2:707","2:854","0:800:10","2:968","2:960","2:880","2:808","2:976"],"variants":[[12,0,1,2,3,4,5,6],[12,7,1,8,9,10,11,12],[12,13,1,14,15,16,17,18],[12,19,1,20,21,22,23,24],[12,25,1,26,27,28,29,30],[12,31,1,32,33,34,35,36]],"weight":72},"science-distance":{"title":"Вдоль улиц","patterns":["Точки имеют координаты (%d, %d) и (%d, %d). Можно идти только горизонтально и вертикально. Какова длина кратчайшего пути?","Нужно пройти %d единиц по горизонтали и %d по вертикали. Складываем эти расстояния.","%d"],"strings":["0:3:2:5:5","1:2:3","2:5","2:6","2:3","2:2","2:10","0:3:2:6:5","1:3:3","2:9","2:12","0:3:2:7:5","1:4:3","2:7","2:4","2:14","0:3:3:5:6","0:3:3:6:6","0:3:3:7:6","0:3:4:5:7","0:3:4:6:7","0:3:4:7:7","0:3:5:5:8","0:3:5:6:8","0:3:5:7:8","0:4:2:6:6","1:2:4","2:8","0:4:2:7:6","1:3:4","0:4:2:8:6","1:4:4","2:16","0:4:3:6:7","0:4:3:7:7","0:4:3:8:7","0:4:4:6:8","0:4:4:7:8","0:4:4:8:8","0:4:5:6:9","0:4:5:7:9","0:4:5:8:9","0:5:2:7:7","1:2:5","0:5:2:8:7","1:3:5","2:15","0:5:2:9:7","1:4:5","2:20","2:18","0:5:3:7:8","0:5:3:8:8","0:5:3:9:8","0:5:4:7:9","0:5:4:8:9","0:5:4:9:9","0:5:5:7:10","0:5:5:8:10","0:5:5:9:10","0:6:2:8:8","1:2:6","0:6:2:9:8","1:3:6","0:6:2:10:8","1:4:6","2:24","0:6:3:8:9","0:6:3:9:9","0:6:3:10:9","0:6:4:8:10","0:6:4:9:10","0:6:4:10:10","0:6:5:8:11","0:6:5:9:11","0:6:5:10:11","0:7:2:9:9","1:2:7","0:7:2:10:9","1:3:7","2:21","0:7:2:11:9","1:4:7","2:11","2:28","2:22","0:7:3:9:10","0:7:3:10:10","0:7:3:11:10","0:7:4:9:11","0:7:4:10:11","0:7:4:11:11","0:7:5:9:12","0:7:5:10:12","0:7:5:11:12","0:8:2:10:10","1:2:8","0:8:2:11:10","1:3:8","0:8:2:12:10","1:4:8","2:32","0:8:3:10:11","0:8:3:11:11","0:8:3:12:11","0:8:4:10:12","0:8:4:11:12","0:8:4:12:12","0:8:5:10:13","0:8:5:11:13","0:8:5:12:13"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,3,9,4,10],[1,11,12,13,10,4,14,15],[1,16,1,2,3,4,5,6],[1,17,8,3,9,4,10],[1,18,12,13,10,4,14,15],[1,19,1,2,3,4,5,6],[1,20,8,3,9,4,10],[1,21,12,13,10,4,14,15],[1,22,1,2,3,4,5,6],[1,23,8,3,9,4,10],[1,24,12,13,10,4,14,15],[1,25,26,3,27,14,5,10],[1,28,29,13,10,14,4,15],[1,30,31,27,32,14,13,9],[1,33,26,3,27,14,5,10],[1,34,29,13,10,14,4,15],[1,35,31,27,32,14,13,9],[1,36,26,3,27,14,5,10],[1,37,29,13,10,14,4,15],[1,38,31,27,32,14,13,9],[1,39,26,3,27,14,5,10],[1,40,29,13,10,14,4,15],[1,41,31,27,32,14,13,9],[1,42,43,13,6,2,5,15],[1,44,45,27,46,2,4,32],[1,47,48,9,49,2,14,50],[1,51,43,13,6,2,5,15],[1,52,45,27,46,2,4,32],[1,53,48,9,49,2,14,50],[1,54,43,13,6,2,5,15],[1,55,45,27,46,2,4,32],[1,56,48,9,49,2,14,50],[1,57,43,13,6,2,5,15],[1,58,45,27,46,2,4,32],[1,59,48,9,49,2,14,50],[1,60,61,27,10,3,5,32],[1,62,63,9,50,3,4],[1,64,65,6,66,3,14,49],[1,67,61,27,10,3,5,32],[1,68,63,9,50,3,4],[1,69,65,6,66,3,14,49],[1,70,61,27,10,3,5,32],[1,71,63,9,50,3,4],[1,72,65,6,66,3,14,49],[1,73,61,27,10,3,5,32],[1,74,63,9,50,3,4],[1,75,65,6,66,3,14,49],[1,76,77,9,15,13,5,50],[1,78,79,6,80,13,4,49],[1,81,82,83,84,13,14,85],[1,86,77,9,15,13,5,50],[1,87,79,6,80,13,4,49],[1,88,82,83,84,13,14,85],[1,89,77,9,15,13,5,50],[1,90,79,6,80,13,4,49],[1,91,82,83,84,13,14,85],[1,92,77,9,15,13,5,50],[1,93,79,6,80,13,4,49],[1,94,82,83,84,13,14,85],[1,95,96,6,32,27,5,49],[1,97,98,83,66,27,4,85],[1,99,100,10,101,27,14,66],[1,102,96,6,32,27,5,49],[1,103,98,83,66,27,4,85],[1,104,100,10,101,27,14,66],[1,105,96,6,32,27,5,49],[1,106,98,83,66,27,4,85],[1,107,100,10,101,27,14,66],[1,108,96,6,32,27,5,49],[1,109,98,83,66,27,4,85],[1,110,100,10,101,27,14,66]],"weight":72},"science-growth":{"title":"Процент роста","patterns":["Производство увеличилось с %d до %d единиц. На сколько процентов оно выросло?","Прирост %d. Делим его на исходное %d и умножаем на %d%.","%d%"],"strings":["0:30:36","1:6:30:100","2:20","2:10","2:2","2:40","2:120","0:30:39","1:9:30:100","2:30","2:15","2:3","2:60","2:130","0:30:42","1:12:30:100","2:4","2:80","2:140","0:30:45","1:15:30:100","2:50","2:25","2:5","2:100","2:150","0:40:48","1:8:40:100","0:40:52","1:12:40:100","0:40:56","1:16:40:100","0:40:60","1:20:40:100","0:50:60","1:10:50:100","0:50:65","1:15:50:100","0:50:70","1:20:50:100","0:50:75","1:25:50:100","0:60:72","1:12:60:100","0:60:78","1:18:60:100","0:60:84","1:24:60:100","0:60:90","1:30:60:100","0:70:84","1:14:70:100","0:70:91","1:21:70:100","0:70:98","1:28:70:100","0:70:105","1:35:70:100","0:80:96","1:16:80:100","0:80:104","1:24:80:100","0:80:112","1:32:80:100","0:80:120","1:40:80:100"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,9,10,11,12,13],[3,14,15,5,2,16,17,18],[3,19,20,21,22,23,24,25],[3,26,27,2,3,4,5,6],[3,28,29,9,10,11,12,13],[3,30,31,5,2,16,17,18],[3,32,33,21,22,23,24,25],[3,34,35,2,3,4,5,6],[3,36,37,9,10,11,12,13],[3,38,39,5,2,16,17,18],[3,40,41,21,22,23,24,25],[3,42,43,2,3,4,5,6],[3,44,45,9,10,11,12,13],[3,46,47,5,2,16,17,18],[3,48,49,21,22,23,24,25],[3,50,51,2,3,4,5,6],[3,52,53,9,10,11,12,13],[3,54,55,5,2,16,17,18],[3,56,57,21,22,23,24,25],[3,58,59,2,3,4,5,6],[3,60,61,9,10,11,12,13],[3,62,63,5,2,16,17,18],[3,64,65,21,22,23,24,25]],"weight":72},"science-profit":{"title":"Наценка и скидка","patterns":["Изделие стоило в изготовлении %d рублей. На него сделали наценку %d%, потом скидку %d% от продажной цены. Какова прибыль в рублях?","Продажа: %d × %d,%d × %d,%d = %d. Вычитаем себестоимость.","%d руб."],"strings":["0:300:50:20","1:300:1:5:0:8:360","2:60","2:90","2:30","2:150","2:360","0:400:50:20","1:400:1:5:0:8:480","2:80","2:120","2:40","2:200","2:480","0:500:50:20","1:500:1:5:0:8:600","2:100","2:50","2:250","2:600","0:600:50:20","1:600:1:5:0:8:720","2:180","2:300","2:720","0:700:50:20","1:700:1:5:0:8:840","2:140","2:210","2:70","2:350","2:840","0:800:50:20","1:800:1:5:0:8:960","2:160","2:240","2:400","2:960"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,10,11,12,13],[12,14,15,16,5,17,18,19],[12,20,21,10,22,2,23,24],[12,25,26,27,28,29,30,31],[12,32,33,34,35,9,36,37]],"weight":72},"science-restore":{"title":"Вернуть прежнее","patterns":["Запас %d единиц сократили на %d%. На сколько процентов нужно увеличить оставшийся запас, чтобы вернуть прежний?","Осталось %d% исходного. Нужно добавить %d/%d = %d/%d оставшегося запаса, то есть %d%.","%d%"],"strings":["0:300:20","1:80:20:80:1:4:25","2:25","2:20","2:40","2:50","2:80","0:400:20","0:500:20","0:600:20","0:700:20","0:800:20"],"variants":[[12,0,1,2,3,4,5,6],[12,7,1,2,3,4,5,6],[12,8,1,2,3,4,5,6],[12,9,1,2,3,4,5,6],[12,10,1,2,3,4,5,6],[12,11,1,2,3,4,5,6]],"weight":72},"science-reverse":{"title":"Исходная цена","patterns":["После увеличения на %d% цена равна %d рублей. Какой она была?","Итоговая цена — %d/%d исходной. Умножаем её на %d/%d.","%d руб."],"strings":["0:25:75","1:5:4:4:5","2:60","2:45","2:72","2:75","2:54","0:25:100","2:80","2:96","2:100","0:25:125","2:120","2:125","2:90","0:25:150","2:144","2:150","2:108","0:25:175","2:140","2:105","2:168","2:175","2:126","0:25:200","2:160","2:192","2:200"],"variants":[[12,0,1,2,3,4,5,6],[12,7,1,8,2,9,10,4],[12,11,1,10,5,12,13,14],[12,15,1,12,14,16,17,18],[12,19,1,20,21,22,23,24],[12,25,1,26,12,27,28,16]],"weight":72},"science-successive":{"title":"Два изменения","patterns":["Цена %d рублей сначала выросла на %d%, а затем снизилась на %d%. Какова итоговая цена?","Коэффициенты перемножаются: %d,%d × %d,%d = %d,%d. Итог — %d% исходной цены.","%d руб."],"strings":["0:300:20:20","1:1:2:0:8:0:96:96","2:288","2:300","2:240","2:360","2:312","0:400:20:20","2:384","2:400","2:320","2:480","2:416","0:500:20:20","2:500","2:600","2:520","0:600:20:20","2:576","2:720","2:624","0:700:20:20","2:672","2:700","2:560","2:840","2:728","0:800:20:20","2:768","2:800","2:640","2:960","2:832"],"variants":[[12,0,1,2,3,4,5,6],[12,7,1,8,9,10,11,12],[12,13,1,11,14,9,15,16],[12,17,1,18,15,11,19,20],[12,21,1,22,23,24,25,26],[12,27,1,28,29,30,31,32]],"weight":72},"science-tariff":{"title":"Два тарифа","patterns":["Тариф A: %d рублей за подключение и %d за единицу. Тариф B: без подключения, но %d за единицу. При скольких единицах цены сравняются?","A = %d + %dx, B = %dx. Разница в цене единицы %d покрывает подключение за %d единиц.","%d"],"strings":["0:6:2:4","1:6:2:4:2:3","2:3","2:6","2:5","2:8","0:9:3:6","1:9:3:6:3:3","2:9","2:12","0:12:4:8","1:12:4:8:4:3","2:7","2:16","0:15:5:10","1:15:5:10:5:3","2:15","2:20","0:8:2:4","1:8:2:4:2:4","2:4","2:10","0:12:3:6","1:12:3:6:3:4","0:16:4:8","1:16:4:8:4:4","0:20:5:10","1:20:5:10:5:4","2:25","0:10:2:4","1:10:2:4:2:5","0:15:3:6","1:15:3:6:3:5","2:18","0:20:4:8","1:20:4:8:4:5","2:24","0:25:5:10","1:25:5:10:5:5","2:30","0:12:2:4","1:12:2:4:2:6","2:14","0:18:3:6","1:18:3:6:3:6","2:21","0:24:4:8","1:24:4:8:4:6","2:28","0:30:5:10","1:30:5:10:5:6","2:11","2:35","0:14:2:4","1:14:2:4:2:7","0:21:3:6","1:21:3:6:3:7","0:28:4:8","1:28:4:8:4:7","2:32","0:35:5:10","1:35:5:10:5:7","2:40","0:16:2:4","1:16:2:4:2:8","0:24:3:6","1:24:3:6:3:8","2:27","0:32:4:8","1:32:4:8:4:8","2:36","0:40:5:10","1:40:5:10:5:8","2:13","2:45"],"variants":[[3,0,1,2,3,4,5],[3,6,7,2,8,3,9],[3,10,11,2,9,3,12,13],[3,14,15,2,16,3,5,17],[3,18,19,20,5,3,21],[3,22,23,20,9,5,12,16],[3,24,25,20,13,5,17],[3,26,27,20,17,5,8,28],[3,29,30,4,21,12,9],[3,31,32,4,16,21,5,33],[3,34,35,4,17,21,8,36],[3,37,38,4,28,21,39],[3,40,41,3,9,5,42],[3,43,44,3,33,9,8,45],[3,46,47,3,36,9,21,48],[3,49,50,3,39,9,51,52],[3,53,54,12,42,8,13],[3,55,56,12,45,42,21,36],[3,57,58,12,48,42,51,59],[3,60,61,12,52,42,9,62],[3,63,64,5,13,21,33],[3,65,66,5,36,13,51,67],[3,68,69,5,59,13,9,70],[3,71,72,5,62,13,73,74]],"weight":72},"science-volume-scale":{"title":"Масштаб объёма","patterns":["Каждое ребро кубической ёмкости увеличили в %d раза. Во сколько раз вырос её объём?","Объём зависит от трёх размеров: множитель %d × %d × %d.","%d"],"strings":["0:2","1:2:2:2","2:8","2:1","2:2","2:4","2:16","2:32","0:3","1:3:3:3","2:27","2:3","2:9","2:81","2:243","0:4","1:4:4:4","2:64","2:256","2:1024","0:5","1:5:5:5","2:125","2:5","2:25","2:625","2:3125"],"variants":[[18,0,1,2,3,4,5,6,7],[18,8,9,10,3,11,12,13,14],[18,15,16,17,3,5,6,18,19],[18,20,21,22,3,23,24,25,26]],"weight":72}},"oracle":{"science-absolute":{"title":"Модуль","patterns":["Уравнение |x − %d| = %d имеет два корня. Чему равно расстояние между ними?","Корни находятся на расстоянии %d слева и справа от %d, между ними %d.","%d"],"strings":["0:2:2","1:2:2:4","2:4","2:2","2:6","2:3","2:5","0:2:3","1:3:2:6","2:8","0:2:4","1:4:2:8","2:10","0:2:5","1:5:2:10","2:7","2:12","0:3:2","1:2:3:4","0:3:3","1:3:3:6","2:9","0:3:4","1:4:3:8","2:11","0:3:5","1:5:3:10","2:13","0:4:2","1:2:4:4","0:4:3","1:3:4:6","0:4:4","1:4:4:8","0:4:5","1:5:4:10","2:14","0:5:2","1:2:5:4","0:5:3","1:3:5:6","0:5:4","1:4:5:8","0:5:5","1:5:5:10","2:15","0:6:2","1:2:6:4","0:6:3","1:3:6:6","0:6:4","1:4:6:8","0:6:5","1:5:6:10","2:16"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,4,5,2,6,9],[3,10,11,9,2,4,12],[3,13,14,12,6,2,15,16],[3,17,18,2,3,4,6,15],[3,19,20,4,5,21,6,15],[3,22,23,9,2,4,15,24],[3,25,26,12,6,4,9,27],[3,28,29,2,3,9,4],[3,30,31,4,5,9,15,12],[3,32,33,9,2,16,15,21],[3,34,35,12,6,9,21,36],[3,37,38,2,3,12,15,21],[3,39,40,4,5,12,9,24],[3,41,42,9,2,12,21,27],[3,43,44,12,6,45,21,24],[3,46,47,2,3,16,9,12],[3,48,49,4,5,16,21],[3,50,51,9,2,16,12,36],[3,52,53,12,6,16,24,54]],"weight":60},"science-average-change":{"title":"Средняя скорость изменения","patterns":["f(x) = x². Чему равно (f(%d) − f(%d)) / %d?","Разность квадратов делится на разность аргументов. Остаётся их сумма: %d + %d.","%d"],"strings":["0:4:2:2","1:4:2","2:6","2:12","2:4","2:8","0:5:2:3","1:5:2","2:7","2:21","2:10","2:5","0:6:2:4","1:6:2","2:32","0:7:2:5","1:7:2","2:9","2:45","2:14","0:5:3:2","1:5:3","2:16","0:6:3:3","1:6:3","2:27","0:7:3:4","1:7:3","2:40","0:8:3:5","1:8:3","2:11","2:55","0:6:4:2","1:6:4","2:20","0:7:4:3","1:7:4","2:33","0:8:4:4","1:8:4","2:48","0:9:4:5","1:9:4","2:13","2:65","2:18","0:7:5:2","1:7:5","2:24","0:8:5:3","1:8:5","2:39","0:9:5:4","1:9:5","2:56","0:10:5:5","1:10:5","2:15","2:75","0:8:6:2","1:8:6","2:28","0:9:6:3","1:9:6","0:10:6:4","1:10:6","2:64","0:11:6:5","1:11:6","2:17","2:85","2:22"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,9,4,10,11],[3,12,13,5,14,4,3,2],[3,15,16,17,18,4,19,8],[3,20,21,5,22,2,10,11],[3,23,24,17,25,2,3],[3,26,27,10,28,2,19,8],[3,29,30,31,32,2,22,5],[3,33,34,10,35,5,3,2],[3,36,37,31,38,5,19,8],[3,39,40,3,41,5,22],[3,42,43,44,45,5,46,17],[3,47,48,3,49,10,19,8],[3,50,51,44,52,10,22,5],[3,53,54,19,55,10,46,17],[3,56,57,58,59,10,35],[3,60,61,19,62,3,22,5],[3,63,64,58,18,3,46,17],[3,65,66,22,67,3,35,10],[3,68,69,70,71,3,72,31]],"weight":60},"science-composition":{"title":"Две функции","patterns":["f(x) = %dx + %d, g(x) = x − %d. Чему равно f(g(%d))?","Сначала g(%d) = %d, затем f(%d) = %d.","%d"],"strings":["0:2:2:2:4","1:4:2:2:6","2:6","2:10","2:4","2:8","0:2:2:3:5","1:5:2:2:6","2:12","2:3","0:2:2:4:6","1:6:2:2:6","2:14","2:2","0:2:3:2:5","1:5:3:3:9","2:9","2:13","2:7","0:2:3:3:6","1:6:3:3:9","2:15","0:2:3:4:7","1:7:3:3:9","2:17","2:5","0:2:4:2:6","1:6:4:4:12","2:16","0:2:4:3:7","1:7:4:4:12","2:18","0:2:4:4:8","1:8:4:4:12","2:20","0:2:5:2:7","1:7:5:5:15","2:19","0:2:5:3:8","1:8:5:5:15","2:21","0:2:5:4:9","1:9:5:5:15","2:23","2:11","0:3:2:2:4","1:4:2:2:8","0:3:2:3:5","1:5:2:2:8","0:3:2:4:6","1:6:2:2:8","0:3:3:2:5","1:5:3:3:12","0:3:3:3:6","1:6:3:3:12","0:3:3:4:7","1:7:3:3:12","2:24","0:3:4:2:6","1:6:4:4:16","2:22","0:3:4:3:7","1:7:4:4:16","2:25","0:3:4:4:8","1:8:4:4:16","2:28","0:3:5:2:7","1:7:5:5:20","2:26","0:3:5:3:8","1:8:5:5:20","2:29","0:3:5:4:9","1:9:5:5:20","2:32","2:27","0:4:2:2:4","1:4:2:2:10","0:4:2:3:5","1:5:2:2:10","0:4:2:4:6","1:6:2:2:10","0:4:3:2:5","1:5:3:3:15","0:4:3:3:6","1:6:3:3:15","0:4:3:4:7","1:7:3:3:15","2:31","0:4:4:2:6","1:6:4:4:20","0:4:4:3:7","1:7:4:4:20","0:4:4:4:8","1:8:4:4:20","2:36","0:4:5:2:7","1:7:5:5:25","2:33","0:4:5:3:8","1:8:5:5:25","2:37","0:4:5:4:9","1:9:5:5:25","2:41","0:5:2:2:4","1:4:2:2:12","0:5:2:3:5","1:5:2:2:12","0:5:2:4:6","1:6:2:2:12","2:30","0:5:3:2:5","1:5:3:3:18","0:5:3:3:6","1:6:3:3:18","0:5:3:4:7","1:7:3:3:18","2:38","2:35","0:5:4:2:6","1:6:4:4:24","2:34","0:5:4:3:7","1:7:4:4:24","2:39","0:5:4:4:8","1:8:4:4:24","2:44","2:40","0:5:5:2:7","1:7:5:5:30","0:5:5:3:8","1:8:5:5:30","2:45","0:5:5:4:9","1:9:5:5:30","2:50","0:6:2:2:4","1:4:2:2:14","0:6:2:3:5","1:5:2:2:14","0:6:2:4:6","1:6:2:2:14","0:6:3:2:5","1:5:3:3:21","0:6:3:3:6","1:6:3:3:21","0:6:3:4:7","1:7:3:3:21","2:42","0:6:4:2:6","1:6:4:4:28","0:6:4:3:7","1:7:4:4:28","2:46","0:6:4:4:8","1:8:4:4:28","2:52","2:48","0:6:5:2:7","1:7:5:5:35","2:47","0:6:5:3:8","1:8:5:5:35","2:53","0:6:5:4:9","1:9:5:5:35","2:59","2:54"],"variants":[[1,0,1,2,3,4,5],[1,6,7,2,8,4,9,3],[1,10,11,2,12,4,13,8],[1,14,15,16,17,2,18,3],[1,19,20,16,21,2,8],[1,22,23,16,24,2,25,12],[1,26,27,8,28,5,3],[1,29,30,8,31,5,16,12],[1,32,33,8,34,5,28],[1,35,36,21,37,3,17,12],[1,38,39,21,40,3,8,28],[1,41,42,21,43,3,44,31],[1,45,46,5,12,2,8],[1,47,48,5,24,2,25,21],[1,49,50,5,34,2,4,31],[1,51,52,8,31,16,3,21],[1,53,54,8,40,16,31],[1,55,56,8,57,16,5,40],[1,58,59,28,60,8,12,31],[1,61,62,28,63,8,17,40],[1,64,65,28,66,8,57],[1,67,68,34,69,21,31,40],[1,70,71,34,72,21,24,57],[1,73,74,34,75,21,28,76],[1,77,78,3,31,5,28],[1,79,80,3,60,5,18,34],[1,81,82,3,69,5,2,57],[1,83,84,21,43,8,17,34],[1,85,86,21,76,8,57],[1,87,88,21,89,8,44,66],[1,90,91,34,66,28,31,57],[1,92,93,34,75,28,24,66],[1,94,95,34,96,28,75],[1,97,98,63,99,34,43,66],[1,100,101,63,102,34,60,75],[1,103,104,63,105,34,40,96],[1,106,107,8,60,3,34],[1,108,109,8,76,3,16,63],[1,110,111,8,75,3,5,112],[1,113,114,31,66,21,28,63],[1,115,116,31,99,21,112],[1,117,118,31,119,21,12,120],[1,121,122,57,123,34,60,112],[1,124,125,57,126,34,40,120],[1,127,128,57,129,34,130],[1,131,132,112,130,63,66,120],[1,133,134,112,135,63,76,130],[1,136,137,112,138,63,69,135],[1,139,140,12,69,8,57],[1,141,142,12,75,8,44,112],[1,143,144,12,119,8,3,96],[1,145,146,40,99,31,37,112],[1,147,148,40,126,31,96],[1,149,150,40,135,31,24,151],[1,152,153,66,130,57,69,96],[1,154,155,66,156,57,63,151],[1,157,158,66,159,57,160],[1,161,162,120,163,112,99,151],[1,164,165,120,166,112,75,160],[1,167,168,120,169,112,89,170]],"weight":60},"science-domain":{"title":"Область определения","patterns":["Какое наименьшее действительное x допустимо в выражении √(x − %d)?","Подкоренное выражение должно быть неотрицательным: x ≥ %d.","%d","-%d"],"strings":["0:4","1:4","2:4","3:4","2:0","2:2","0:6","1:6","2:6","3:6","2:3","2:5","0:8","1:8","2:8","3:8","0:10","1:10","2:10","3:10","2:7","0:9","1:9","2:9","3:9","0:12","1:12","2:12","3:12","0:15","1:15","2:15","3:15","0:16","1:16","2:16","3:16","0:20","1:20","2:20","3:20","0:25","1:25","2:25","3:25","0:18","1:18","2:18","3:18","0:24","1:24","2:24","3:24","0:30","1:30","2:30","3:30","2:11"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,9,4,5,10,11],[3,12,13,14,15,4,5,2,8],[3,16,17,18,19,4,5,11,20],[3,6,7,8,9,4,10,5,11],[3,21,22,23,24,4,10,8],[3,25,26,27,28,4,10,2,20],[3,29,30,31,32,4,10,11,14],[3,12,13,14,15,4,2,5,8],[3,25,26,27,28,4,2,10,20],[3,33,34,35,36,4,2,14],[3,37,38,39,40,4,2,11,23],[3,16,17,18,19,4,11,5,20],[3,29,30,31,32,4,11,10,14],[3,37,38,39,40,4,11,2,23],[3,41,42,43,44,4,11,18],[3,25,26,27,28,4,8,5,14],[3,45,46,47,48,4,8,10,23],[3,49,50,51,52,4,8,2,18],[3,53,54,55,56,4,8,11,57]],"weight":60},"science-factor":{"title":"Вынести множитель","patterns":["Уравнение x² − %dx = %d имеет корень %d. Чему равен второй корень?","Выносим x: x(x − %d) = %d. Второй множитель обращается в ноль при x = %d.","%d","-%d"],"strings":["0:4:0:0","1:4:0:4","2:4","3:4","2:0","2:3","2:5","0:5:0:0","1:5:0:5","3:5","2:6","3:1","2:1","0:6:0:0","1:6:0:6","3:6","2:8","3:2","2:2","0:7:0:0","1:7:0:7","2:7","3:7","2:10","3:3","2:9","2:12","0:8:0:0","1:8:0:8","3:8","2:15","2:16","0:9:0:0","1:9:0:9","3:9","2:20","0:10:0:0","1:10:0:10","3:10","2:25","2:18","2:24","0:11:0:0","1:11:0:11","2:11","3:11","2:30"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,6,9,4,10,11,12],[3,13,14,10,15,4,16,17,18],[3,19,20,21,22,4,23,24,5],[3,7,8,6,9,4,10,12,11],[3,13,14,10,15,4,25],[3,19,20,21,22,4,26,11,12],[3,27,28,16,29,4,30,17,18],[3,13,14,10,15,4,16,18,17],[3,19,20,21,22,4,26,12,11],[3,27,28,16,29,4,31],[3,32,33,25,34,4,35,11,12],[3,19,20,21,22,4,23,5,24],[3,27,28,16,29,4,30,18,17],[3,32,33,25,34,4,35,12,11],[3,36,37,23,38,4,39],[3,27,28,16,29,4,26,2,3],[3,32,33,25,34,4,40,5,24],[3,36,37,23,38,4,41,18,17],[3,42,43,44,45,4,46,12,11]],"weight":60},"science-intersection":{"title":"Пересечение","patterns":["При каком x прямые y = %dx и y = %dx + %d пересекаются?","В точке пересечения значения y равны: %dx = %dx + %d, значит x = %d.","%d","-%d"],"strings":["0:3:2:2","1:3:2:2:2","2:2","2:4","3:2","2:6","0:4:3:2","1:4:3:2:2","2:8","2:5","0:5:4:2","1:5:4:2:2","2:10","0:6:5:2","1:6:5:2:2","2:12","2:7","0:3:2:3","1:3:2:3:3","2:3","3:3","2:9","0:4:3:3","1:4:3:3:3","0:5:4:3","1:5:4:3:3","2:15","0:6:5:3","1:6:5:3:3","2:18","0:3:2:4","1:3:2:4:4","3:4","0:4:3:4","1:4:3:4:4","2:16","0:5:4:4","1:5:4:4:4","2:20","0:6:5:4","1:6:5:4:4","2:24","0:3:2:5","1:3:2:5:5","3:5","0:4:3:5","1:4:3:5:5","0:5:4:5","1:5:4:5:5","2:25","0:6:5:5","1:6:5:5:5","2:30","0:3:2:6","1:3:2:6:6","3:6","0:4:3:6","1:4:3:6:6","0:5:4:6","1:5:4:6:6","0:6:5:6","1:6:5:6:6","2:36","2:11"],"variants":[[3,0,1,2,3,4,5],[3,6,7,2,5,4,8,9],[3,10,11,2,8,4,12,5],[3,13,14,2,12,4,15,16],[3,17,18,19,5,20,21,9],[3,22,23,19,21,20,15,5],[3,24,25,19,15,20,26,16],[3,27,28,19,26,20,29,8],[3,30,31,3,8,32,15,5],[3,33,34,3,15,32,35,16],[3,36,37,3,35,32,38,8],[3,39,40,3,38,32,41,21],[3,42,43,9,12,44,26,16],[3,45,46,9,26,44,38,8],[3,47,48,9,38,44,49,21],[3,50,51,9,49,44,52,12],[3,53,54,5,15,55,29,8],[3,56,57,5,29,55,41,21],[3,58,59,5,41,55,52,12],[3,60,61,5,52,55,62,63]],"weight":60},"science-inverse":{"title":"Обратная функция","patterns":["f(x) = %dx − %d. Найдите x, если f(x) = %d.","Прибавляем %d, затем делим на коэффициент %d.","%d","-%d"],"strings":["0:2:2:2","1:2:2","2:2","2:4","2:0","3:2","0:2:3:1","1:3:2","2:1","0:2:4:0","1:4:2","3:4","0:3:2:4","1:2:3","2:6","0:3:3:3","1:3:3","2:3","0:3:4:2","1:4:3","0:4:2:6","1:2:4","2:8","0:4:3:5","1:3:4","2:5","0:4:4:4","1:4:4","0:5:2:8","1:2:5","2:10","0:5:3:7","1:3:5","2:7","0:5:4:6","1:4:5","0:2:2:4","3:3","0:2:3:3","0:2:4:2","0:3:2:7","2:9","0:3:3:6","0:3:4:5","0:4:2:10","2:12","0:4:3:9","0:4:4:8","0:5:2:13","2:13","2:15","2:11","0:5:3:12","0:5:4:11","0:2:2:6","0:2:3:5","0:2:4:4","0:3:2:10","0:3:3:9","0:3:4:8","0:4:2:14","2:14","2:16","0:4:3:13","0:4:4:12","0:5:2:18","2:18","2:20","0:5:3:17","2:17","0:5:4:16","0:2:2:8","3:5","0:2:3:7","0:2:4:6","0:3:2:13","0:3:3:12","0:3:4:11","0:4:2:18","0:4:3:17","0:4:4:16","0:5:2:23","2:23","2:25","2:21","0:5:3:22","2:22","2:19","0:5:4:21","0:2:2:10","3:6","0:2:3:9","0:2:4:8","0:3:2:16","0:3:3:15","0:3:4:14","0:4:2:22","2:24","0:4:3:21","0:4:4:20","0:5:2:28","2:28","2:30","2:26","0:5:3:27","2:27","0:5:4:26"],"variants":[[1,0,1,2,3,4,5],[1,6,7,2,8,3,5],[1,9,10,2,4,3,11,5],[1,12,13,2,3,14,5],[1,15,16,2,17,14,4,5],[1,18,19,2,14,5,8,17],[1,20,21,2,14,22,3,5],[1,23,24,2,25,22,5],[1,26,27,2,3,22,4,5],[1,28,29,2,22,30,14,5],[1,31,32,2,33,30,3,5],[1,34,35,2,14,30,5],[1,36,1,17,3,14,2,37],[1,38,7,17,14,4,37],[1,39,10,17,2,14,5,37],[1,40,13,17,33,41,25,37],[1,42,16,17,14,41,37],[1,43,19,17,25,41,8,37],[1,44,21,17,30,45,22,37],[1,46,24,17,41,45,14,37],[1,47,27,17,22,45,3,37],[1,48,29,17,49,50,51,37],[1,52,32,17,45,50,41,37],[1,53,35,17,51,50,33,37],[1,54,1,3,14,22,11],[1,55,7,3,25,22,2,11],[1,56,10,3,22,4,11],[1,57,13,3,30,45,22,11],[1,58,16,3,41,45,14,11],[1,59,19,3,22,45,11],[1,60,21,3,61,62,45,11],[1,63,24,3,49,62,30,11],[1,64,27,3,45,62,22,11],[1,65,29,3,66,67,62,11],[1,68,32,3,69,67,61,11],[1,70,35,3,62,67,45,11],[1,71,1,25,22,30,14,72],[1,73,7,25,33,30,3,72],[1,74,10,25,14,30,2,72],[1,75,13,25,49,50,51,72],[1,76,16,25,45,50,41,72],[1,77,19,25,51,50,33,72],[1,78,21,25,66,67,62,72],[1,79,24,25,69,67,61,72],[1,80,27,25,62,67,45,72],[1,81,29,25,82,83,84,72],[1,85,32,25,86,83,87,72],[1,88,35,25,84,83,69,72],[1,89,1,14,30,45,22,90],[1,91,7,14,41,45,90],[1,92,10,14,22,45,3,90],[1,93,13,14,62,66,61,90],[1,94,16,14,50,66,45,90],[1,95,19,14,61,66,30,90],[1,96,21,14,86,97,67,90],[1,98,24,14,84,97,66,90],[1,99,27,14,67,97,62,90],[1,100,29,14,101,102,103,90],[1,104,32,14,105,102,97,90],[1,106,35,14,103,102,86,90]],"weight":60},"science-maximum":{"title":"Максимум","patterns":["Чему равно наибольшее значение функции y = %d − (x − %d)²?","Вычитаемый квадрат не меньше нуля. Максимум достигается при x = %d и равен %d.","%d","-%d"],"strings":["0:4:2","1:2:4","2:4","2:2","2:0","2:8","3:4","0:4:3","1:3:4","2:3","3:5","2:13","0:4:4","1:4:4","3:12","2:20","0:6:2","1:2:6","2:6","2:10","3:6","0:6:3","1:3:6","3:3","2:15","0:6:4","1:4:6","3:10","2:22","0:8:2","1:2:8","2:12","3:8","0:8:3","1:3:8","3:1","2:17","0:8:4","1:4:8","2:24","0:10:2","1:2:10","2:14","0:10:3","1:3:10","2:1","2:19","0:10:4","1:4:10","2:26","0:9:2","1:2:9","2:9","2:5","3:9","0:9:3","1:3:9","2:18","0:9:4","1:4:9","3:7","2:25","0:12:2","1:2:12","2:16","0:12:3","1:3:12","2:21","0:12:4","1:4:12","2:28","0:15:2","1:2:15","2:11","3:15","0:15:3","1:3:15","0:15:4","1:4:15","2:31","0:16:2","1:2:16","3:16","0:16:3","1:3:16","2:7","0:16:4","1:4:16","2:32","0:20:2","1:2:20","3:20","0:20:3","1:3:20","2:29","0:20:4","1:4:20","2:36","0:25:2","1:2:25","3:25","0:25:3","1:3:25","2:34","0:25:4","1:4:25","2:41","0:18:2","1:2:18","3:18","0:18:3","1:3:18","2:27","0:18:4","1:4:18","0:24:2","1:2:24","3:24","0:24:3","1:3:24","2:33","0:24:4","1:4:24","2:40","0:30:2","1:2:30","2:30","3:30","0:30:3","1:3:30","2:39","0:30:4","1:4:30","2:46"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,9,10,11,6],[1,12,13,2,14,15,6],[2,16,17,18,3,19,20],[2,21,22,18,9,23,24,20],[2,25,26,18,2,27,28,20],[2,29,30,5,3,2,31,32],[2,33,34,5,9,35,36,32],[2,37,38,5,2,32,39],[2,40,41,19,3,18,42,27],[2,43,44,19,9,45,46,27],[2,47,48,19,2,20,49,27],[1,50,51,52,3,53,11,54],[1,55,56,52,9,4,57,54],[1,58,59,52,2,60,61,54],[3,62,63,31,3,5,64,14],[3,65,66,31,9,67,14],[3,68,69,31,2,6,70,14],[2,71,72,24,3,73,46,74],[2,75,76,24,9,18,39,74],[2,77,78,24,2,35,79,74],[1,80,81,64,3,31,15,82],[1,83,84,64,9,85,61,82],[1,86,87,64,2,4,88,82],[2,89,90,15,3,64,39,91],[2,92,93,15,9,73,94,91],[2,95,96,15,2,97,91],[1,98,99,61,3,67,94,100],[1,101,102,61,9,64,103,100],[1,104,105,61,2,52,106,100],[1,107,108,57,3,42,28,109],[1,110,111,57,9,52,112,109],[1,113,114,57,2,3,103,109],[1,115,116,39,3,15,70,117],[1,118,119,39,9,24,120,117],[1,121,122,39,2,5,123,117],[1,124,125,126,3,49,103,127],[1,128,129,126,9,67,130,127],[1,131,132,126,2,42,133,127]],"weight":60},"science-roots":{"title":"Два корня","patterns":["Уравнение (x − %d)(x + %d) = %d. Чему равна сумма его корней?","Корни равны %d и −%d. Складываем их.","%d","-%d"],"strings":["0:2:2:0","1:2:2","2:0","2:4","3:4","2:2","0:2:3:0","1:2:3","3:1","2:5","2:1","3:5","3:6","0:2:4:0","1:2:4","3:2","2:6","3:8","0:2:5:0","1:2:5","3:3","2:7","2:3","3:7","3:10","0:3:2:0","1:3:2","0:3:3:0","1:3:3","3:9","0:3:4:0","1:3:4","3:12","0:3:5:0","1:3:5","2:8","3:15","0:4:2:0","1:4:2","0:4:3:0","1:4:3","0:4:4:0","1:4:4","3:16","0:4:5:0","1:4:5","2:9","3:20","0:5:2:0","1:5:2","0:5:3:0","1:5:3","0:5:4:0","1:5:4","0:5:5:0","1:5:5","2:10","3:25","0:6:2:0","1:6:2","0:6:3:0","1:6:3","3:18","0:6:4:0","1:6:4","3:24","0:6:5:0","1:6:5","2:11","3:11","3:30"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,9,10,11,12,5],[3,13,14,15,16,5,12,17],[3,18,19,20,21,22,23,24,5],[3,25,26,10,9,8,11,12,22],[3,27,28,2,16,12,29,22],[3,30,31,8,21,10,23,32,22],[3,33,34,15,35,5,17,36,22],[3,37,38,5,16,15,12,17,3],[3,39,40,10,21,8,23,32,3],[3,41,42,2,35,17,43,3],[3,44,45,8,46,10,29,47,3],[3,48,49,22,21,20,23,24,9],[3,50,51,5,35,15,17,36,9],[3,52,53,10,46,8,29,47,9],[3,54,55,2,56,24,57,9],[3,58,59,3,35,4,17,32,16],[3,60,61,22,46,20,29,62,16],[3,63,64,5,56,15,24,65,16],[3,66,67,10,68,8,69,70,16]],"weight":60},"science-slope":{"title":"Наклон прямой","patterns":["Прямая проходит через (%d; %d) и (%d; %d). Чему равен её коэффициент наклона?","Наклон — изменение y, делённое на изменение x: %d ÷ %d.","%d","-%d"],"strings":["0:2:2:4:6","1:4:2","2:2","2:4","3:2","2:1","2:3","0:2:2:5:8","1:6:3","2:6","2:5","0:2:2:6:10","1:8:4","2:8","0:2:3:4:9","1:6:2","3:3","0:2:3:5:12","1:9:3","2:9","0:2:3:6:15","1:12:4","2:12","2:7","0:2:4:4:12","1:8:2","3:4","0:2:4:5:16","1:12:3","0:2:4:6:20","1:16:4","2:16","0:2:5:4:15","1:10:2","2:10","3:5","0:2:5:5:20","1:15:3","2:15","0:2:5:6:25","1:20:4","2:20","0:3:2:5:6","0:3:2:6:8","0:3:2:7:10","0:3:3:5:9","0:3:3:6:12","0:3:3:7:15","0:3:4:5:12","0:3:4:6:16","0:3:4:7:20","0:3:5:5:15","0:3:5:6:20","0:3:5:7:25","0:4:2:6:6","0:4:2:7:8","0:4:2:8:10","0:4:3:6:9","0:4:3:7:12","0:4:3:8:15","0:4:4:6:12","0:4:4:7:16","0:4:4:8:20","0:4:5:6:15","0:4:5:7:20","0:4:5:8:25","0:5:2:7:6","0:5:2:8:8","0:5:2:9:10","0:5:3:7:9","0:5:3:8:12","0:5:3:9:15","0:5:4:7:12","0:5:4:8:16","0:5:4:9:20","0:5:5:7:15","0:5:5:8:20","0:5:5:9:25","0:6:2:8:6","0:6:2:9:8","0:6:2:10:10","0:6:3:8:9","0:6:3:9:12","0:6:3:10:15","0:6:4:8:12","0:6:4:9:16","0:6:4:10:20","0:6:5:8:15","0:6:5:9:20","0:6:5:10:25"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,9,6,10,4],[1,11,12,2,13,3,9,4],[1,14,15,6,9,2,10,16],[1,17,18,6,19,9,16],[1,20,21,6,22,3,23,16],[1,24,25,3,13,2,9,26],[1,27,28,3,22,6,23,26],[1,29,30,3,31,13,26],[1,32,33,10,34,2,23,35],[1,36,37,10,38,6,13,35],[1,39,40,10,41,3,19,35],[1,42,1,2,3,4,5,6],[1,43,8,2,9,6,10,4],[1,44,12,2,13,3,9,4],[1,45,15,6,9,2,10,16],[1,46,18,6,19,9,16],[1,47,21,6,22,3,23,16],[1,48,25,3,13,2,9,26],[1,49,28,3,22,6,23,26],[1,50,30,3,31,13,26],[1,51,33,10,34,2,23,35],[1,52,37,10,38,6,13,35],[1,53,40,10,41,3,19,35],[1,54,1,2,3,4,5,6],[1,55,8,2,9,6,10,4],[1,56,12,2,13,3,9,4],[1,57,15,6,9,2,10,16],[1,58,18,6,19,9,16],[1,59,21,6,22,3,23,16],[1,60,25,3,13,2,9,26],[1,61,28,3,22,6,23,26],[1,62,30,3,31,13,26],[1,63,33,10,34,2,23,35],[1,64,37,10,38,6,13,35],[1,65,40,10,41,3,19,35],[1,66,1,2,3,4,5,6],[1,67,8,2,9,6,10,4],[1,68,12,2,13,3,9,4],[1,69,15,6,9,2,10,16],[1,70,18,6,19,9,16],[1,71,21,6,22,3,23,16],[1,72,25,3,13,2,9,26],[1,73,28,3,22,6,23,26],[1,74,30,3,31,13,26],[1,75,33,10,34,2,23,35],[1,76,37,10,38,6,13,35],[1,77,40,10,41,3,19,35],[1,78,1,2,3,4,5,6],[1,79,8,2,9,6,10,4],[1,80,12,2,13,3,9,4],[1,81,15,6,9,2,10,16],[1,82,18,6,19,9,16],[1,83,21,6,22,3,23,16],[1,84,25,3,13,2,9,26],[1,85,28,3,22,6,23,26],[1,86,30,3,31,13,26],[1,87,33,10,34,2,23,35],[1,88,37,10,38,6,13,35],[1,89,40,10,41,3,19,35]],"weight":60},"science-value":{"title":"Значение функции","patterns":["f(x) = x² − %dx + %d. Чему равно f(%d)?","Функция равна (x − %d)² + %d. Подставляем %d: получаем %d² + %d.","%d"],"strings":["0:4:6:4","1:2:2:4:2:2","2:6","2:2","2:4","2:18","0:4:6:5","1:2:2:5:3:2","2:11","2:9","2:27","2:5","0:4:6:6","1:2:2:6:4:2","2:16","2:38","0:4:7:4","1:2:3:4:2:3","2:7","2:3","2:19","0:4:7:5","1:2:3:5:3:3","2:12","2:28","0:4:7:6","1:2:3:6:4:3","2:39","0:4:8:4","1:2:4:4:2:4","2:8","2:20","0:4:8:5","1:2:4:5:3:4","2:13","2:29","0:4:8:6","1:2:4:6:4:4","2:40","0:4:9:4","1:2:5:4:2:5","2:21","0:4:9:5","1:2:5:5:3:5","2:14","2:30","0:4:9:6","1:2:5:6:4:5","2:41","0:6:11:5","1:3:2:5:2:2","0:6:11:6","1:3:2:6:3:2","0:6:11:7","1:3:2:7:4:2","2:51","0:6:12:5","1:3:3:5:2:3","0:6:12:6","1:3:3:6:3:3","0:6:12:7","1:3:3:7:4:3","2:52","0:6:13:5","1:3:4:5:2:4","0:6:13:6","1:3:4:6:3:4","0:6:13:7","1:3:4:7:4:4","2:53","0:6:14:5","1:3:5:5:2:5","0:6:14:6","1:3:5:6:3:5","0:6:14:7","1:3:5:7:4:5","2:54","0:8:18:6","1:4:2:6:2:2","0:8:18:7","1:4:2:7:3:2","0:8:18:8","1:4:2:8:4:2","2:66","0:8:19:6","1:4:3:6:2:3","0:8:19:7","1:4:3:7:3:3","0:8:19:8","1:4:3:8:4:3","2:67","0:8:20:6","1:4:4:6:2:4","0:8:20:7","1:4:4:7:3:4","0:8:20:8","1:4:4:8:4:4","2:68","0:8:21:6","1:4:5:6:2:5","0:8:21:7","1:4:5:7:3:5","0:8:21:8","1:4:5:8:4:5","2:69","0:10:27:7","1:5:2:7:2:2","0:10:27:8","1:5:2:8:3:2","0:10:27:9","1:5:2:9:4:2","2:83","0:10:28:7","1:5:3:7:2:3","0:10:28:8","1:5:3:8:3:3","0:10:28:9","1:5:3:9:4:3","2:84","0:10:29:7","1:5:4:7:2:4","0:10:29:8","1:5:4:8:3:4","0:10:29:9","1:5:4:9:4:4","2:85","0:10:30:7","1:5:5:7:2:5","0:10:30:8","1:5:5:8:3:5","0:10:30:9","1:5:5:9:4:5","2:86","0:12:38:8","1:6:2:8:2:2","0:12:38:9","1:6:2:9:3:2","0:12:38:10","1:6:2:10:4:2","2:102","0:12:39:8","1:6:3:8:2:3","0:12:39:9","1:6:3:9:3:3","0:12:39:10","1:6:3:10:4:3","2:103","0:12:40:8","1:6:4:8:2:4","0:12:40:9","1:6:4:9:3:4","0:12:40:10","1:6:4:10:4:4","2:104","0:12:41:8","1:6:5:8:2:5","0:12:41:9","1:6:5:9:3:5","0:12:41:10","1:6:5:10:4:5","2:105"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,3,9,10,11],[1,12,13,5,3,14,15,2],[1,16,17,18,19,4,20,11],[1,21,22,23,19,9,24,2],[1,25,26,20,19,14,27,18],[1,28,29,30,4,31,2],[1,32,33,34,4,9,35,18],[1,36,37,31,4,14,38,30],[1,39,40,9,11,4,41,18],[1,42,43,44,11,9,45,30],[1,46,47,41,11,14,48,9],[1,49,50,2,3,4,10],[1,51,52,8,3,9,15,11],[1,53,54,5,3,14,55,2],[1,56,57,18,19,4,24,11],[1,58,59,23,19,9,27,2],[1,60,61,20,19,14,62,18],[1,63,64,30,4,35,2],[1,65,66,34,4,9,38,18],[1,67,68,31,4,14,69,30],[1,70,71,9,11,4,45,18],[1,72,73,44,11,9,48,30],[1,74,75,41,11,14,76,9],[1,77,78,2,3,4,15],[1,79,80,8,3,9,55,11],[1,81,82,5,3,14,83,2],[1,84,85,18,19,4,27,11],[1,86,87,23,19,9,62,2],[1,88,89,20,19,14,90,18],[1,91,92,30,4,38,2],[1,93,94,34,4,9,69,18],[1,95,96,31,4,14,97,30],[1,98,99,9,11,4,48,18],[1,100,101,44,11,9,76,30],[1,102,103,41,11,14,104,9],[1,105,106,2,3,4,55],[1,107,108,8,3,9,83,11],[1,109,110,5,3,14,111,2],[1,112,113,18,19,4,62,11],[1,114,115,23,19,9,90,2],[1,116,117,20,19,14,118,18],[1,119,120,30,4,69,2],[1,121,122,34,4,9,97,18],[1,123,124,31,4,14,125,30],[1,126,127,9,11,4,76,18],[1,128,129,44,11,9,104,30],[1,130,131,41,11,14,132,9],[1,133,134,2,3,4,83],[1,135,136,8,3,9,111,11],[1,137,138,5,3,14,139,2],[1,140,141,18,19,4,90,11],[1,142,143,23,19,9,118,2],[1,144,145,20,19,14,146,18],[1,147,148,30,4,97,2],[1,149,150,34,4,9,125,18],[1,151,152,31,4,14,153,30],[1,154,155,9,11,4,104,18],[1,156,157,44,11,9,132,30],[1,158,159,41,11,14,160,9]],"weight":60},"science-vertex":{"title":"Вершина параболы","patterns":["При каком x функция y = (x − %d)² + %d принимает наименьшее значение?","Квадрат неотрицателен и минимален, когда x − %d = %d.","%d","-%d"],"strings":["0:2:2","1:2:0","2:2","3:2","2:4","2:1","2:3","0:2:3","3:3","2:5","0:2:4","3:4","2:6","0:2:5","3:5","2:7","0:3:2","1:3:0","0:3:3","0:3:4","0:3:5","2:8","0:4:2","1:4:0","0:4:3","0:4:4","0:4:5","2:9","0:5:2","1:5:0","0:5:3","0:5:4","0:5:5","2:10","0:6:2","1:6:0","3:6","0:6:3","0:6:4","0:6:5","2:11"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,2,3,6,8,9],[3,10,1,2,3,4,11,12],[3,13,1,2,3,9,14,15],[3,16,17,6,8,2,3,9],[3,18,17,6,8,12,2,4],[3,19,17,6,8,4,11,15],[3,20,17,6,8,9,14,21],[3,22,23,4,11,2,3,12],[3,24,23,4,11,6,8,15],[3,25,23,4,11,21,6,9],[3,26,23,4,11,9,14,27],[3,28,29,9,14,2,3,15],[3,30,29,9,14,6,8,21],[3,31,29,9,14,4,11,27],[3,32,29,9,14,33,4,12],[3,34,35,12,36,2,3,21],[3,37,35,12,36,6,8,27],[3,38,35,12,36,4,11,33],[3,39,35,12,36,9,14,40]],"weight":60}},"portal":{"science-concentration":{"title":"Концентрация","patterns":["В %d г раствора содержится %d г соли. Сколько процентов составляет соль?","Делим массу соли на массу раствора и умножаем на %d%.","%d%"],"strings":["0:300:60","1:100","2:20","2:2","2:80","2:10","2:40","0:300:90","2:30","2:3","2:70","2:15","2:60","0:300:120","2:4","0:300:150","2:50","2:5","2:25","2:100","0:400:80","0:400:120","0:400:160","0:400:200","0:500:100","0:500:150","0:500:200","0:500:250","0:600:120","0:600:180","0:600:240","0:600:300","0:700:140","0:700:210","0:700:280","0:700:350","0:800:160","0:800:240","0:800:320","0:800:400"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,8,9,10,11,12],[3,13,1,6,14,12,2,4],[3,15,1,16,17,18,19],[3,20,1,2,3,4,5,6],[3,21,1,8,9,10,11,12],[3,22,1,6,14,12,2,4],[3,23,1,16,17,18,19],[3,24,1,2,3,4,5,6],[3,25,1,8,9,10,11,12],[3,26,1,6,14,12,2,4],[3,27,1,16,17,18,19],[3,28,1,2,3,4,5,6],[3,29,1,8,9,10,11,12],[3,30,1,6,14,12,2,4],[3,31,1,16,17,18,19],[3,32,1,2,3,4,5,6],[3,33,1,8,9,10,11,12],[3,34,1,6,14,12,2,4],[3,35,1,16,17,18,19],[3,36,1,2,3,4,5,6],[3,37,1,8,9,10,11,12],[3,38,1,6,14,12,2,4],[3,39,1,16,17,18,19]],"weight":72},"science-conversion":{"title":"Единицы","patterns":["На один опыт уходит %d мл. Сколько полных опытов можно провести с %d литрами жидкости?","%d л — это %d %d мл. Делим объём на расход одного опыта.","%d"],"strings":["0:200:6","1:6:6:000","2:30","2:3","2:6","2:300","2:15","0:300:9","1:9:9:000","2:9","2:10","0:400:12","1:12:12:000","2:12","2:7","0:500:15","1:15:15:000","0:200:8","1:8:8:000","2:40","2:4","2:8","2:400","2:20","0:300:12","2:13","0:400:16","1:16:16:000","2:16","0:500:20","1:20:20:000","0:200:10","1:10:10:000","2:50","2:5","2:500","2:25","0:300:15","0:400:20","0:500:25","1:25:25:000","0:200:12","2:60","2:600","0:300:18","1:18:18:000","2:18","0:400:24","1:24:24:000","2:24","0:500:30","1:30:30:000","0:200:14","1:14:14:000","2:70","2:14","2:700","2:35","0:300:21","1:21:21:000","2:21","2:23","0:400:28","1:28:28:000","2:28","2:17","0:500:35","1:35:35:000","0:200:16","2:80","2:800","0:300:24","2:26","0:400:32","1:32:32:000","2:32","0:500:40","1:40:40:000"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,2,3,9,5,10],[3,11,12,2,3,13,5,14],[3,15,16,2,3,6,5,4],[3,17,18,19,20,21,22,23],[3,24,12,19,20,13,22,25],[3,26,27,19,20,28,22,10],[3,29,30,19,20,23,22,21],[3,31,32,33,34,10,35,36],[3,37,16,33,34,6,35,28],[3,38,30,33,34,23,35,13],[3,39,40,33,34,36,35,10],[3,41,12,42,4,13,43,2],[3,44,45,42,4,46,43,23],[3,47,48,42,4,49,43,6],[3,50,51,42,4,2,43,13],[3,52,53,54,14,55,56,57],[3,58,59,54,14,60,56,61],[3,62,63,54,14,64,56,65],[3,66,67,54,14,57,56,55],[3,68,27,69,21,28,70,19],[3,71,48,69,21,49,70,72],[3,73,74,69,21,75,70,23],[3,76,77,69,21,19,70,28]],"weight":72},"science-dilution":{"title":"Разбавление","patterns":["К %d г раствора с концентрацией %d% добавили столько же чистой воды. Какова новая концентрация?","Масса раствора удвоилась, а растворённого вещества не прибавилось. Концентрация уменьшилась вдвое.","%d%"],"strings":["0:300:20","1","2:10","2:20","2:2","2:4","2:8","2:15","0:300:30","2:30","2:3","2:6","2:12","2:25","0:300:40","2:40","2:16","2:35","0:300:50","2:50","2:5","2:45","0:400:20","0:400:30","0:400:40","0:400:50","0:500:20","0:500:30","0:500:40","0:500:50","0:600:20","0:600:30","0:600:40","0:600:50","0:700:20","0:700:30","0:700:40","0:700:50","0:800:20","0:800:30","0:800:40","0:800:50"],"variants":[[3,0,1,2,3,4,5,6,7],[3,8,1,7,9,10,11,12,13],[3,14,1,3,15,5,6,16,17],[3,18,1,13,19,20,2,3,21],[3,22,1,2,3,4,5,6,7],[3,23,1,7,9,10,11,12,13],[3,24,1,3,15,5,6,16,17],[3,25,1,13,19,20,2,3,21],[3,26,1,2,3,4,5,6,7],[3,27,1,7,9,10,11,12,13],[3,28,1,3,15,5,6,16,17],[3,29,1,13,19,20,2,3,21],[3,30,1,2,3,4,5,6,7],[3,31,1,7,9,10,11,12,13],[3,32,1,3,15,5,6,16,17],[3,33,1,13,19,20,2,3,21],[3,34,1,2,3,4,5,6,7],[3,35,1,7,9,10,11,12,13],[3,36,1,3,15,5,6,16,17],[3,37,1,13,19,20,2,3,21],[3,38,1,2,3,4,5,6,7],[3,39,1,7,9,10,11,12,13],[3,40,1,3,15,5,6,16,17],[3,41,1,13,19,20,2,3,21]],"weight":72},"science-evaporation":{"title":"Испарение","patterns":["Из %d г раствора концентрации %d% испарилась половина общей массы. Уходит только вода. Какой стала концентрация?","Вещество осталось, общая масса уменьшилась вдвое. Концентрация выросла вдвое.","%d%"],"strings":["0:300:10","1","2:20","2:5","2:10","2:15","2:25","2:50","0:400:10","0:500:10","0:600:10","0:700:10","0:800:10"],"variants":[[12,0,1,2,3,4,5,6,7],[12,8,1,2,3,4,5,6,7],[12,9,1,2,3,4,5,6,7],[12,10,1,2,3,4,5,6,7],[12,11,1,2,3,4,5,6,7],[12,12,1,2,3,4,5,6,7]],"weight":72},"science-median":{"title":"Медиана","patterns":["Измерения: %d, %d, %d, %d, %d. Найдите медиану — центральное число после сортировки.","В порядке возрастания центральным, третьим, оказывается %d.","%d"],"strings":["0:5:2:7:3:6","1:5","2:5","2:2","2:3","2:7","2:6","0:5:2:8:3:6","2:8","0:5:2:9:3:6","2:9","0:6:2:8:3:7","1:6","0:6:2:9:3:7","0:6:2:10:3:7","2:10","0:7:2:9:3:8","1:7","0:7:2:10:3:8","0:7:2:11:3:8","2:11","0:8:2:10:3:9","1:8","0:8:2:11:3:9","0:8:2:12:3:9","2:12","0:6:3:8:4:7","2:4","0:6:3:9:4:7","0:6:3:10:4:7","0:7:3:9:4:8","0:7:3:10:4:8","0:7:3:11:4:8","0:8:3:10:4:9","0:8:3:11:4:9","0:8:3:12:4:9","0:9:3:11:4:10","1:9","0:9:3:12:4:10","0:9:3:13:4:10","2:13","0:7:4:9:5:8","0:7:4:10:5:8","0:7:4:11:5:8","0:8:4:10:5:9","0:8:4:11:5:9","0:8:4:12:5:9","0:9:4:11:5:10","0:9:4:12:5:10","0:9:4:13:5:10","0:10:4:12:5:11","1:10","0:10:4:13:5:11","0:10:4:14:5:11","2:14","0:8:5:10:6:9","0:8:5:11:6:9","0:8:5:12:6:9","0:9:5:11:6:10","0:9:5:12:6:10","0:9:5:13:6:10","0:10:5:12:6:11","0:10:5:13:6:11","0:10:5:14:6:11","0:11:5:13:6:12","1:11","0:11:5:14:6:12","0:11:5:15:6:12","2:15","0:9:6:11:7:10","0:9:6:12:7:10","0:9:6:13:7:10","0:10:6:12:7:11","0:10:6:13:7:11","0:10:6:14:7:11","0:11:6:13:7:12","0:11:6:14:7:12","0:11:6:15:7:12","0:12:6:14:7:13","1:12","0:12:6:15:7:13","0:12:6:16:7:13","2:16","0:10:7:12:8:11","0:10:7:13:8:11","0:10:7:14:8:11","0:11:7:13:8:12","0:11:7:14:8:12","0:11:7:15:8:12","0:12:7:14:8:13","0:12:7:15:8:13","0:12:7:16:8:13","0:13:7:15:8:14","1:13","0:13:7:16:8:14","0:13:7:17:8:14","2:17"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,2,3,4,8,6],[1,9,1,2,3,4,10,6],[1,11,12,6,3,4,8,5],[1,13,12,6,3,4,10,5],[1,14,12,6,3,4,15,5],[1,16,17,5,3,4,10,8],[1,18,17,5,3,4,15,8],[1,19,17,5,3,4,20,8],[1,21,22,8,3,4,15,10],[1,23,22,8,3,4,20,10],[1,24,22,8,3,4,25,10],[1,26,12,6,4,27,8,5],[1,28,12,6,4,27,10,5],[1,29,12,6,4,27,15,5],[1,30,17,5,4,27,10,8],[1,31,17,5,4,27,15,8],[1,32,17,5,4,27,20,8],[1,33,22,8,4,27,15,10],[1,34,22,8,4,27,20,10],[1,35,22,8,4,27,25,10],[1,36,37,10,4,27,20,15],[1,38,37,10,4,27,25,15],[1,39,37,10,4,27,40,15],[1,41,17,5,27,2,10,8],[1,42,17,5,27,2,15,8],[1,43,17,5,27,2,20,8],[1,44,22,8,27,2,15,10],[1,45,22,8,27,2,20,10],[1,46,22,8,27,2,25,10],[1,47,37,10,27,2,20,15],[1,48,37,10,27,2,25,15],[1,49,37,10,27,2,40,15],[1,50,51,15,27,2,25,20],[1,52,51,15,27,2,40,20],[1,53,51,15,27,2,54,20],[1,55,22,8,2,6,15,10],[1,56,22,8,2,6,20,10],[1,57,22,8,2,6,25,10],[1,58,37,10,2,6,20,15],[1,59,37,10,2,6,25,15],[1,60,37,10,2,6,40,15],[1,61,51,15,2,6,25,20],[1,62,51,15,2,6,40,20],[1,63,51,15,2,6,54,20],[1,64,65,20,2,6,40,25],[1,66,65,20,2,6,54,25],[1,67,65,20,2,6,68,25],[1,69,37,10,6,5,20,15],[1,70,37,10,6,5,25,15],[1,71,37,10,6,5,40,15],[1,72,51,15,6,5,25,20],[1,73,51,15,6,5,40,20],[1,74,51,15,6,5,54,20],[1,75,65,20,6,5,40,25],[1,76,65,20,6,5,54,25],[1,77,65,20,6,5,68,25],[1,78,79,25,6,5,54,40],[1,80,79,25,6,5,68,40],[1,81,79,25,6,5,82,40],[1,83,51,15,5,8,25,20],[1,84,51,15,5,8,40,20],[1,85,51,15,5,8,54,20],[1,86,65,20,5,8,40,25],[1,87,65,20,5,8,54,25],[1,88,65,20,5,8,68,25],[1,89,79,25,5,8,54,40],[1,90,79,25,5,8,68,40],[1,91,79,25,5,8,82,40],[1,92,93,40,5,8,68,54],[1,94,93,40,5,8,82,54],[1,95,93,40,5,8,96,54]],"weight":72},"science-missing":{"title":"Недостающее измерение","patterns":["Среднее пяти измерений равно %d. Сумма четырёх известных — %d. Чему равно пятое?","Сумма всех пяти — %d. Вычитаем сумму известных.","%d"],"strings":["0:6:26","1:30","2:4","2:6","2:8","2:26","2:5","0:6:27","2:3","2:9","2:27","0:6:28","2:2","2:10","2:28","0:6:29","2:1","2:11","2:29","0:8:34","1:40","2:34","2:7","0:8:35","2:35","0:8:36","2:12","2:36","0:8:37","2:13","2:37","0:10:42","1:50","2:42","0:10:43","2:43","0:10:44","2:14","2:44","0:10:45","2:15","2:45","0:12:50","1:60","2:50","0:12:51","2:51","0:12:52","2:16","2:52","0:12:53","2:17","2:53","0:14:58","1:70","2:58","0:14:59","2:59","0:14:60","2:18","2:60","0:14:61","2:19","2:61","0:16:66","1:80","2:66","0:16:67","2:67","0:16:68","2:20","2:68","0:16:69","2:21","2:69"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,8,3,9,10,2],[3,11,1,12,3,13,14,8],[3,15,1,16,3,17,18,12],[3,19,20,3,4,13,21,22],[3,23,20,6,4,17,24,3],[3,25,20,2,4,26,27,6],[3,28,20,8,4,29,30,2],[3,31,32,4,13,26,33,9],[3,34,32,22,13,29,35,4],[3,36,32,3,13,37,38,22],[3,39,32,6,13,40,41,3],[3,42,43,13,26,37,44,17],[3,45,43,9,26,40,46,13],[3,47,43,4,26,48,49,9],[3,50,43,22,26,51,52,4],[3,53,54,26,37,48,55,29],[3,56,54,17,37,51,57,26],[3,58,54,13,37,59,60,17],[3,61,54,9,37,62,63,13],[3,64,65,37,48,59,66,40],[3,67,65,29,48,62,68,37],[3,69,65,26,48,70,71,29],[3,72,65,17,48,73,74,26]],"weight":72},"science-mixing":{"title":"Смешивание","patterns":["Смешали по %d г растворов с концентрациями %d% и %d%. Какова концентрация смеси?","Массы одинаковы, поэтому концентрация смеси равна среднему двух процентов: (%d + %d) ÷ %d.","%d%"],"strings":["0:300:20:30","1:20:30:2","2:25","2:23","2:26","2:22","2:27","0:300:20:40","1:20:40:2","2:30","2:33","2:35","0:300:30:20","1:30:20:2","0:300:30:40","1:30:40:2","2:36","2:32","2:37","0:300:40:20","1:40:20:2","0:300:40:30","1:40:30:2","0:300:40:50","1:40:50:2","2:45","2:43","2:46","2:42","2:47","0:300:50:20","1:50:20:2","2:40","0:300:50:30","1:50:30:2","0:300:50:40","1:50:40:2","0:400:20:30","0:400:20:40","0:400:30:20","0:400:30:40","0:400:40:20","0:400:40:30","0:400:40:50","0:400:50:20","0:400:50:30","0:400:50:40","0:500:20:30","0:500:20:40","0:500:30:20","0:500:30:40","0:500:40:20","0:500:40:30","0:500:40:50","0:500:50:20","0:500:50:30","0:500:50:40","0:600:20:30","0:600:20:40","0:600:30:20","0:600:30:40","0:600:40:20","0:600:40:30","0:600:40:50","0:600:50:20","0:600:50:30","0:600:50:40","0:700:20:30","0:700:20:40","0:700:30:20","0:700:30:40","0:700:40:20","0:700:40:30","0:700:40:50","0:700:50:20","0:700:50:30","0:700:50:40","0:800:20:30","0:800:20:40","0:800:30:20","0:800:30:40","0:800:40:20","0:800:40:30","0:800:40:50","0:800:50:20","0:800:50:30","0:800:50:40"],"variants":[[2,0,1,2,3,4,5,6],[1,7,8,9,4,10,2,11],[1,12,13,2,3,4,5,6],[2,14,15,11,10,16,17,18],[1,19,20,9,4,10,2,11],[1,21,22,11,10,16,17,18],[1,23,24,25,26,27,28,29],[1,30,31,11,9,32,6,28],[1,33,34,32,16,26,11,25],[1,35,36,25,26,27,28,29],[2,37,1,2,3,4,5,6],[1,38,8,9,4,10,2,11],[1,39,13,2,3,4,5,6],[2,40,15,11,10,16,17,18],[1,41,20,9,4,10,2,11],[1,42,22,11,10,16,17,18],[1,43,24,25,26,27,28,29],[1,44,31,11,9,32,6,28],[1,45,34,32,16,26,11,25],[1,46,36,25,26,27,28,29],[2,47,1,2,3,4,5,6],[1,48,8,9,4,10,2,11],[1,49,13,2,3,4,5,6],[2,50,15,11,10,16,17,18],[1,51,20,9,4,10,2,11],[1,52,22,11,10,16,17,18],[1,53,24,25,26,27,28,29],[1,54,31,11,9,32,6,28],[1,55,34,32,16,26,11,25],[1,56,36,25,26,27,28,29],[2,57,1,2,3,4,5,6],[1,58,8,9,4,10,2,11],[1,59,13,2,3,4,5,6],[2,60,15,11,10,16,17,18],[1,61,20,9,4,10,2,11],[1,62,22,11,10,16,17,18],[1,63,24,25,26,27,28,29],[1,64,31,11,9,32,6,28],[1,65,34,32,16,26,11,25],[1,66,36,25,26,27,28,29],[2,67,1,2,3,4,5,6],[1,68,8,9,4,10,2,11],[1,69,13,2,3,4,5,6],[2,70,15,11,10,16,17,18],[1,71,20,9,4,10,2,11],[1,72,22,11,10,16,17,18],[1,73,24,25,26,27,28,29],[1,74,31,11,9,32,6,28],[1,75,34,32,16,26,11,25],[1,76,36,25,26,27,28,29],[2,77,1,2,3,4,5,6],[1,78,8,9,4,10,2,11],[1,79,13,2,3,4,5,6],[2,80,15,11,10,16,17,18],[1,81,20,9,4,10,2,11],[1,82,22,11,10,16,17,18],[1,83,24,25,26,27,28,29],[1,84,31,11,9,32,6,28],[1,85,34,32,16,26,11,25],[1,86,36,25,26,27,28,29]],"weight":72},"science-range":{"title":"Размах","patterns":["Результаты измерений: %d, %d, %d, %d. Каков размах — разность максимума и минимума?","Максимум %d, минимум %d. Вычитаем минимум из максимума.","%d","Результаты измерений: %d, %d, -%d, %d. Каков размах — разность максимума и минимума?","Максимум %d, минимум -%d. Вычитаем минимум из максимума."],"strings":["0:3:5:1:7","1:7:1","2:6","2:7","2:4","2:2","0:3:5:0:8","1:8:0","2:8","2:5","3:3:5:1:9","4:9:1","2:10","2:9","0:3:6:1:8","1:8:1","2:3","0:3:6:0:9","1:9:0","3:3:6:1:10","4:10:1","2:11","0:3:7:1:9","1:9:1","0:3:7:0:10","1:10:0","3:3:7:1:11","4:11:1","2:12","0:3:8:1:10","1:10:1","0:3:8:0:11","1:11:0","3:3:8:1:12","4:12:1","2:13","0:4:6:2:8","1:8:2","0:4:6:1:9","0:4:6:0:10","0:4:7:2:9","1:9:2","0:4:7:1:10","0:4:7:0:11","0:4:8:2:10","1:10:2","0:4:8:1:11","1:11:1","0:4:8:0:12","1:12:0","0:4:9:2:11","1:11:2","0:4:9:1:12","1:12:1","0:4:9:0:13","1:13:0","0:5:7:3:9","1:9:3","0:5:7:2:10","0:5:7:1:11","0:5:8:3:10","1:10:3","0:5:8:2:11","0:5:8:1:12","0:5:9:3:11","1:11:3","0:5:9:2:12","1:12:2","0:5:9:1:13","1:13:1","0:5:10:3:12","1:12:3","0:5:10:2:13","1:13:2","0:5:10:1:14","1:14:1","2:14","0:6:8:4:10","1:10:4","0:6:8:3:11","0:6:8:2:12","0:6:9:4:11","1:11:4","0:6:9:3:12","0:6:9:2:13","0:6:10:4:12","1:12:4","0:6:10:3:13","1:13:3","0:6:10:2:14","1:14:2","0:6:11:4:13","1:13:4","0:6:11:3:14","1:14:3","0:6:11:2:15","1:15:2","2:15","0:7:9:5:11","1:11:5","0:7:9:4:12","0:7:9:3:13","0:7:10:5:12","1:12:5","0:7:10:4:13","0:7:10:3:14","0:7:11:5:13","1:13:5","0:7:11:4:14","1:14:4","0:7:11:3:15","1:15:3","0:7:12:5:14","1:14:5","0:7:12:4:15","1:15:4","0:7:12:3:16","1:16:3","2:16","0:8:10:6:12","1:12:6","0:8:10:5:13","0:8:10:4:14","0:8:11:6:13","1:13:6","0:8:11:5:14","0:8:11:4:15","0:8:12:6:14","1:14:6","0:8:12:5:15","1:15:5","0:8:12:4:16","1:16:4","0:8:13:6:15","1:15:6","0:8:13:5:16","1:16:5","0:8:13:4:17","1:17:4","2:17"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,9,2,5],[1,10,11,12,13,2,8,5],[1,14,15,3,8,9,4,16],[1,17,18,13,2,16,8,12],[1,19,20,21,12,3,8,16],[1,22,23,8,13,2,4],[1,24,25,12,3,2,4],[1,26,27,28,21,8,4],[1,29,30,13,12,3,4,9],[1,31,32,21,8,2,9],[1,33,34,35,28,13,8,9],[1,36,37,2,8,4,5],[1,38,23,8,13,9,2,5],[1,39,25,12,2,8,5],[1,40,41,3,13,9,4,16],[1,42,30,13,12,2,16],[1,43,32,21,3,8,16],[1,44,45,8,12,2,4],[1,46,47,12,21,3,2,4],[1,48,49,28,8,4,21,35],[1,50,51,13,21,3,4,9],[1,52,53,21,28,8,2,9],[1,54,55,35,13,8,9],[1,56,57,2,13,4,5],[1,58,45,8,12,9,2,5],[1,59,47,12,21,2,8,5],[1,60,61,3,12,9,4,16],[1,62,51,13,21,2,16],[1,63,53,21,28,3,8,16],[1,64,65,8,21,2,4],[1,66,67,12,28,3,2,4],[1,68,69,28,35,8,4],[1,70,71,13,28,3,4,9],[1,72,73,21,35,8,2,9],[1,74,75,35,76,13,8,9],[1,77,78,2,12,4,5],[1,79,65,8,21,9,2,5],[1,80,67,12,28,2,8,5],[1,81,82,3,21,9,4,16],[1,83,71,13,28,2,16],[1,84,73,21,35,3,8,16],[1,85,86,8,28,2,4],[1,87,88,12,35,3,2,4],[1,89,90,28,76,8,4],[1,91,92,13,35,3,4,9],[1,93,94,21,76,8,2,9],[1,95,96,35,97,13,8,9],[1,98,99,2,21,4,5],[1,100,86,8,28,9,2,5],[1,101,88,12,35,2,8,5],[1,102,103,3,28,9,4,16],[1,104,92,13,35,2,16],[1,105,94,21,76,3,8,16],[1,106,107,8,35,2,4],[1,108,109,12,76,3,2,4],[1,110,111,28,97,8,4],[1,112,113,13,76,3,4,9],[1,114,115,21,97,8,2,9],[1,116,117,35,118,13,8,9],[1,119,120,2,28,4,5],[1,121,107,8,35,9,2,5],[1,122,109,12,76,2,8,5],[1,123,124,3,35,9,4,16],[1,125,113,13,76,2,16],[1,126,115,21,97,3,8,16],[1,127,128,8,76,2,4],[1,129,130,12,97,3,2,4],[1,131,132,28,118,8,4],[1,133,134,13,97,3,4,9],[1,135,136,21,118,8,2,9],[1,137,138,35,139,13,8,9]],"weight":72},"science-solute":{"title":"Масса вещества","patterns":["Есть %d г раствора концентрации %d%. Сколько граммов растворённого вещества в нём?","Один процент массы — %d г. Умножаем на число процентов.","%d г"],"strings":["0:300:20","1:3","2:60","2:240","2:6","2:20","2:30","0:300:30","2:90","2:210","2:9","0:300:40","2:120","2:180","2:12","2:40","0:300:50","2:150","2:15","2:50","0:400:20","1:4","2:80","2:320","2:8","0:400:30","2:280","0:400:40","2:160","2:16","0:400:50","2:200","0:500:20","1:5","2:100","2:400","2:10","0:500:30","2:350","0:500:40","2:300","0:500:50","2:250","2:25","2:249","2:251","0:600:20","1:6","2:480","0:600:30","2:420","2:18","0:600:40","2:360","2:24","0:600:50","0:700:20","1:7","2:140","2:560","2:14","2:70","0:700:30","2:490","2:21","0:700:40","2:28","0:700:50","2:35","0:800:20","1:8","2:640","0:800:30","0:800:40","2:32","0:800:50"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,8,9,10,6],[3,11,1,12,13,14,15,6],[3,16,1,17,18,19,6],[3,20,21,22,23,24,5,15],[3,25,21,12,26,14,6,15],[3,27,21,28,3,29,15],[3,30,21,31,5,19,15],[3,32,33,34,35,36,5,19],[3,37,33,17,38,18,6,19],[3,39,33,31,40,5,15,19],[3,41,33,42,43,19,44,45],[3,46,47,12,48,14,5,2],[3,49,47,13,50,51,6,2],[3,52,47,3,53,54,15,2],[3,55,47,40,6,19,2],[3,56,57,58,59,60,5,61],[3,62,57,9,63,64,6,61],[3,65,57,26,50,66,15,61],[3,67,57,38,68,19,61],[3,69,70,28,71,29,5,22],[3,72,70,3,59,54,6,22],[3,73,70,23,48,74,15,22],[3,75,70,35,15,19,22]],"weight":72},"science-water":{"title":"Сколько воды","patterns":["Есть %d г раствора концентрации %d%. Сколько граммов воды добавить, чтобы получить %d%?","Чтобы вдвое уменьшить концентрацию, нужно удвоить общую массу раствора.","%d г"],"strings":["0:300:20:10","1","2:300","2:150","2:60","2:30","2:600","0:400:20:10","2:400","2:200","2:80","2:40","2:800","0:500:20:10","2:500","2:250","2:100","2:50","2:1000","0:600:20:10","2:120","2:1200","0:700:20:10","2:700","2:350","2:140","2:70","2:1400","0:800:20:10","2:160","2:1600"],"variants":[[12,0,1,2,3,4,5,6],[12,7,1,8,9,10,11,12],[12,13,1,14,15,16,17,18],[12,19,1,6,2,20,4,21],[12,22,1,23,24,25,26,27],[12,28,1,12,8,29,10,30]],"weight":72},"science-weighted":{"title":"Вес измерений","patterns":["Два одинаковых по массе образца имеют показатель %d, третий — %d. Каково среднее по трём образцам?","Складываем %d + %d + %d и делим на %d.","%d"],"strings":["0:3:9","1:3:3:9:3","2:5","2:9","2:7","2:3","2:6","0:3:12","1:3:3:12:3","2:12","0:3:15","1:3:3:15:3","2:15","2:11","0:3:18","1:3:3:18:3","2:8","2:18","2:13","2:10","0:4:10","1:4:4:10:3","2:4","0:4:13","1:4:4:13:3","0:4:16","1:4:4:16:3","2:16","0:4:19","1:4:4:19:3","2:19","2:14","0:5:11","1:5:5:11:3","0:5:14","1:5:5:14:3","0:5:17","1:5:5:17:3","2:17","0:5:20","1:5:5:20:3","2:20","0:6:12","1:6:6:12:3","0:6:15","1:6:6:15:3","0:6:18","1:6:6:18:3","0:6:21","1:6:6:21:3","2:21","0:7:13","1:7:7:13:3","0:7:16","1:7:7:16:3","0:7:19","1:7:7:19:3","0:7:22","1:7:7:22:3","2:22","0:8:14","1:8:8:14:3","0:8:17","1:8:8:17:3","0:8:20","1:8:8:20:3","0:8:23","1:8:8:23:3","2:23"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,6,9,3,5,4],[3,10,11,4,12,13,5,3],[3,14,15,16,17,18,5,19],[3,20,21,6,19,16,22,4],[3,23,24,4,18,19,22,16],[3,25,26,16,27,9,22,19],[3,28,29,3,30,31,22,13],[3,32,33,4,13,3,2,16],[3,34,35,16,31,13,2,3],[3,36,37,3,38,18,2,13],[3,39,40,19,41,12,2,9],[3,42,43,16,9,19,6,3],[3,44,45,3,12,9,6,19],[3,46,47,19,17,31,6,9],[3,48,49,13,50,27,6,18],[3,51,52,3,18,13,4,19],[3,53,54,19,27,18,4,13],[3,55,56,13,30,12,4,18],[3,57,58,9,59,38,4,31],[3,60,61,19,31,9,16,13],[3,62,63,13,38,31,16,9],[3,64,65,9,41,27,16,31],[3,66,67,18,68,17,16,12]],"weight":72},"science-yield":{"title":"Выход реакции","patterns":["По расчёту должно получиться %d г вещества. Реальный выход составляет %d%. Сколько граммов получилось?","%d% — три четверти. Делим массу на %d и умножаем на %d.","%d г"],"strings":["0:60:75","1:75:4:3","2:45","2:15","2:30","2:48","2:54","0:80:75","2:60","2:20","2:40","2:64","2:72","0:100:75","2:75","2:25","2:50","2:80","2:90","0:120:75","2:96","2:108","0:140:75","2:105","2:35","2:70","2:112","2:126","0:160:75","2:120","2:128","2:144"],"variants":[[12,0,1,2,3,4,5,6],[12,7,1,8,9,10,11,12],[12,13,1,14,15,16,17,18],[12,19,1,18,4,8,20,21],[12,22,1,23,24,25,26,27],[12,28,1,29,10,17,30,31]],"weight":72}},"professor":{"science-area-scale":{"title":"Масштаб площади","patterns":["Площадь квадрата равна %d м². Его сторону увеличили в %d раза. Какой стала площадь?","Площадь зависит от двух линейных размеров, поэтому умножается на %d².","%d м²"],"strings":["0:3:2","1:2","2:12","2:6","2:24","2:7","0:3:3","1:3","2:27","2:9","2:81","2:18","0:3:4","1:4","2:48","2:192","2:19","0:3:5","1:5","2:75","2:15","2:375","2:28","2:30","0:4:2","2:16","2:8","2:32","2:17","0:4:3","2:36","2:108","2:13","0:4:4","2:64","2:256","2:20","0:4:5","2:100","2:500","2:29","2:40","0:5:2","2:10","0:5:3","2:45","2:135","2:14","0:5:4","2:80","2:320","2:21","0:5:5","2:125","2:25","2:625","2:50","0:6:2","0:6:3","2:54","2:162","0:6:4","2:96","2:384","2:22","0:6:5","2:150","2:750","2:31","2:60","0:7:2","2:56","2:11","0:7:3","2:63","2:189","2:42","0:7:4","2:112","2:448","2:23","0:7:5","2:175","2:35","2:875","2:70","0:8:2","0:8:3","2:72","2:216","0:8:4","2:128","2:512","0:8:5","2:200","2:1000","2:33"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,9,10,2,11],[3,12,13,14,2,15,16,4],[3,17,18,19,20,21,22,23],[3,24,1,25,26,27,20,28],[3,29,7,30,2,31,32,4],[3,33,13,34,25,35,36,27],[3,37,18,38,36,39,40,41],[3,42,1,36,43,41,9],[3,44,7,45,20,46,47,23],[3,48,13,49,36,50,51,41],[3,52,18,53,54,55,23,56],[3,57,1,4,2,14,43],[3,58,7,59,11,60,20,30],[3,61,13,62,4,63,64,14],[3,65,18,66,23,67,68,69],[3,70,1,22,47,71,72],[3,73,7,74,51,75,25,76],[3,77,13,78,22,79,80,71],[3,81,18,82,83,84,27,85],[3,86,1,27,25,34,2],[3,87,7,88,4,89,28,14],[3,90,13,91,27,92,4,34],[3,93,18,94,41,95,96,49]],"weight":72},"science-density":{"title":"Масса образца","patterns":["%d см³ вещества весят %d г. Какова масса %d см³ того же вещества?","Масса одного см³ — %d г. Умножаем на новый объём.","%d г"],"strings":["0:2:6:4","1:3","2:12","2:6","2:8","2:9","0:2:6:5","2:15","0:2:6:6","2:18","2:10","0:3:9:5","2:11","0:3:9:6","0:3:9:7","2:21","2:13","0:4:12:6","2:14","0:4:12:7","0:4:12:8","2:24","2:16","0:5:15:7","2:17","0:5:15:8","0:5:15:9","2:27","2:19","0:2:8:4","1:4","0:2:8:5","2:20","0:2:8:6","0:3:12:5","0:3:12:6","0:3:12:7","2:28","0:4:16:6","0:4:16:7","0:4:16:8","2:32","0:5:20:7","2:22","0:5:20:8","2:23","0:5:20:9","2:36","0:2:10:4","1:5","0:2:10:5","2:25","0:2:10:6","2:30","0:3:15:5","0:3:15:6","0:3:15:7","2:35","0:4:20:6","0:4:20:7","0:4:20:8","2:40","0:5:25:7","0:5:25:8","0:5:25:9","2:45","2:29","0:2:12:4","1:6","0:2:12:5","0:2:12:6","0:3:18:5","0:3:18:6","0:3:18:7","2:42","0:4:24:6","2:26","0:4:24:7","0:4:24:8","2:48","0:5:30:7","0:5:30:8","2:33","0:5:30:9","2:54","2:34","0:2:14:4","1:7","0:2:14:5","0:2:14:6","0:3:21:5","0:3:21:6","0:3:21:7","2:49","0:4:28:6","0:4:28:7","2:31","0:4:28:8","2:56","0:5:35:7","2:37","0:5:35:8","2:38","0:5:35:9","2:63","2:39","0:2:16:4","1:8","0:2:16:5","0:2:16:6","0:3:24:5","0:3:24:6","0:3:24:7","0:4:32:6","0:4:32:7","0:4:32:8","2:64","0:5:40:7","0:5:40:8","2:43","0:5:40:9","2:72","2:44"],"variants":[[1,0,1,2,3,4,5],[1,6,1,7,5,3,2],[1,8,1,9,2,3,10,7],[1,11,1,7,3,5,12,2],[1,13,1,9,5,2,7],[1,14,1,15,2,5,16,9],[1,17,1,9,3,2,18,7],[1,19,1,15,5,2,7,9],[1,20,1,21,2,22,15],[1,23,1,15,3,7,24,9],[1,25,1,21,5,7,9,15],[1,26,1,27,2,7,28,21],[1,29,30,22,4,10,2],[1,31,30,32,2,4,12,22],[1,33,30,21,22,4,2,32],[1,34,30,32,4,2,18,22],[1,35,30,21,2,7,32],[1,36,30,37,22,2,21],[1,38,30,21,4,22,9,32],[1,39,30,37,2,22,28,21],[1,40,30,41,22,32,37],[1,42,30,37,4,32,43,21],[1,44,30,41,2,32,45,37],[1,46,30,47,22,32,21,41],[1,48,49,32,10,2,7],[1,50,49,51,7,10,16,32],[1,52,49,53,32,10,18,51],[1,54,49,51,10,7,24,32],[1,55,49,53,7,9,51],[1,56,49,57,32,7,28,53],[1,58,49,53,10,32,43,51],[1,59,49,57,7,32,45,53],[1,60,49,61,32,21,57],[1,62,49,57,10,51,27,53],[1,63,49,61,7,51,37,57],[1,64,49,65,32,51,66,61],[1,67,68,21,2,18,9],[1,69,68,53,9,2,7,21],[1,70,68,47,21,2,22,53],[1,71,68,53,2,9,32,21],[1,72,68,47,9,15,53],[1,73,68,74,21,9,43,47],[1,75,68,47,2,21,76,53],[1,77,68,74,9,21,27,47],[1,78,68,79,21,37,74],[1,80,68,74,2,53,41,47],[1,81,68,79,9,53,82,74],[1,83,68,84,21,53,85,79],[1,86,87,37,18,22,15],[1,88,87,57,15,18,24,37],[1,89,87,74,37,18,9,57],[1,90,87,57,18,15,45,37],[1,91,87,74,15,21,57],[1,92,87,93,37,15,51,74],[1,94,87,74,18,37,53,57],[1,95,87,93,15,37,96,74],[1,97,87,98,37,41,93],[1,99,87,93,18,57,100,74],[1,101,87,98,15,57,102,93],[1,103,87,104,37,57,105,98],[1,106,107,41,22,9,21],[1,108,107,61,21,22,28,41],[1,109,107,79,41,22,32,61],[1,110,107,61,22,21,76,41],[1,111,107,79,21,27,61],[1,112,107,98,41,21,37,79],[1,113,107,79,22,41,85,61],[1,114,107,98,21,41,57,79],[1,115,107,116,41,47,98],[1,117,107,98,22,61,74,79],[1,118,107,116,21,61,119,98],[1,120,107,121,41,61,122,116]],"weight":72},"science-fraction-sum":{"title":"Сложить доли","patterns":["Сколько будет %d/%d + %d/%d?","Общий знаменатель %d. Получаем %d/%d + %d/%d = %d/%d.","%d/%d","%d"],"strings":["0:1:2:1:4","1:4:2:4:1:4:3:4","2:3:4","2:1:3","2:1:2","2:1:4","3:1","0:1:3:1:6","1:6:2:6:1:6:3:6","2:2:9","2:1:6","2:2:3","0:1:4:1:8","1:8:2:8:1:8:3:8","2:3:8","2:1:8","0:1:5:1:10","1:10:2:10:1:10:3:10","2:3:10","2:2:15","2:1:5","2:1:10","2:2:5"],"variants":[[18,0,1,2,3,4,5,6],[18,7,8,4,9,3,10,11],[18,12,13,14,10,5,15,4],[18,16,17,18,19,20,21,22]],"weight":72},"science-productivity":{"title":"Прежний темп","patterns":["Новая установка делает %d деталей за час — в %d раза больше старой. Сколько деталей старая сделает за %d часа?","Старая производит %d деталей/ч. За %d часа — %d.","%d"],"strings":["0:6:2:2","1:3:2:6","2:6","2:3","2:12","2:5","2:7","0:6:2:3","1:3:3:9","2:9","2:18","2:15","0:6:2:4","1:3:4:12","2:24","0:9:3:2","0:9:3:3","2:27","0:9:3:4","2:36","2:21","0:12:4:2","0:12:4:3","0:12:4:4","2:48","0:15:5:2","2:30","0:15:5:3","2:45","0:15:5:4","2:60","0:8:2:2","1:4:2:8","2:8","2:4","2:16","0:8:2:3","1:4:3:12","2:20","0:8:2:4","1:4:4:16","2:32","0:12:3:2","0:12:3:3","0:12:3:4","2:28","0:16:4:2","0:16:4:3","0:16:4:4","2:64","0:20:5:2","2:40","0:20:5:3","0:20:5:4","2:80","0:10:2:2","1:5:2:10","2:10","2:11","0:10:2:3","1:5:3:15","2:25","0:10:2:4","1:5:4:20","0:15:3:2","0:15:3:3","0:15:3:4","2:35","0:20:4:2","0:20:4:3","0:20:4:4","0:25:5:2","2:50","0:25:5:3","2:75","0:25:5:4","2:100","0:12:2:2","1:6:2:12","2:13","0:12:2:3","1:6:3:18","0:12:2:4","1:6:4:24","0:18:3:2","0:18:3:3","2:54","0:18:3:4","2:72","2:42","0:24:4:2","0:24:4:3","0:24:4:4","2:96","0:30:5:2","0:30:5:3","2:90","0:30:5:4","2:120","0:14:2:2","1:7:2:14","2:14","0:14:2:3","1:7:3:21","0:14:2:4","1:7:4:28","2:56","0:21:3:2","0:21:3:3","2:63","0:21:3:4","2:84","2:49","0:28:4:2","0:28:4:3","0:28:4:4","2:112","0:35:5:2","2:70","0:35:5:3","2:105","0:35:5:4","2:140","0:16:2:2","1:8:2:16","2:17","0:16:2:3","1:8:3:24","0:16:2:4","1:8:4:32","0:24:3:2","0:24:3:3","0:24:3:4","0:32:4:2","0:32:4:3","0:32:4:4","2:128","0:40:5:2","0:40:5:3","0:40:5:4","2:160"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,9,3,10,11,2],[1,12,13,4,3,14,10,2],[1,15,1,2,3,10,11,9],[1,16,8,9,3,17,10],[1,18,13,4,3,19,20,9],[1,21,1,2,3,14,10,4],[1,22,8,9,3,19,20,4],[1,23,13,4,3,24,14],[1,25,1,2,3,26,20,11],[1,27,8,9,3,28,14,11],[1,29,13,4,3,30,17,11],[1,31,32,33,34,35,6,9],[1,36,37,4,34,14,38,33],[1,39,40,35,34,41,14,33],[1,42,32,33,34,14,38,4],[1,43,37,4,34,19,14],[1,44,40,35,34,24,45,4],[1,46,32,33,34,41,14,35],[1,47,37,4,34,24,45,35],[1,48,40,35,34,49,41],[1,50,32,33,34,51,45,38],[1,52,37,4,34,30,41,38],[1,53,40,35,34,54,19,38],[1,55,56,57,5,38,9,58],[1,59,60,11,5,26,61,57],[1,62,63,38,5,51,26,57],[1,64,56,57,5,26,61,11],[1,65,60,11,5,28,26],[1,66,63,38,5,30,67,11],[1,68,56,57,5,51,26,38],[1,69,60,11,5,30,67,38],[1,70,63,38,5,54,51],[1,71,56,57,5,72,67,61],[1,73,60,11,5,74,51,61],[1,75,63,38,5,76,28,61],[1,77,78,4,2,14,58,79],[1,80,81,10,2,19,26,4],[1,82,83,14,2,24,19,4],[1,84,78,4,2,19,26,10],[1,85,81,10,2,86,19],[1,87,83,14,2,88,89,10],[1,90,78,4,2,24,19,14],[1,91,81,10,2,88,89,14],[1,92,83,14,2,93,24],[1,94,78,4,2,30,89,26],[1,95,81,10,2,96,24,26],[1,97,83,14,2,98,86,26],[1,99,100,101,6,45,79,11],[1,102,103,20,6,89,67,101],[1,104,105,45,6,106,89,101],[1,107,100,101,6,89,67,20],[1,108,103,20,6,109,89],[1,110,105,45,6,111,112,20],[1,113,100,101,6,106,89,45],[1,114,103,20,6,111,112,45],[1,115,105,45,6,116,106],[1,117,100,101,6,118,112,67],[1,119,103,20,6,120,106,67],[1,121,105,45,6,122,109,67],[1,123,124,35,33,41,11,125],[1,126,127,14,33,24,51,35],[1,128,129,41,33,49,24,35],[1,130,124,35,33,24,51,14],[1,131,127,14,33,88,24],[1,132,129,41,33,93,106,14],[1,133,124,35,33,49,24,41],[1,134,127,14,33,93,106,41],[1,135,129,41,33,136,49],[1,137,124,35,33,54,106,51],[1,138,127,14,33,98,49,51],[1,139,129,41,33,140,88,51]],"weight":72},"science-profit":{"title":"Доход и расходы","patterns":["Продали %d изделий по %d рублей. Изготовление каждого стоило %d, а общая доставка — %d рублей. Какова прибыль?","Прибыль с изделия — %d рубля. Умножаем на %d, вычитаем общую доставку.","%d руб."],"strings":["0:3:20:12:4","1:8:3","2:20","2:24","2:28","2:4","2:22","0:3:20:12:6","2:18","2:30","2:2","2:21","0:3:20:12:8","2:16","2:32","0:3:30:18:4","1:12:3","2:36","2:40","2:8","2:34","0:3:30:18:6","2:42","2:6","2:33","0:3:30:18:8","2:44","0:3:40:24:4","1:16:3","2:48","2:52","2:12","2:46","0:3:40:24:6","2:54","2:10","2:45","0:3:40:24:8","2:56","0:3:50:30:4","1:20:3","2:60","2:64","2:58","0:3:50:30:6","2:66","2:14","2:57","0:3:50:30:8","2:68","0:4:20:12:4","1:8:4","0:4:20:12:6","2:26","2:38","2:29","0:4:20:12:8","0:4:30:18:4","1:12:4","0:4:30:18:6","0:4:30:18:8","0:4:40:24:4","1:16:4","2:62","0:4:40:24:6","2:70","2:61","0:4:40:24:8","2:72","0:4:50:30:4","1:20:4","2:76","2:80","2:84","2:78","0:4:50:30:6","2:74","2:86","2:77","0:4:50:30:8","2:88","0:5:20:12:4","1:8:5","0:5:20:12:6","2:37","0:5:20:12:8","0:5:30:18:4","1:12:5","0:5:30:18:6","0:5:30:18:8","0:5:40:24:4","1:16:5","0:5:40:24:6","0:5:40:24:8","0:5:50:30:4","1:20:5","2:96","2:100","2:104","2:98","0:5:50:30:6","2:94","2:106","2:97","0:5:50:30:8","2:92","2:108","0:6:20:12:4","1:8:6","0:6:20:12:6","0:6:20:12:8","0:6:30:18:4","1:12:6","0:6:30:18:6","2:69","0:6:30:18:8","0:6:40:24:4","1:16:6","0:6:40:24:6","2:90","2:102","2:93","0:6:40:24:8","0:6:50:30:4","1:20:6","2:116","2:120","2:124","2:118","0:6:50:30:6","2:114","2:126","2:117","0:6:50:30:8","2:112","2:128","0:7:20:12:4","1:8:7","0:7:20:12:6","2:50","2:53","0:7:20:12:8","0:7:30:18:4","1:12:7","2:82","0:7:30:18:6","2:81","0:7:30:18:8","0:7:40:24:4","1:16:7","2:110","0:7:40:24:6","2:109","0:7:40:24:8","0:7:50:30:4","1:20:7","2:136","2:140","2:144","2:138","0:7:50:30:6","2:134","2:146","2:137","0:7:50:30:8","2:132","2:148","0:8:20:12:4","1:8:8","0:8:20:12:6","0:8:20:12:8","0:8:30:18:4","1:12:8","0:8:30:18:6","0:8:30:18:8","0:8:40:24:4","1:16:8","0:8:40:24:6","2:122","2:125","0:8:40:24:8","0:8:50:30:4","1:20:8","2:156","2:160","2:164","2:158","0:8:50:30:6","2:154","2:166","2:157","0:8:50:30:8","2:152","2:168"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,8,3,9,10,11],[1,12,1,13,3,14,2],[1,15,16,14,17,18,19,20],[1,21,16,9,17,22,23,24],[1,25,16,4,17,26,5,14],[1,27,28,26,29,30,31,32],[1,33,28,22,29,34,35,36],[1,37,28,18,29,38,19,26],[1,39,40,38,41,42,13,43],[1,44,40,34,41,45,46,47],[1,48,40,30,41,49,31,38],[1,50,51,4,14,17,5,9],[1,52,51,53,14,54,10,55],[1,56,51,3,14,18,4],[1,57,58,26,29,30,19,32],[1,59,58,22,29,34,23,36],[1,60,58,18,29,38,5,26],[1,61,62,41,42,49,31,63],[1,64,62,43,42,65,35,66],[1,67,62,38,42,68,19,41],[1,69,70,71,72,73,13,74],[1,75,70,76,72,77,46,78],[1,79,70,68,72,80,31,71],[1,81,82,17,18,26,5,54],[1,83,82,20,18,32,10,84],[1,85,82,14,18,29,17],[1,86,87,38,41,42,19,43],[1,88,87,34,41,45,23,47],[1,89,87,30,41,49,5,38],[1,90,91,71,72,73,31,74],[1,92,91,76,72,77,35,78],[1,93,91,68,72,80,19,71],[1,94,95,96,97,98,13,99],[1,100,95,101,97,102,46,103],[1,104,95,105,97,106,31,96],[1,107,108,26,29,30,5,32],[1,109,108,22,29,34,10,36],[1,110,108,18,29,38,26],[1,111,112,49,68,71,19,65],[1,113,112,45,68,74,23,114],[1,115,112,42,68,72,5,49],[1,116,117,105,96,97,31,101],[1,118,117,119,96,120,35,121],[1,122,117,80,96,98,19,105],[1,123,124,125,126,127,13,128],[1,129,124,130,126,131,46,132],[1,133,124,134,126,135,31,125],[1,136,137,30,38,41,5,34],[1,138,137,139,38,63,10,140],[1,141,137,29,38,42,30],[1,142,143,72,73,80,19,144],[1,145,143,74,73,119,23,146],[1,147,143,71,73,105,5,72],[1,148,149,106,134,125,31,150],[1,151,149,102,134,128,35,152],[1,153,149,98,134,126,19,106],[1,154,155,156,157,158,13,159],[1,160,155,161,157,162,46,163],[1,164,155,165,157,166,31,156],[1,167,168,41,42,49,5,63],[1,169,168,43,42,65,10,66],[1,170,168,38,42,68,41],[1,171,172,105,96,97,19,101],[1,173,172,119,96,120,23,121],[1,174,172,80,96,98,5,105],[1,175,176,127,135,165,31,131],[1,177,176,178,135,161,35,179],[1,180,176,126,135,156,19,127],[1,181,182,183,184,185,13,186],[1,187,182,188,184,189,46,190],[1,191,182,192,184,193,31,183]],"weight":72},"science-proportion":{"title":"Пропорция","patterns":["Решите пропорцию: x/%d = %d/%d.","Правая часть равна %d. Значит x = %d × %d.","%d"],"strings":["0:2:6:2","1:3:3:2","2:6","2:3","2:12","2:10","0:2:9:3","2:9","2:18","2:15","0:2:12:4","2:24","2:20","0:3:6:2","1:3:3:3","0:3:9:3","2:27","0:3:12:4","2:36","0:4:6:2","1:3:3:4","2:14","0:4:9:3","2:21","0:4:12:4","2:48","2:28","0:5:6:2","1:3:3:5","2:30","2:16","0:5:9:3","2:45","0:5:12:4","2:60","2:32","0:2:8:2","1:4:4:2","2:8","2:4","0:2:12:3","0:2:16:4","0:3:8:2","1:4:4:3","0:3:12:3","0:3:16:4","0:4:8:2","1:4:4:4","0:4:12:3","0:4:16:4","2:64","0:5:8:2","1:4:4:5","2:40","0:5:12:3","0:5:16:4","2:80","0:2:10:2","1:5:5:2","2:5","0:2:15:3","0:2:20:4","0:3:10:2","1:5:5:3","0:3:15:3","0:3:20:4","0:4:10:2","1:5:5:4","0:4:15:3","0:4:20:4","0:5:10:2","1:5:5:5","2:25","2:50","0:5:15:3","2:75","0:5:20:4","2:100","0:2:12:2","1:6:6:2","0:2:18:3","0:2:24:4","0:3:12:2","1:6:6:3","0:3:18:3","2:54","0:3:24:4","2:72","0:4:12:2","1:6:6:4","0:4:18:3","0:4:24:4","2:96","0:5:12:2","1:6:6:5","2:22","0:5:18:3","2:90","2:33","0:5:24:4","2:120","2:44","0:2:14:2","1:7:7:2","2:7","0:2:21:3","2:42","0:2:28:4","2:56","0:3:14:2","1:7:7:3","0:3:21:3","2:63","0:3:28:4","2:84","0:4:14:2","1:7:7:4","0:4:21:3","0:4:28:4","2:112","0:5:14:2","1:7:7:5","2:35","2:70","0:5:21:3","2:105","0:5:28:4","2:140","0:2:16:2","1:8:8:2","0:2:24:3","0:2:32:4","0:3:16:2","1:8:8:3","0:3:24:3","0:3:32:4","0:4:16:2","1:8:8:4","0:4:24:3","0:4:32:4","2:128","0:5:16:2","1:8:8:5","2:26","0:5:24:3","2:39","0:5:32:4","2:160","2:52"],"variants":[[1,0,1,2,3,4,5],[1,6,1,2,7,3,8,9],[1,10,1,2,4,3,11,12],[1,13,14,7,2,3,8,4],[1,15,14,7,3,16,8],[1,17,14,7,4,3,18,11],[1,19,20,4,2,3,11,21],[1,22,20,4,7,3,18,23],[1,24,20,4,3,25,26],[1,27,28,9,2,3,29,30],[1,31,28,9,7,3,32,11],[1,33,28,9,4,3,34,35],[1,36,37,38,39,30,4],[1,40,37,38,4,39,11,8],[1,41,37,38,30,39,35,11],[1,42,43,4,38,39,11,21],[1,44,43,4,39,18,23],[1,45,43,4,30,39,25,26],[1,46,47,30,38,39,35],[1,48,47,30,4,39,25,11],[1,49,47,30,39,50,35],[1,51,52,12,38,39,53,8],[1,54,52,12,4,39,34,16],[1,55,52,12,30,39,56,18],[1,57,58,5,59,12,21],[1,60,58,5,9,59,29,23],[1,61,58,5,12,59,53,26],[1,62,63,9,5,59,29,30],[1,64,63,9,59,32,11],[1,65,63,9,12,59,34,35],[1,66,67,12,5,59,53,8],[1,68,67,12,9,59,34,16],[1,69,67,12,59,56,18],[1,70,71,72,5,59,73,12],[1,74,71,72,9,59,75,29],[1,76,71,72,12,59,77,53],[1,78,79,4,2,11,30],[1,80,79,4,8,2,18,11],[1,81,79,4,11,2,25,35],[1,82,83,8,4,2,18],[1,84,83,8,2,85,16],[1,86,83,8,11,2,87,18],[1,88,89,11,4,2,25,12],[1,90,89,11,8,2,87,29],[1,91,89,11,2,92,53],[1,93,94,29,4,2,34,95],[1,96,94,29,8,2,97,98],[1,99,94,29,11,2,100,101],[1,102,103,21,104,26,8],[1,105,103,21,23,104,106,16],[1,107,103,21,26,104,108,18],[1,109,110,23,21,104,106,12],[1,111,110,23,104,112,29],[1,113,110,23,26,104,114,53],[1,115,116,26,21,104,108,95],[1,117,116,26,23,104,114,98],[1,118,116,26,104,119,101],[1,120,121,122,21,104,123,11],[1,124,121,122,23,104,125,18],[1,126,121,122,26,104,127,25],[1,128,129,30,38,35,12],[1,130,129,30,11,38,25,29],[1,131,129,30,35,38,50,53],[1,132,133,11,30,38,25,95],[1,134,133,11,38,87,98],[1,135,133,11,35,38,92,101],[1,136,137,35,30,38,50,11],[1,138,137,35,11,38,92,18],[1,139,137,35,38,140,25],[1,141,142,53,30,38,56,143],[1,144,142,53,11,38,100,145],[1,146,142,53,35,38,147,148]],"weight":72},"science-remaining":{"title":"Две доли","patterns":["Из %d образцов взяли треть, затем половину оставшихся. Сколько образцов осталось?","После первого отбора остаётся %d. Половина этого остатка — %d.","%d"],"strings":["0:18","1:12:6","2:6","2:3","2:9","2:12","2:15","0:24","1:16:8","2:8","2:4","2:16","2:20","0:30","1:20:10","2:10","2:5","2:25","0:36","1:24:12","2:18","2:24","2:30","0:42","1:28:14","2:14","2:7","2:21","2:28","2:35","0:48","1:32:16","2:32","2:40"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,10,5,11,12],[12,13,14,15,16,6,12,17],[12,18,19,5,2,20,21,22],[12,23,24,25,26,27,28,29],[12,30,31,11,9,21,32,33]],"weight":72},"science-reverse-percent":{"title":"Обратные проценты","patterns":["%d% некоторого числа равны %d. Найдите это число.","%d% равны %d. Всё число содержит десять таких долей.","%d"],"strings":["0:20:6","1:10:3","2:30","2:6","2:24","2:60","2:300","0:30:9","2:9","2:21","2:90","0:40:12","2:12","2:18","2:120","0:50:15","2:15","2:150","0:20:8","1:10:4","2:40","2:8","2:32","2:80","2:400","0:30:12","2:28","0:40:16","2:16","2:160","0:50:20","2:20","2:200","0:20:10","1:10:5","2:50","2:10","2:100","2:500","0:30:15","2:35","0:40:20","0:50:25","2:25","2:250","0:20:12","1:10:6","2:48","2:600","0:30:18","2:42","2:180","0:40:24","2:36","2:240","0:50:30","0:20:14","1:10:7","2:70","2:14","2:56","2:140","2:700","0:30:21","2:49","2:210","0:40:28","2:280","0:50:35","2:350","0:20:16","1:10:8","2:64","2:800","0:30:24","0:40:32","2:320","0:50:40"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,2,8,9,10,6],[3,11,1,2,12,13,14,6],[3,15,1,2,16,17,6],[3,18,19,20,21,22,23,24],[3,25,19,20,12,26,14,24],[3,27,19,20,28,4,29,24],[3,30,19,20,31,32,24],[3,33,34,35,36,20,37,38],[3,39,34,35,16,40,17,38],[3,41,34,35,31,2,32,38],[3,42,34,35,43,44,38],[3,45,46,5,12,47,14,48],[3,49,46,5,13,50,51,48],[3,52,46,5,4,53,54,48],[3,55,46,5,2,6,48],[3,56,57,58,59,60,61,62],[3,63,57,58,9,64,65,62],[3,66,57,58,26,50,67,62],[3,68,57,58,40,69,62],[3,70,71,23,28,72,29,73],[3,74,71,23,4,60,54,73],[3,75,71,23,22,47,76,73],[3,77,71,23,20,24,73]],"weight":72},"science-roundtrip":{"title":"Туда и обратно","patterns":["До станции %d км. Туда едут со скоростью %d км/ч, обратно — %d км/ч. Сколько часов всего в движении?","Туда нужно %d часов, обратно %d. Складываем времена, а не скорости.","%d ч"],"strings":["0:12:6:6","1:2:2","2:4","2:6","2:3","2:5","0:18:6:9","1:3:2","2:1","2:8","0:24:6:12","1:4:2","2:2","2:10","0:18:9:6","1:2:3","2:7","0:27:9:9","1:3:3","2:9","0:36:9:12","1:4:3","2:12","2:11","0:24:12:6","1:2:4","0:36:12:9","1:3:4","0:48:12:12","1:4:4","2:16","0:30:15:6","1:2:5","0:45:15:9","1:3:5","2:15","0:60:15:12","1:4:5","2:20","2:13","0:16:8:8","0:24:8:12","0:32:8:16","0:24:12:8","0:36:12:12","0:48:12:16","0:32:16:8","0:48:16:12","0:64:16:16","0:40:20:8","0:60:20:12","0:80:20:16","0:20:10:10","0:30:10:15","0:40:10:20","0:30:15:10","0:45:15:15","0:60:15:20","0:40:20:10","0:60:20:15","0:80:20:20","0:50:25:10","0:75:25:15","0:100:25:20","0:24:12:12","0:36:12:18","0:48:12:24","0:36:18:12","0:54:18:18","0:72:18:24","0:48:24:12","0:72:24:18","0:96:24:24","0:60:30:12","0:90:30:18","0:120:30:24","0:28:14:14","0:42:14:21","0:56:14:28","0:42:21:14","0:63:21:21","0:84:21:28","0:56:28:14","0:84:28:21","0:112:28:28","0:70:35:14","0:105:35:21","0:140:35:28","0:32:16:16","0:48:16:24","0:64:16:32","0:48:24:16","0:72:24:24","0:96:24:32","0:64:32:16","0:96:32:24","0:128:32:32","0:80:40:16","0:120:40:24","0:160:40:32"],"variants":[[1,0,1,2,3,4,5],[1,6,7,5,2,3,8,9],[1,10,11,3,2,9,12,13],[1,14,15,5,3,2,8,16],[1,17,18,3,19,5,16],[1,20,21,16,3,9,22,8,23],[1,24,25,3,9,2,12],[1,26,27,16,9,3,22,8,13],[1,28,29,9,30,22,16,19],[1,31,32,16,13,2,4,19],[1,33,34,9,13,3,35,12,23],[1,36,37,19,13,9,38,8,39],[1,40,1,2,3,4,5],[1,41,7,5,2,3,8,9],[1,42,11,3,2,9,12,13],[1,43,15,5,3,2,8,16],[1,44,18,3,19,5,16],[1,45,21,16,3,9,22,8,23],[1,46,25,3,9,2,12],[1,47,27,16,9,3,22,8,13],[1,48,29,9,30,22,16,19],[1,49,32,16,13,2,4,19],[1,50,34,9,13,3,35,12,23],[1,51,37,19,13,9,38,8,39],[1,52,1,2,3,4,5],[1,53,7,5,2,3,8,9],[1,54,11,3,2,9,12,13],[1,55,15,5,3,2,8,16],[1,56,18,3,19,5,16],[1,57,21,16,3,9,22,8,23],[1,58,25,3,9,2,12],[1,59,27,16,9,3,22,8,13],[1,60,29,9,30,22,16,19],[1,61,32,16,13,2,4,19],[1,62,34,9,13,3,35,12,23],[1,63,37,19,13,9,38,8,39],[1,64,1,2,3,4,5],[1,65,7,5,2,3,8,9],[1,66,11,3,2,9,12,13],[1,67,15,5,3,2,8,16],[1,68,18,3,19,5,16],[1,69,21,16,3,9,22,8,23],[1,70,25,3,9,2,12],[1,71,27,16,9,3,22,8,13],[1,72,29,9,30,22,16,19],[1,73,32,16,13,2,4,19],[1,74,34,9,13,3,35,12,23],[1,75,37,19,13,9,38,8,39],[1,76,1,2,3,4,5],[1,77,7,5,2,3,8,9],[1,78,11,3,2,9,12,13],[1,79,15,5,3,2,8,16],[1,80,18,3,19,5,16],[1,81,21,16,3,9,22,8,23],[1,82,25,3,9,2,12],[1,83,27,16,9,3,22,8,13],[1,84,29,9,30,22,16,19],[1,85,32,16,13,2,4,19],[1,86,34,9,13,3,35,12,23],[1,87,37,19,13,9,38,8,39],[1,88,1,2,3,4,5],[1,89,7,5,2,3,8,9],[1,90,11,3,2,9,12,13],[1,91,15,5,3,2,8,16],[1,92,18,3,19,5,16],[1,93,21,16,3,9,22,8,23],[1,94,25,3,9,2,12],[1,95,27,16,9,3,22,8,13],[1,96,29,9,30,22,16,19],[1,97,32,16,13,2,4,19],[1,98,34,9,13,3,35,12,23],[1,99,37,19,13,9,38,8,39]],"weight":72},"science-split":{"title":"Разделить запас","patterns":["%d деталей разделили в отношении %d:%d. Сколько деталей получила первая группа?","Всего %d частей, по %d деталей в каждой. Первая группа получает %d частей.","%d"],"strings":["0:12:2:2","1:4:3:2","2:6","2:3","2:10","2:5","2:7","0:15:2:3","1:5:3:2","2:9","2:13","2:12","0:18:2:4","1:6:3:2","2:16","2:14","0:15:3:2","1:5:3:3","0:18:3:3","1:6:3:3","2:15","2:8","0:21:3:4","1:7:3:3","2:18","2:17","0:18:4:2","1:6:3:4","0:21:4:3","1:7:3:4","0:24:4:4","1:8:3:4","2:20","2:11","0:21:5:2","1:7:3:5","2:19","0:24:5:3","1:8:3:5","2:21","0:27:5:4","1:9:3:5","2:22","2:23","0:16:2:2","1:4:4:2","2:4","0:20:2:3","1:5:4:2","0:24:2:4","1:6:4:2","0:20:3:2","1:5:4:3","0:24:3:3","1:6:4:3","0:28:3:4","1:7:4:3","2:25","2:24","0:24:4:2","1:6:4:4","0:28:4:3","1:7:4:4","0:32:4:4","1:8:4:4","2:28","0:28:5:2","1:7:4:5","2:26","0:32:5:3","1:8:4:5","2:27","2:29","0:36:5:4","1:9:4:5","2:31","2:32","0:20:2:2","1:4:5:2","0:25:2:3","1:5:5:2","0:30:2:4","1:6:5:2","0:25:3:2","1:5:5:3","0:30:3:3","1:6:5:3","0:35:3:4","1:7:5:3","0:30:4:2","1:6:5:4","0:35:4:3","1:7:5:4","0:40:4:4","1:8:5:4","2:36","0:35:5:2","1:7:5:5","2:30","2:33","0:40:5:3","1:8:5:5","2:35","2:37","0:45:5:4","1:9:5:5","2:40","2:41","0:24:2:2","1:4:6:2","0:30:2:3","1:5:6:2","0:36:2:4","1:6:6:2","2:34","0:30:3:2","1:5:6:3","0:36:3:3","1:6:6:3","0:42:3:4","1:7:6:3","2:39","2:38","0:36:4:2","1:6:6:4","0:42:4:3","1:7:6:4","0:48:4:4","1:8:6:4","2:44","0:42:5:2","1:7:6:5","0:48:5:3","1:8:6:5","2:43","2:45","0:54:5:4","1:9:6:5","2:49","2:50","0:28:2:2","1:4:7:2","0:35:2:3","1:5:7:2","0:42:2:4","1:6:7:2","0:35:3:2","1:5:7:3","0:42:3:3","1:6:7:3","0:49:3:4","1:7:7:3","2:46","0:42:4:2","1:6:7:4","0:49:4:3","1:7:7:4","0:56:4:4","1:8:7:4","2:52","0:49:5:2","1:7:7:5","2:47","0:56:5:3","1:8:7:5","2:51","2:53","0:63:5:4","1:9:7:5","2:58","2:59","0:32:2:2","1:4:8:2","0:40:2:3","1:5:8:2","0:48:2:4","1:6:8:2","0:40:3:2","1:5:8:3","0:48:3:3","1:6:8:3","0:56:3:4","1:7:8:3","0:48:4:2","1:6:8:4","0:56:4:3","1:7:8:4","0:64:4:4","1:8:8:4","2:60","0:56:5:2","1:7:8:5","2:54","0:64:5:3","1:8:8:5","2:61","0:72:5:4","1:9:8:5","2:67","2:68"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,9,3,10,11],[1,12,13,2,11,3,14,15],[1,16,17,9,2,3,11,10],[1,18,19,9,3,20,21,4],[1,22,23,9,11,3,24,25],[1,26,27,11,2,3,15,14],[1,28,29,11,9,3,25,24],[1,30,31,11,3,32,33,10],[1,34,35,20,2,3,14,36],[1,37,38,20,9,3,36,39],[1,40,41,20,11,3,42,43],[1,44,45,21,46,15,6,9],[1,47,48,21,11,46,24,25],[1,49,50,21,14,46,42,32],[1,51,52,11,21,46,25,24],[1,53,54,11,46,39,33,10],[1,55,56,11,14,46,57,58],[1,59,60,14,21,46,32,42],[1,61,62,14,11,46,58,57],[1,63,64,14,46,65,20,25],[1,66,67,32,21,46,43,68],[1,69,70,32,11,46,71,72],[1,73,74,32,14,46,75,76],[1,77,78,4,5,24,9,33],[1,79,80,4,20,5,43,42],[1,81,82,4,32,5,65,68],[1,83,84,20,4,5,42,43],[1,85,86,20,5,71,15,14],[1,87,88,20,32,5,76,75],[1,89,90,32,4,5,68,65],[1,91,92,32,20,5,75,76],[1,93,94,32,5,95,36,39],[1,96,97,57,4,5,98,99],[1,100,101,57,20,5,102,103],[1,104,105,57,32,5,106,107],[1,108,109,11,2,42,33,10],[1,110,111,11,24,2,65,71],[1,112,113,11,58,2,114,76],[1,115,116,24,11,2,71,65],[1,117,118,24,2,99,25,36],[1,119,120,24,58,2,121,122],[1,123,124,58,11,2,76,114],[1,125,126,58,24,2,122,121],[1,127,128,58,2,129,43,57],[1,130,131,98,11,2,103,106],[1,132,133,98,24,2,134,135],[1,136,137,98,58,2,138,139],[1,140,141,15,6,68,10,20],[1,142,143,15,39,6,99,76],[1,144,145,15,65,6,106,122],[1,146,147,39,15,6,76,99],[1,148,149,39,6,121,32,42],[1,150,151,39,65,6,152,135],[1,153,154,65,15,6,122,106],[1,155,156,65,39,6,135,152],[1,157,158,65,6,159,71,72],[1,160,161,102,15,6,129,162],[1,163,164,102,39,6,165,166],[1,167,168,102,65,6,169,170],[1,171,172,14,21,98,20,25],[1,173,174,14,58,21,122,103],[1,175,176,14,76,21,152,129],[1,177,178,58,14,21,103,122],[1,179,180,58,21,135,43,57],[1,181,182,58,76,21,166,159],[1,183,184,76,14,21,129,152],[1,185,186,76,58,21,159,166],[1,187,188,76,21,189,75,99],[1,190,191,106,14,21,165,192],[1,193,194,106,58,21,170,195],[1,196,197,106,76,21,198,199]],"weight":72},"science-weighted":{"title":"Среднее с весами","patterns":["У двух групп по %d результатов. Среднее первой — %d, второй — %d. Каково общее среднее?","Группы одинакового размера, поэтому берём среднее их средних: (%d + %d) ÷ %d.","%d"],"strings":["0:3:4:4","1:4:4:2","2:4","2:8","2:6","2:3","2:5","0:3:4:6","1:4:6:2","2:10","0:3:4:8","1:4:8:2","2:12","0:3:6:4","1:6:4:2","2:7","0:3:6:6","1:6:6:2","2:9","0:3:6:8","1:6:8:2","2:14","2:11","0:3:8:4","1:8:4:2","0:3:8:6","1:8:6:2","0:3:8:8","1:8:8:2","2:16","0:3:10:4","1:10:4:2","0:3:10:6","1:10:6:2","0:3:10:8","1:10:8:2","2:18","2:13","0:4:4:4","0:4:4:6","0:4:4:8","0:4:6:4","0:4:6:6","0:4:6:8","0:4:8:4","0:4:8:6","0:4:8:8","0:4:10:4","0:4:10:6","0:4:10:8","0:5:4:4","0:5:4:6","0:5:4:8","0:5:6:4","0:5:6:6","0:5:6:8","0:5:8:4","0:5:8:6","0:5:8:8","0:5:10:4","0:5:10:6","0:5:10:8","0:6:4:4","0:6:4:6","0:6:4:8","0:6:6:4","0:6:6:6","0:6:6:8","0:6:8:4","0:6:8:6","0:6:8:8","0:6:10:4","0:6:10:6","0:6:10:8","0:7:4:4","0:7:4:6","0:7:4:8","0:7:6:4","0:7:6:6","0:7:6:8","0:7:8:4","0:7:8:6","0:7:8:8","0:7:10:4","0:7:10:6","0:7:10:8","0:8:4:4","0:8:4:6","0:8:4:8","0:8:6:4","0:8:6:6","0:8:6:8","0:8:8:4","0:8:8:6","0:8:8:8","0:8:10:4","0:8:10:6","0:8:10:8"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,6,2,4,9,3],[1,10,11,4,2,3,12,9],[1,13,14,6,4,2,9,15],[1,16,17,4,12,18,6,15],[1,19,20,15,4,3,21,22],[1,23,24,4,3,2,12],[1,25,26,15,3,4,21,9],[1,27,28,3,29,12,15,18],[1,30,31,15,9,2,21,18],[1,32,33,3,9,4,29,22],[1,34,35,18,9,3,36,37],[1,38,1,2,3,4,5,6],[1,39,8,6,2,4,9,3],[1,40,11,4,2,3,12,9],[1,41,14,6,4,2,9,15],[1,42,17,4,12,18,6,15],[1,43,20,15,4,3,21,22],[1,44,24,4,3,2,12],[1,45,26,15,3,4,21,9],[1,46,28,3,29,12,15,18],[1,47,31,15,9,2,21,18],[1,48,33,3,9,4,29,22],[1,49,35,18,9,3,36,37],[1,50,1,2,3,4,5,6],[1,51,8,6,2,4,9,3],[1,52,11,4,2,3,12,9],[1,53,14,6,4,2,9,15],[1,54,17,4,12,18,6,15],[1,55,20,15,4,3,21,22],[1,56,24,4,3,2,12],[1,57,26,15,3,4,21,9],[1,58,28,3,29,12,15,18],[1,59,31,15,9,2,21,18],[1,60,33,3,9,4,29,22],[1,61,35,18,9,3,36,37],[1,62,1,2,3,4,5,6],[1,63,8,6,2,4,9,3],[1,64,11,4,2,3,12,9],[1,65,14,6,4,2,9,15],[1,66,17,4,12,18,6,15],[1,67,20,15,4,3,21,22],[1,68,24,4,3,2,12],[1,69,26,15,3,4,21,9],[1,70,28,3,29,12,15,18],[1,71,31,15,9,2,21,18],[1,72,33,3,9,4,29,22],[1,73,35,18,9,3,36,37],[1,74,1,2,3,4,5,6],[1,75,8,6,2,4,9,3],[1,76,11,4,2,3,12,9],[1,77,14,6,4,2,9,15],[1,78,17,4,12,18,6,15],[1,79,20,15,4,3,21,22],[1,80,24,4,3,2,12],[1,81,26,15,3,4,21,9],[1,82,28,3,29,12,15,18],[1,83,31,15,9,2,21,18],[1,84,33,3,9,4,29,22],[1,85,35,18,9,3,36,37],[1,86,1,2,3,4,5,6],[1,87,8,6,2,4,9,3],[1,88,11,4,2,3,12,9],[1,89,14,6,4,2,9,15],[1,90,17,4,12,18,6,15],[1,91,20,15,4,3,21,22],[1,92,24,4,3,2,12],[1,93,26,15,3,4,21,9],[1,94,28,3,29,12,15,18],[1,95,31,15,9,2,21,18],[1,96,33,3,9,4,29,22],[1,97,35,18,9,3,36,37]],"weight":72},"science-whole":{"title":"Целое по части","patterns":["%d/%d всей коллекции — это %d образцов. Сколько образцов в коллекции?","Одна доля равна %d ÷ %d = %d. Всего долей %d.","%d"],"strings":["0:2:3:6","1:6:2:3:3","2:9","2:3","2:6","2:15","0:3:4:9","1:9:3:3:4","2:12","2:21","0:4:5:12","1:12:4:3:5","2:27","0:5:6:15","1:15:5:3:6","2:18","2:33","0:2:3:8","1:8:2:4:3","2:4","2:8","2:20","0:3:4:12","1:12:3:4:4","2:16","2:28","0:4:5:16","1:16:4:4:5","2:36","0:5:6:20","1:20:5:4:6","2:24","2:44","0:2:3:10","1:10:2:5:3","2:5","2:10","2:25","0:3:4:15","1:15:3:5:4","2:35","0:4:5:20","1:20:4:5:5","2:45","0:5:6:25","1:25:5:5:6","2:30","2:55","0:2:3:12","1:12:2:6:3","0:3:4:18","1:18:3:6:4","2:42","0:4:5:24","1:24:4:6:5","2:54","0:5:6:30","1:30:5:6:6","2:66","0:2:3:14","1:14:2:7:3","2:7","2:14","0:3:4:21","1:21:3:7:4","2:49","0:4:5:28","1:28:4:7:5","2:63","0:5:6:35","1:35:5:7:6","2:77","0:2:3:16","1:16:2:8:3","2:40","0:3:4:24","1:24:3:8:4","2:32","2:56","0:4:5:32","1:32:4:8:5","2:72","0:5:6:40","1:40:5:8:6","2:48","2:88"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,3,2,4,9],[3,10,11,5,3,8,2,12],[3,13,14,15,3,5,8,16],[3,17,18,8,19,20,21],[3,22,23,24,19,8,20,25],[3,26,27,21,19,24,8,28],[3,29,30,31,19,21,24,32],[3,33,34,5,35,36,37],[3,38,39,21,35,5,36,40],[3,41,42,37,35,21,5,43],[3,44,45,46,35,37,21,47],[3,48,49,15,4,8,46],[3,50,51,31,4,15,8,52],[3,53,54,46,4,31,15,55],[3,56,57,28,4,46,31,58],[3,59,60,9,61,62,40],[3,63,64,25,61,9,62,65],[3,66,67,40,61,25,9,68],[3,69,70,52,61,40,25,71],[3,72,73,31,20,24,74],[3,75,76,77,20,31,24,78],[3,79,80,74,20,77,31,81],[3,82,83,84,20,74,77,85]],"weight":72}},"school":{"science-change":{"title":"Сдача","patterns":["Купили %d тетради по %d рублей и дали %d рублей. Сколько сдачи?","Покупка стоит %d рублей. Вычитаем эту сумму из переданных денег.","%d руб."],"strings":["0:2:3:16","1:6","2:10","2:6","2:13","2:12","2:7","0:2:3:21","2:15","2:18","2:17","0:3:3:19","1:9","2:9","0:3:3:24","0:4:3:22","1:12","2:14","0:4:3:27","2:19","0:5:3:25","1:15","0:5:3:30","2:20","0:6:3:28","1:18","2:16","0:6:3:33","2:21","0:2:4:18","1:8","2:8","0:2:4:23","2:11","0:2:4:28","2:24","2:22","0:3:4:22","0:3:4:27","0:3:4:32","2:23","0:4:4:26","1:16","0:4:4:31","0:4:4:36","0:5:4:30","1:20","0:5:4:35","0:5:4:40","2:25","0:6:4:34","1:24","0:6:4:39","0:6:4:44","2:26","0:2:5:20","1:10","2:5","0:2:5:25","0:2:5:30","0:2:5:35","2:30","2:27","0:3:5:25","0:3:5:30","0:3:5:35","0:3:5:40","2:28","0:4:5:30","0:4:5:35","0:4:5:40","0:4:5:45","2:29","0:5:5:35","1:25","0:5:5:40","0:5:5:45","0:5:5:50","0:6:5:40","1:30","0:6:5:45","0:6:5:50","0:6:5:55","2:31","0:2:6:22","2:4","0:2:6:27","0:2:6:32","0:2:6:37","0:3:6:28","0:3:6:33","0:3:6:38","0:3:6:43","0:4:6:34","0:4:6:39","0:4:6:44","0:4:6:49","0:5:6:40","0:5:6:45","0:5:6:50","0:5:6:55","0:6:6:46","1:36","2:36","0:6:6:51","0:6:6:56","0:6:6:61","0:2:7:24","1:14","2:3","0:2:7:29","0:2:7:34","0:2:7:39","2:32","0:3:7:31","1:21","0:3:7:36","0:3:7:41","0:3:7:46","0:4:7:38","1:28","0:4:7:43","0:4:7:48","0:4:7:53","0:5:7:45","1:35","2:35","0:5:7:50","0:5:7:55","0:5:7:60","0:6:7:52","1:42","2:42","0:6:7:57","0:6:7:62","0:6:7:67","0:2:8:26","2:2","0:2:8:31","0:2:8:36","0:2:8:41","2:33","0:3:8:34","0:3:8:39","0:3:8:44","0:3:8:49","0:4:8:42","1:32","0:4:8:47","0:4:8:52","0:4:8:57","0:5:8:50","1:40","2:40","0:5:8:55","0:5:8:60","0:5:8:65","0:6:8:58","1:48","2:48","0:6:8:63","0:6:8:68","0:6:8:73","0:2:9:28","2:1","0:2:9:33","0:2:9:38","0:2:9:43","2:34","0:3:9:37","1:27","0:3:9:42","0:3:9:47","0:3:9:52","0:4:9:46","0:4:9:51","0:4:9:56","0:4:9:61","0:5:9:55","1:45","2:45","0:5:9:60","0:5:9:65","0:5:9:70","0:6:9:64","1:54","2:54","0:6:9:69","0:6:9:74","0:6:9:79"],"variants":[[6,0,1,2,3,4,5,6],[6,7,1,8,3,9,10,5],[6,11,12,2,13,4,6],[6,14,12,8,13,9,5],[6,15,16,2,5,4,17,6],[6,18,16,8,5,9,19],[6,20,21,2,8,4,6],[6,22,21,8,9,23,5],[6,24,25,2,9,4,26,6],[6,27,25,8,9,28,5],[4,29,30,2,31,17,5,3],[4,32,30,8,31,19,10,33],[4,34,30,23,31,35,36,26],[4,37,16,2,5,17,4,3],[4,38,16,8,5,19,9,33],[4,39,16,23,5,35,40,26],[4,41,42,2,26,17,3],[4,43,42,8,26,19,33],[4,44,42,23,26,35,19,28],[4,45,46,2,23,17,8,3],[4,47,46,8,23,19,33],[4,48,46,23,35,49,26],[4,50,51,2,35,17,26,3],[4,52,51,8,35,19,28,33],[4,53,51,23,35,54,26],[3,55,56,2,8,5,57],[3,58,56,8,2,23,10],[3,59,56,23,2,49,36,8],[3,60,56,49,2,61,62,23],[3,63,21,2,8,4,57],[3,64,21,8,23,9,2],[3,65,21,23,8,49,40],[3,66,21,49,8,61,67,23],[3,68,46,2,23,8,17,57],[3,69,46,8,23,19,2],[3,70,46,23,49,35,8],[3,71,46,49,23,61,72],[3,73,74,2,49,8,57],[3,75,74,8,49,23,2],[3,76,74,23,49,8,19,28],[3,77,74,49,61,23,35,54],[3,78,79,2,61,8,26,57],[3,80,79,8,61,23,28,2],[3,81,79,23,61,49,54,8],[3,82,79,49,61,83,23],[3,84,16,2,5,26,85],[3,86,16,8,5,28,10,13],[3,87,16,23,5,54,36,17],[3,88,16,49,5,83,62,19],[3,89,25,2,9,26,4,85],[3,90,25,8,9,28,13],[3,91,25,23,9,54,40,17],[3,92,25,49,9,83,67,19],[3,93,51,2,35,26,17,85],[3,94,51,8,35,28,19,13],[3,95,51,23,35,54,17],[3,96,51,49,35,83,72,19],[3,97,79,2,61,26,8,85],[3,98,79,8,61,28,23,13],[3,99,79,23,61,54,49,17],[3,100,79,49,61,83,19],[3,101,102,2,103,26,85],[3,104,102,8,103,28,13],[3,105,102,23,103,54,17],[3,106,102,49,103,83,19],[3,107,108,2,17,10,5,109],[3,110,108,8,17,36,10,31],[3,111,108,23,17,62,36,4],[3,112,108,49,17,113,62,9],[3,114,115,2,28,10,4,109],[3,116,115,8,28,36,9,31],[3,117,115,23,28,62,40,4],[3,118,115,49,28,113,67,9],[3,119,120,2,67,10,17,109],[3,121,120,8,67,36,19,31],[3,122,120,23,67,62,35,4],[3,123,120,49,67,113,72,9],[3,124,125,2,126,10,8,109],[3,127,125,8,126,36,23,31],[3,128,125,23,126,62,49,4],[3,129,125,49,126,113,61,9],[3,130,131,2,132,10,26,109],[3,133,131,8,132,36,28,31],[3,134,131,23,132,62,54,4],[3,135,131,49,132,113,83,9],[3,136,42,2,26,9,5,137],[3,138,42,8,26,40,10,6],[3,139,42,23,26,67,36,5],[3,140,42,49,26,141,62,10],[3,142,51,2,35,9,4,137],[3,143,51,8,35,40,9,6],[3,144,51,23,35,67,40,5],[3,145,51,49,35,141,67,10],[3,146,147,2,113,9,17,137],[3,148,147,8,113,40,19,6],[3,149,147,23,113,67,35,5],[3,150,147,49,113,141,72,10],[3,151,152,2,153,9,8,137],[3,154,152,8,153,40,23,6],[3,155,152,23,153,67,49,5],[3,156,152,49,153,141,61,10],[3,157,158,2,159,9,26,137],[3,160,158,8,159,40,28,6],[3,161,158,23,159,67,54,5],[3,162,158,49,159,141,83,10],[3,163,25,2,9,19,5,164],[3,165,25,8,9,35,10,3],[3,166,25,23,9,72,36,33],[3,167,25,49,9,168,62,26],[3,169,170,2,62,19,4,164],[3,171,170,8,62,35,9,3],[3,172,170,23,62,72,40,33],[3,173,170,49,62,168,67,26],[3,174,102,2,103,19,17,164],[3,175,102,8,103,35,19,3],[3,176,102,23,103,72,35,33],[3,177,102,49,103,168,72,26],[3,178,179,2,180,19,8,164],[3,181,179,8,180,35,23,3],[3,182,179,23,180,72,49,33],[3,183,179,49,180,168,61,26],[3,184,185,2,186,19,26,164],[3,187,185,8,186,35,28,3],[3,188,185,23,186,72,54,33],[3,189,185,49,186,168,83,26]],"weight":420},"science-clock":{"title":"До звонка","patterns":["Урок длится %d минут. Прошло %d минут, затем ещё %d. Сколько минут осталось?","Из %d вычитаем оба прошедших отрезка времени: %d и %d.","%d мин"],"strings":["0:20:3:4","1:20:3:4","2:13","2:17","2:16","2:15","2:12","0:20:3:6","1:20:3:6","2:11","2:14","2:10","0:30:3:4","1:30:3:4","2:23","2:27","2:26","2:25","2:22","0:30:3:6","1:30:3:6","2:21","2:24","2:20","0:40:3:4","1:40:3:4","2:33","2:37","2:36","2:35","2:32","0:40:3:6","1:40:3:6","2:31","2:34","2:30","0:50:3:4","1:50:3:4","2:43","2:47","2:46","2:45","2:42","0:50:3:6","1:50:3:6","2:41","2:44","2:40","0:60:3:4","1:60:3:4","2:53","2:57","2:56","2:55","2:52","0:60:3:6","1:60:3:6","2:51","2:54","2:50","0:20:4:4","1:20:4:4","0:20:4:6","1:20:4:6","2:9","0:20:4:8","1:20:4:8","2:8","2:7","0:30:4:4","1:30:4:4","0:30:4:6","1:30:4:6","2:19","0:30:4:8","1:30:4:8","2:18","0:40:4:4","1:40:4:4","0:40:4:6","1:40:4:6","2:29","0:40:4:8","1:40:4:8","2:28","0:50:4:4","1:50:4:4","0:50:4:6","1:50:4:6","2:39","0:50:4:8","1:50:4:8","2:38","0:60:4:4","1:60:4:4","0:60:4:6","1:60:4:6","2:49","0:60:4:8","1:60:4:8","2:48","0:20:5:4","1:20:5:4","0:20:5:6","1:20:5:6","0:20:5:8","1:20:5:8","2:6","0:20:5:10","1:20:5:10","2:5","2:4","0:30:5:4","1:30:5:4","0:30:5:6","1:30:5:6","0:30:5:8","1:30:5:8","0:30:5:10","1:30:5:10","0:40:5:4","1:40:5:4","0:40:5:6","1:40:5:6","0:40:5:8","1:40:5:8","0:40:5:10","1:40:5:10","0:50:5:4","1:50:5:4","0:50:5:6","1:50:5:6","0:50:5:8","1:50:5:8","0:50:5:10","1:50:5:10","0:60:5:4","1:60:5:4","0:60:5:6","1:60:5:6","0:60:5:8","1:60:5:8","0:60:5:10","1:60:5:10","0:20:6:4","1:20:6:4","0:20:6:6","1:20:6:6","0:20:6:8","1:20:6:8","0:20:6:10","1:20:6:10","2:3","0:30:6:4","1:30:6:4","0:30:6:6","1:30:6:6","0:30:6:8","1:30:6:8","0:30:6:10","1:30:6:10","0:40:6:4","1:40:6:4","0:40:6:6","1:40:6:6","0:40:6:8","1:40:6:8","0:40:6:10","1:40:6:10","0:50:6:4","1:50:6:4","0:50:6:6","1:50:6:6","0:50:6:8","1:50:6:8","0:50:6:10","1:50:6:10","0:60:6:4","1:60:6:4","0:60:6:6","1:60:6:6","0:60:6:8","1:60:6:8","0:60:6:10","1:60:6:10","0:20:7:4","1:20:7:4","0:20:7:6","1:20:7:6","0:20:7:8","1:20:7:8","2:2","0:20:7:10","1:20:7:10","2:1","0:30:7:4","1:30:7:4","0:30:7:6","1:30:7:6","0:30:7:8","1:30:7:8","0:30:7:10","1:30:7:10","0:40:7:4","1:40:7:4","0:40:7:6","1:40:7:6","0:40:7:8","1:40:7:8","0:40:7:10","1:40:7:10","0:50:7:4","1:50:7:4","0:50:7:6","1:50:7:6","0:50:7:8","1:50:7:8","0:50:7:10","1:50:7:10","0:60:7:4","1:60:7:4","0:60:7:6","1:60:7:6","0:60:7:8","1:60:7:8","0:60:7:10","1:60:7:10","0:20:8:4","1:20:8:4","0:20:8:6","1:20:8:6","0:20:8:8","1:20:8:8","0:20:8:10","1:20:8:10","0:30:8:4","1:30:8:4","0:30:8:6","1:30:8:6","0:30:8:8","1:30:8:8","0:30:8:10","1:30:8:10","0:40:8:4","1:40:8:4","0:40:8:6","1:40:8:6","0:40:8:8","1:40:8:8","0:40:8:10","1:40:8:10","0:50:8:4","1:50:8:4","0:50:8:6","1:50:8:6","0:50:8:8","1:50:8:8","0:50:8:10","1:50:8:10","0:60:8:4","1:60:8:4","0:60:8:6","1:60:8:6","0:60:8:8","1:60:8:8","0:60:8:10","1:60:8:10","0:20:9:4","1:20:9:4","0:20:9:6","1:20:9:6","0:20:9:8","1:20:9:8","0:20:9:10","1:20:9:10","0:30:9:4","1:30:9:4","0:30:9:6","1:30:9:6","0:30:9:8","1:30:9:8","0:30:9:10","1:30:9:10","0:40:9:4","1:40:9:4","0:40:9:6","1:40:9:6","0:40:9:8","1:40:9:8","0:40:9:10","1:40:9:10","0:50:9:4","1:50:9:4","0:50:9:6","1:50:9:6","0:50:9:8","1:50:9:8","0:50:9:10","1:50:9:10","0:60:9:4","1:60:9:4","0:60:9:6","1:60:9:6","0:60:9:8","1:60:9:8","0:60:9:10","1:60:9:10"],"variants":[[6,0,1,2,3,4,5,6],[6,7,8,9,3,10,11,6],[6,12,13,14,15,16,17,18],[6,19,20,21,15,22,23,18],[6,24,25,26,27,28,29,30],[6,31,32,33,27,34,35,30],[6,36,37,38,39,40,41,42],[6,43,44,45,39,46,47,42],[6,48,49,50,51,52,53,54],[6,55,56,57,51,58,59,54],[4,60,61,6,4,10,11],[4,62,63,11,4,10,2,64],[4,65,66,67,4,6,68,64],[4,69,70,18,16,22,23],[4,71,72,23,16,22,14,73],[4,74,75,76,16,18,3,73],[4,77,78,30,28,34,35],[4,79,80,35,28,34,26,81],[4,82,83,84,28,30,15,81],[4,85,86,42,40,46,47],[4,87,88,47,40,46,38,89],[4,90,91,92,40,42,27,89],[4,93,94,54,52,58,59],[4,95,96,59,52,58,50,97],[4,98,99,100,52,54,39,97],[3,101,102,9,5,4,2,67],[3,103,104,64,5,10,6,68],[3,105,106,68,5,6,9,107],[3,108,109,110,5,11,111,107],[3,112,113,21,17,16,14,76],[3,114,115,73,17,22,18,3],[3,116,117,3,17,18,21,4],[3,118,119,5,17,23,10,4],[3,120,121,33,29,28,26,84],[3,122,123,81,29,34,30,15],[3,124,125,15,29,30,33,16],[3,126,127,17,29,35,22,16],[3,128,129,45,41,40,38,92],[3,130,131,89,41,46,42,27],[3,132,133,27,41,42,45,28],[3,134,135,29,41,47,34,28],[3,136,137,57,53,52,50,100],[3,138,139,97,53,58,54,39],[3,140,141,39,53,54,57,40],[3,142,143,41,53,59,46,40],[3,144,145,11,10,4,6,107],[3,146,147,67,10,9,110],[3,148,149,107,10,6,11,111],[3,150,151,111,10,11,64,152],[3,153,154,23,22,16,18,4],[3,155,156,76,22,21,5],[3,157,158,4,22,18,23,10],[3,159,160,10,22,23,73,2],[3,161,162,35,34,28,30,16],[3,163,164,84,34,33,17],[3,165,166,16,34,30,35,22],[3,167,168,22,34,35,81,14],[3,169,170,47,46,40,42,28],[3,171,172,92,46,45,29],[3,173,174,28,46,42,47,34],[3,175,176,34,46,47,89,26],[3,177,178,59,58,52,54,40],[3,179,180,100,58,57,41],[3,181,182,40,58,54,59,46],[3,183,184,46,58,59,97,38],[3,185,186,64,2,4,9,111],[3,187,188,68,2,10,11,152],[3,189,190,110,2,6,64,191],[3,192,193,152,2,11,67,194],[3,195,196,73,14,16,21,10],[3,197,198,3,14,22,23,2],[3,199,200,5,14,18,73,6],[3,201,202,2,14,23,76,9],[3,203,204,81,26,28,33,22],[3,205,206,15,26,34,35,14],[3,207,208,17,26,30,81,18],[3,209,210,14,26,35,84,21],[3,211,212,89,38,40,45,34],[3,213,214,27,38,46,47,26],[3,215,216,29,38,42,89,30],[3,217,218,26,38,47,92,33],[3,219,220,97,50,52,57,46],[3,221,222,39,50,58,59,38],[3,223,224,41,50,54,97,42],[3,225,226,38,50,59,100,45],[3,227,228,67,6,4,11,191],[3,229,230,107,6,10,64,194],[3,231,232,111,6,67,152,110],[3,233,234,191,6,11,68],[3,235,236,76,18,16,23,6],[3,237,238,4,18,22,73,9],[3,239,240,10,18,76,11],[3,241,242,6,18,23,3,64],[3,243,244,84,30,28,35,18],[3,245,246,16,30,34,81,21],[3,247,248,22,30,84,23],[3,249,250,18,30,35,15,73],[3,251,252,92,42,40,47,30],[3,253,254,28,42,46,89,33],[3,255,256,34,42,92,35],[3,257,258,30,42,47,27,81],[3,259,260,100,54,52,59,42],[3,261,262,40,54,58,97,45],[3,263,264,46,54,100,47],[3,265,266,42,54,59,39,89],[3,267,268,68,9,4,64],[3,269,270,110,9,10,67],[3,271,272,152,9,6,68],[3,273,274,194,9,11,107],[3,275,276,3,21,16,73,11],[3,277,278,5,21,22,76,64],[3,279,280,2,21,18,3,67],[3,281,282,9,21,23,4,68],[3,283,284,15,33,28,81,23],[3,285,286,17,33,34,84,73],[3,287,288,14,33,30,15,76],[3,289,290,21,33,35,16,3],[3,291,292,27,45,40,89,35],[3,293,294,29,45,46,92,81],[3,295,296,26,45,42,27,84],[3,297,298,33,45,47,28,15],[3,299,300,39,57,52,97,47],[3,301,302,41,57,58,100,89],[3,303,304,38,57,54,39,92],[3,305,306,45,57,59,40,27]],"weight":420},"science-difference":{"title":"Книги","patterns":["На одной полке %d книг, на другой на %d меньше. Сколько книг на обеих полках?","На второй полке %d книг. Складываем %d и %d.","%d"],"strings":["0:5:2","1:3:5:3","2:8","2:6","2:10","2:5","2:7","0:6:3","1:3:6:3","2:9","2:12","0:7:4","1:3:7:3","2:14","2:11","0:8:5","1:3:8:3","2:16","2:13","0:9:6","1:3:9:3","2:18","2:15","0:6:2","1:4:6:4","0:7:3","1:4:7:4","0:8:4","1:4:8:4","0:9:5","1:4:9:4","0:10:6","1:4:10:4","2:20","0:7:2","1:5:7:5","0:8:3","1:5:8:5","0:9:4","1:5:9:5","0:10:5","1:5:10:5","0:11:6","1:5:11:5","2:22","2:17","0:8:2","1:6:8:6","0:9:3","1:6:9:6","0:10:4","1:6:10:6","0:11:5","1:6:11:6","0:12:6","1:6:12:6","2:24","2:19","0:9:2","1:7:9:7","0:10:3","1:7:10:7","0:11:4","1:7:11:7","0:12:5","1:7:12:7","0:13:6","1:7:13:7","2:26","0:10:2","1:8:10:8","0:11:3","1:8:11:8","0:12:4","1:8:12:8","0:13:5","1:8:13:8","2:21","0:14:6","1:8:14:8","2:28","0:11:2","1:9:11:9","0:12:3","1:9:12:9","0:13:4","1:9:13:9","0:14:5","1:9:14:9","2:23","0:15:6","1:9:15:9","2:30"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,3,10,2,4],[12,11,12,4,3,13,6,14],[12,15,16,14,3,17,2,18],[12,19,20,10,3,21,9,22],[12,23,24,4,2,10,3],[12,25,26,14,2,13,6,4],[12,27,28,10,2,17,14,18],[12,29,30,18,2,21,9,13],[12,31,32,13,2,33,4,17],[12,34,35,10,4,13,6,9],[12,36,37,18,4,17,2,14],[12,38,39,13,4,21,9,18],[12,40,41,22,4,33,13,17],[12,42,43,17,4,44,14,45],[12,46,47,13,10,17,2,4],[12,48,49,22,10,21,9],[12,50,51,17,10,33,4,13],[12,52,53,45,10,44,14,17],[12,54,55,21,10,56,45,57],[12,58,59,17,13,21,9,14],[12,60,61,45,13,33,4,18],[12,62,63,21,13,44,14,22],[12,64,65,57,13,56,10,45],[12,66,67,33,13,68,18,57],[12,69,70,21,17,33,4,10],[12,71,72,57,17,44,14,13],[12,73,74,33,17,56,10],[12,75,76,77,17,68,18,21],[12,78,79,44,17,80,13,33],[12,81,82,33,21,44,14,18],[12,83,84,77,21,56,10,22],[12,85,86,44,21,68,18,45],[12,87,88,89,21,80,13,57],[12,90,91,56,21,92,22,77]],"weight":420},"science-distance":{"title":"Прогулка","patterns":["До библиотеки %d м. Прошли %d м и ещё %d м. Сколько метров осталось?","Из всей длины пути вычитаем оба пройденных участка.","%d м"],"strings":["0:300:20:20","1","2:260","2:280","2:296","2:259","2:261","0:300:20:30","2:250","2:270","2:295","0:300:30:20","2:240","0:300:30:30","2:294","2:239","2:241","0:300:40:20","2:220","0:300:40:30","2:230","2:293","0:300:50:20","2:200","0:300:50:30","2:292","0:300:60:20","2:180","0:300:60:30","2:210","2:291","0:400:20:20","2:360","2:380","2:396","2:359","2:361","0:400:20:30","2:350","2:370","2:395","0:400:20:40","2:340","2:394","0:400:30:20","0:400:30:30","2:339","2:341","0:400:30:40","2:330","2:393","0:400:40:20","2:320","0:400:40:30","0:400:40:40","2:392","2:319","2:321","0:400:50:20","2:300","0:400:50:30","0:400:50:40","2:310","2:391","0:400:60:20","0:400:60:30","0:400:60:40","2:390","0:500:20:20","2:460","2:480","2:496","2:459","2:461","0:500:20:30","2:450","2:470","2:495","0:500:20:40","2:440","2:494","0:500:20:50","2:430","2:493","0:500:30:20","0:500:30:30","2:439","2:441","0:500:30:40","0:500:30:50","2:420","2:492","0:500:40:20","0:500:40:30","0:500:40:40","2:419","2:421","0:500:40:50","2:410","2:491","0:500:50:20","2:400","0:500:50:30","0:500:50:40","0:500:50:50","2:490","2:399","2:401","0:500:60:20","0:500:60:30","0:500:60:40","0:500:60:50","2:489","0:600:20:20","2:560","2:580","2:596","2:559","2:561","0:600:20:30","2:550","2:570","2:595","0:600:20:40","2:540","2:594","0:600:20:50","2:530","2:593","0:600:30:20","0:600:30:30","2:539","2:541","0:600:30:40","0:600:30:50","2:520","2:592","0:600:40:20","0:600:40:30","0:600:40:40","2:519","2:521","0:600:40:50","2:510","2:591","0:600:50:20","2:500","0:600:50:30","0:600:50:40","0:600:50:50","2:590","2:499","2:501","0:600:60:20","0:600:60:30","0:600:60:40","0:600:60:50","2:589","0:700:20:20","2:660","2:680","2:696","2:659","2:661","0:700:20:30","2:650","2:670","2:695","0:700:20:40","2:640","2:694","0:700:20:50","2:630","2:693","0:700:30:20","0:700:30:30","2:639","2:641","0:700:30:40","0:700:30:50","2:620","2:692","0:700:40:20","0:700:40:30","0:700:40:40","2:619","2:621","0:700:40:50","2:610","2:691","0:700:50:20","2:600","0:700:50:30","0:700:50:40","0:700:50:50","2:690","2:599","2:601","0:700:60:20","0:700:60:30","0:700:60:40","0:700:60:50","2:689","0:800:20:20","2:760","2:780","2:796","2:759","2:761","0:800:20:30","2:750","2:770","2:795","0:800:20:40","2:740","2:794","0:800:20:50","2:730","2:793","0:800:30:20","0:800:30:30","2:739","2:741","0:800:30:40","0:800:30:50","2:720","2:792","0:800:40:20","0:800:40:30","0:800:40:40","2:719","2:721","0:800:40:50","2:710","2:791","0:800:50:20","2:700","0:800:50:30","0:800:50:40","0:800:50:50","2:790","2:699","2:701","0:800:60:20","0:800:60:30","0:800:60:40","0:800:60:50","2:789","0:900:20:20","2:860","2:880","2:896","2:859","2:861","0:900:20:30","2:850","2:870","2:895","0:900:20:40","2:840","2:894","0:900:20:50","2:830","2:893","0:900:30:20","0:900:30:30","2:839","2:841","0:900:30:40","0:900:30:50","2:820","2:892","0:900:40:20","0:900:40:30","0:900:40:40","2:819","2:821","0:900:40:50","2:810","2:891","0:900:50:20","2:800","0:900:50:30","0:900:50:40","0:900:50:50","2:890","2:799","2:801","0:900:60:20","0:900:60:30","0:900:60:40","0:900:60:50","2:889"],"variants":[[6,0,1,2,3,4,5,6],[6,7,1,8,3,9,10,2],[6,11,1,8,9,3,10,12],[6,13,1,12,9,14,15,16],[6,17,1,12,2,3,14,18],[6,19,1,20,2,9,21,18],[6,22,1,20,8,3,21,23],[6,24,1,18,8,9,25,23],[6,26,1,18,12,3,25,27],[6,28,1,29,12,9,30,27],[4,31,1,32,33,34,35,36],[4,37,1,38,33,39,40,32],[4,41,1,42,33,32,43],[4,44,1,38,39,33,40,42],[4,45,1,42,39,43,46,47],[4,48,1,49,39,32,50,42],[4,51,1,42,32,33,43,52],[4,53,1,49,32,39,50,52],[4,54,1,52,32,55,56,57],[4,58,1,49,38,33,50,59],[4,60,1,52,38,39,55,59],[4,61,1,62,38,32,63,59],[4,64,1,52,42,33,55,3],[4,65,1,62,42,39,63,3],[4,66,1,59,42,32,67,3],[3,68,1,69,70,71,72,73],[3,74,1,75,70,76,77,69],[3,78,1,79,70,69,80],[3,81,1,82,70,75,83,69],[3,84,1,75,76,70,77,79],[3,85,1,79,76,80,86,87],[3,88,1,82,76,69,83,79],[3,89,1,90,76,75,91,79],[3,92,1,79,69,70,80,90],[3,93,1,82,69,76,83,90],[3,94,1,90,69,91,95,96],[3,97,1,98,69,75,99,90],[3,100,1,82,75,70,83,101],[3,102,1,90,75,76,91,101],[3,103,1,98,75,69,99,101],[3,104,1,101,75,105,106,107],[3,108,1,90,79,70,91,33],[3,109,1,98,79,76,99,33],[3,110,1,101,79,69,105,33],[3,111,1,67,79,75,112,33],[3,113,1,114,115,116,117,118],[3,119,1,120,115,121,122,114],[3,123,1,124,115,114,125],[3,126,1,127,115,120,128,114],[3,129,1,120,121,115,122,124],[3,130,1,124,121,125,131,132],[3,133,1,127,121,114,128,124],[3,134,1,135,121,120,136,124],[3,137,1,124,114,115,125,135],[3,138,1,127,114,121,128,135],[3,139,1,135,114,136,140,141],[3,142,1,143,114,120,144,135],[3,145,1,127,120,115,128,146],[3,147,1,135,120,121,136,146],[3,148,1,143,120,114,144,146],[3,149,1,146,120,150,151,152],[3,153,1,135,124,115,136,70],[3,154,1,143,124,121,144,70],[3,155,1,146,124,114,150,70],[3,156,1,105,124,120,157,70],[3,158,1,159,160,161,162,163],[3,164,1,165,160,166,167,159],[3,168,1,169,160,159,170],[3,171,1,172,160,165,173,159],[3,174,1,165,166,160,167,169],[3,175,1,169,166,170,176,177],[3,178,1,172,166,159,173,169],[3,179,1,180,166,165,181,169],[3,182,1,169,159,160,170,180],[3,183,1,172,159,166,173,180],[3,184,1,180,159,181,185,186],[3,187,1,188,159,165,189,180],[3,190,1,172,165,160,173,191],[3,192,1,180,165,166,181,191],[3,193,1,188,165,159,189,191],[3,194,1,191,165,195,196,197],[3,198,1,180,169,160,181,115],[3,199,1,188,169,166,189,115],[3,200,1,191,169,159,195,115],[3,201,1,150,169,165,202,115],[3,203,1,204,205,206,207,208],[3,209,1,210,205,211,212,204],[3,213,1,214,205,204,215],[3,216,1,217,205,210,218,204],[3,219,1,210,211,205,212,214],[3,220,1,214,211,215,221,222],[3,223,1,217,211,204,218,214],[3,224,1,225,211,210,226,214],[3,227,1,214,204,205,215,225],[3,228,1,217,204,211,218,225],[3,229,1,225,204,226,230,231],[3,232,1,233,204,210,234,225],[3,235,1,217,210,205,218,236],[3,237,1,225,210,211,226,236],[3,238,1,233,210,204,234,236],[3,239,1,236,210,240,241,242],[3,243,1,225,214,205,226,160],[3,244,1,233,214,211,234,160],[3,245,1,236,214,204,240,160],[3,246,1,195,214,210,247,160],[3,248,1,249,250,251,252,253],[3,254,1,255,250,256,257,249],[3,258,1,259,250,249,260],[3,261,1,262,250,255,263,249],[3,264,1,255,256,250,257,259],[3,265,1,259,256,260,266,267],[3,268,1,262,256,249,263,259],[3,269,1,270,256,255,271,259],[3,272,1,259,249,250,260,270],[3,273,1,262,249,256,263,270],[3,274,1,270,249,271,275,276],[3,277,1,278,249,255,279,270],[3,280,1,262,255,250,263,281],[3,282,1,270,255,256,271,281],[3,283,1,278,255,249,279,281],[3,284,1,281,255,285,286,287],[3,288,1,270,259,250,271,205],[3,289,1,278,259,256,279,205],[3,290,1,281,259,249,285,205],[3,291,1,240,259,255,292,205]],"weight":420},"science-fence":{"title":"Ограда","patterns":["Квадратная клумба имеет сторону %d м. Для входа оставили проём %d м. Сколько метров ограды нужно?","Периметр — %d м. Оставляем проём и вычитаем %d м.","%d м"],"strings":["0:3:2","1:12:2","2:10","2:12","2:9","2:4","2:8","0:4:2","1:16:2","2:14","2:16","2:6","0:4:3","1:16:3","2:13","2:5","0:5:2","1:20:2","2:18","2:20","2:15","0:5:3","1:20:3","2:17","2:7","0:5:4","1:20:4","0:6:2","1:24:2","2:22","2:24","0:6:3","1:24:3","2:21","0:6:4","1:24:4","0:6:5","1:24:5","2:19","0:7:2","1:28:2","2:26","2:28","0:7:3","1:28:3","2:25","2:11","0:7:4","1:28:4","0:7:5","1:28:5","2:23","0:7:6","1:28:6","0:8:2","1:32:2","2:30","2:32","0:8:3","1:32:3","2:29","0:8:4","1:32:4","0:8:5","1:32:5","2:27","0:8:6","1:32:6","0:9:2","1:36:2","2:34","2:36","0:9:3","1:36:3","2:33","0:9:4","1:36:4","0:9:5","1:36:5","2:31","0:9:6","1:36:6"],"variants":[[60,0,1,2,3,4,5,6],[12,7,8,9,10,3,11],[48,12,13,14,10,3,15,2],[12,16,17,18,19,20,6,10],[12,21,22,23,19,20,24,9],[36,25,26,10,19,20,11,3],[12,27,28,29,30,18,2,19],[12,31,32,33,30,18,4],[12,34,35,19,30,18,6,10],[24,36,37,38,30,18,24,9],[12,39,40,41,42,33,3,30],[12,43,44,45,42,33,46,29],[12,47,48,30,42,33,2,19],[12,49,50,51,42,33,4,18],[12,52,53,29,42,33,6,10],[12,54,55,56,57,30,9,42],[12,58,59,60,57,30,14,41],[12,61,62,42,57,30,3],[12,63,64,65,57,30,46,29],[12,66,67,41,57,30,2,19],[12,68,69,70,71,65,10,57],[12,72,73,74,71,65,20,56],[12,75,76,57,71,65,9,42],[12,77,78,79,71,65,14,41],[12,80,81,56,71,65,3,30]],"weight":420},"science-groups":{"title":"Команды","patterns":["В %d командах по %d участников. Ещё %d участников ждут своей очереди. Сколько участников всего?","В командах %d участников. Прибавляем тех, кто ждёт.","%d"],"strings":["0:2:3:2","1:6","2:8","2:6","2:12","2:10","2:7","0:2:3:3","2:9","2:15","0:3:3:2","1:9","2:11","0:3:3:3","2:18","2:13","0:4:3:2","1:12","2:14","2:20","0:4:3:3","2:21","2:24","0:5:3:2","1:15","2:17","2:25","0:5:3:3","2:30","0:6:3:2","1:18","0:6:3:3","2:27","2:36","0:2:4:2","1:8","2:16","0:2:4:3","0:2:4:4","0:3:4:2","0:3:4:3","0:3:4:4","2:28","0:4:4:2","1:16","0:4:4:3","2:19","0:4:4:4","2:32","0:5:4:2","1:20","2:22","0:5:4:3","2:23","2:35","0:5:4:4","2:40","0:6:4:2","1:24","2:26","0:6:4:3","2:42","0:6:4:4","2:48","0:2:5:2","1:10","0:2:5:3","0:2:5:4","0:2:5:5","0:3:5:2","0:3:5:3","0:3:5:4","0:3:5:5","0:4:5:2","0:4:5:3","0:4:5:4","0:4:5:5","2:45","0:5:5:2","1:25","0:5:5:3","0:5:5:4","2:29","0:5:5:5","2:50","0:6:5:2","1:30","0:6:5:3","2:33","0:6:5:4","2:34","2:54","0:6:5:5","2:55","2:60","0:2:6:2","0:2:6:3","0:2:6:4","0:2:6:5","0:3:6:2","0:3:6:3","0:3:6:4","0:3:6:5","0:4:6:2","0:4:6:3","0:4:6:4","0:4:6:5","2:44","0:5:6:2","0:5:6:3","0:5:6:4","0:5:6:5","0:6:6:2","1:36","2:38","0:6:6:3","2:39","0:6:6:4","0:6:6:5","2:41","2:66","0:2:7:2","1:14","0:2:7:3","0:2:7:4","0:2:7:5","2:49","0:3:7:2","1:21","0:3:7:3","0:3:7:4","0:3:7:5","2:56","0:4:7:2","1:28","0:4:7:3","2:31","0:4:7:4","0:4:7:5","2:63","0:5:7:2","1:35","2:37","0:5:7:3","0:5:7:4","0:5:7:5","2:70","0:6:7:2","1:42","0:6:7:3","0:6:7:4","2:46","0:6:7:5","2:47","2:77","2:72","0:2:8:2","0:2:8:3","0:2:8:4","0:2:8:5","0:3:8:2","0:3:8:3","0:3:8:4","0:3:8:5","2:64","0:4:8:2","1:32","0:4:8:3","0:4:8:4","0:4:8:5","2:52","0:5:8:2","1:40","0:5:8:3","2:43","0:5:8:4","0:5:8:5","2:80","2:65","0:6:8:2","1:48","0:6:8:3","2:51","0:6:8:4","0:6:8:5","2:53","2:88","2:78","0:2:9:2","0:2:9:3","0:2:9:4","0:2:9:5","0:3:9:2","1:27","0:3:9:3","0:3:9:4","0:3:9:5","0:4:9:2","0:4:9:3","0:4:9:4","0:4:9:5","2:81","0:5:9:2","1:45","0:5:9:3","0:5:9:4","0:5:9:5","2:90","0:6:9:2","1:54","0:6:9:3","2:57","0:6:9:4","2:58","0:6:9:5","2:59","2:99","2:84"],"variants":[[6,0,1,2,3,4,5,6],[6,7,1,8,3,9,4,2],[6,10,11,12,8,9,2],[6,13,11,4,8,14,12,15],[6,16,17,18,4,14,19,8],[6,20,17,9,4,21,22,5],[6,23,24,25,9,21,26,5],[6,27,24,14,9,22,28,12],[6,29,30,19,14,22,28,12],[6,31,30,21,14,32,33,4],[4,34,35,5,2,36,4],[4,37,35,12,2,19,18,8],[4,38,35,4,2,22,36,5],[4,39,17,18,4,19,14,8],[4,40,17,9,4,22,21,5],[4,41,17,36,4,42,22,12],[4,43,44,14,36,22,5],[4,45,44,46,36,42,12],[4,47,44,19,36,48,4],[4,49,50,51,19,42,28,12],[4,52,50,53,19,48,54,4],[4,55,50,22,19,33,56,15],[4,57,58,59,22,48,33,4],[4,60,58,32,22,33,61,15],[4,62,58,42,22,56,63,18],[3,64,65,4,5,19,18,8],[3,66,65,15,5,26,36],[3,67,65,18,5,28,14,12],[3,68,65,9,5,54,19,4],[3,69,24,25,9,26,21,5],[3,70,24,14,9,28,22,12],[3,71,24,46,9,54,32,4],[3,72,24,19,9,56,28,15],[3,73,50,51,19,28,42,12],[3,74,50,53,19,54,48,4],[3,75,50,22,19,56,33,15],[3,76,50,26,19,77,56,18],[3,78,79,32,26,54,4],[3,80,79,42,26,56,15],[3,81,79,82,26,77,18],[3,83,79,28,26,84,9],[3,85,86,48,28,56,61,15],[3,87,86,88,28,77,63,18],[3,89,86,90,28,84,91,9],[3,92,86,54,28,93,94,36],[3,95,17,18,4,22,36,5],[3,96,17,9,4,28,14,12],[3,97,17,36,4,33,19],[3,98,17,25,4,61,51,15],[3,99,30,19,14,28,22,12],[3,100,30,21,14,33,32,4],[3,101,30,51,14,61,28,15],[3,102,30,53,14,63,88,18],[3,103,58,59,22,33,48,4],[3,104,58,32,22,61,33,15],[3,105,58,42,22,63,56,18],[3,106,58,82,22,91,107,9],[3,108,86,48,28,61,56,15],[3,109,86,88,28,63,77,18],[3,110,86,90,28,91,84,9],[3,111,86,54,28,94,93,36],[3,112,113,114,33,63,18],[3,115,113,116,33,91,9],[3,117,113,56,33,94,36],[3,118,113,119,33,120,25],[3,121,122,36,18,42,14,12],[3,123,122,25,18,54,19,4],[3,124,122,14,18,61,51,15],[3,125,122,46,18,126,22],[3,127,128,53,21,54,32,4],[3,129,128,22,21,61,28,15],[3,130,128,26,21,126,88,18],[3,131,128,59,21,132,33,9],[3,133,134,28,42,61,33,15],[3,135,134,136,42,126,56,18],[3,137,134,48,42,132,107,9],[3,138,134,88,42,139,63,36],[3,140,141,142,54,126,77,18],[3,143,141,114,54,132,84,9],[3,144,141,116,54,139,93,36],[3,145,141,56,54,146,94,25],[3,147,148,107,61,132,91,9],[3,149,148,77,61,139,94,36],[3,150,148,151,61,146,120,25],[3,152,148,153,61,154,155,14],[3,156,44,14,36,48,19,4],[3,157,44,46,36,56,51,15],[3,158,44,19,36,63,22,18],[3,159,44,21,36,132,59,9],[3,160,58,59,22,56,28,15],[3,161,58,32,22,63,88,18],[3,162,58,42,22,132,33,9],[3,163,58,82,22,164,116,36],[3,165,166,90,48,63,56,18],[3,167,166,54,48,132,107,9],[3,168,166,33,48,164,63,36],[3,169,166,142,48,155,170,25],[3,171,172,61,56,132,84,9],[3,173,172,174,56,164,93,36],[3,175,172,107,56,155,94,25],[3,176,172,77,56,177,178,14],[3,179,180,84,63,164,94,36],[3,181,180,182,63,155,120,25],[3,183,180,170,63,177,155,14],[3,184,180,185,63,186,187,46],[3,188,30,19,14,33,51,15],[3,189,30,21,14,77,22,18],[3,190,30,51,14,91,59,9],[3,191,30,53,14,139,42,36],[3,192,193,82,32,77,88,18],[3,194,193,28,32,91,33,9],[3,195,193,136,32,139,116,36],[3,196,193,48,32,155,61,25],[3,197,113,114,33,91,107,9],[3,198,113,116,33,139,63,36],[3,199,113,56,33,155,170,25],[3,200,113,119,33,201,132,14],[3,202,203,153,77,139,93,36],[3,204,203,63,77,155,94,25],[3,205,203,126,77,201,178,14],[3,206,203,84,77,207,146,46],[3,208,209,132,91,155,120,25],[3,210,209,211,91,201,155,14],[3,212,209,213,91,207,187,46],[3,214,209,215,91,216,217,19]],"weight":420},"science-order":{"title":"Порядок действий","patterns":["Сколько будет %d + %d × %d?","Сначала умножаем: %d. Затем прибавляем %d.","%d"],"strings":["0:3:2:2","1:4:3","2:7","2:10","2:8","2:6","0:3:2:3","1:6:3","2:9","2:15","2:12","0:3:3:2","2:11","0:3:3:3","1:9:3","2:18","2:13","0:3:4:2","1:8:3","2:14","2:20","0:3:4:3","1:12:3","2:21","2:24","0:3:5:2","1:10:3","2:16","2:17","2:25","0:3:5:3","1:15:3","2:30","0:3:6:2","0:3:6:3","1:18:3","2:27","2:36","0:4:2:2","1:4:4","0:4:2:3","1:6:4","0:4:2:4","1:8:4","0:4:3:2","0:4:3:3","1:9:4","0:4:3:4","1:12:4","2:28","0:4:4:2","0:4:4:3","2:19","0:4:4:4","1:16:4","2:32","0:4:5:2","1:10:4","2:22","0:4:5:3","1:15:4","2:23","2:35","0:4:5:4","1:20:4","2:40","0:4:6:2","2:26","0:4:6:3","1:18:4","2:42","0:4:6:4","1:24:4","2:48","0:5:2:2","1:4:5","0:5:2:3","1:6:5","0:5:2:4","1:8:5","0:5:2:5","1:10:5","0:5:3:2","0:5:3:3","1:9:5","0:5:3:4","1:12:5","0:5:3:5","1:15:5","0:5:4:2","0:5:4:3","0:5:4:4","1:16:5","0:5:4:5","1:20:5","2:45","0:5:5:2","0:5:5:3","0:5:5:4","2:29","0:5:5:5","1:25:5","2:50","2:31","0:5:6:2","0:5:6:3","1:18:5","2:33","0:5:6:4","1:24:5","2:44","2:34","2:54","0:5:6:5","1:30:5","2:55","2:60","0:6:2:2","1:4:6","0:6:2:3","1:6:6","0:6:2:4","1:8:6","0:6:2:5","1:10:6","0:6:3:2","0:6:3:3","1:9:6","0:6:3:4","1:12:6","0:6:3:5","1:15:6","0:6:4:2","0:6:4:3","0:6:4:4","1:16:6","0:6:4:5","1:20:6","0:6:5:2","0:6:5:3","0:6:5:4","0:6:5:5","1:25:6","0:6:6:2","2:38","0:6:6:3","1:18:6","2:39","0:6:6:4","1:24:6","0:6:6:5","1:30:6","2:41","2:66","0:7:2:2","1:4:7","0:7:2:3","1:6:7","0:7:2:4","1:8:7","0:7:2:5","1:10:7","0:7:3:2","0:7:3:3","1:9:7","0:7:3:4","1:12:7","0:7:3:5","1:15:7","0:7:4:2","0:7:4:3","0:7:4:4","1:16:7","0:7:4:5","1:20:7","0:7:5:2","2:37","0:7:5:3","0:7:5:4","0:7:5:5","1:25:7","0:7:6:2","0:7:6:3","1:18:7","0:7:6:4","1:24:7","2:52","2:46","0:7:6:5","1:30:7","2:65","2:47","2:72","0:8:2:2","1:4:8","0:8:2:3","1:6:8","0:8:2:4","1:8:8","0:8:2:5","1:10:8","0:8:3:2","0:8:3:3","1:9:8","0:8:3:4","1:12:8","0:8:3:5","1:15:8","0:8:4:2","0:8:4:3","0:8:4:4","1:16:8","0:8:4:5","1:20:8","0:8:5:2","0:8:5:3","2:43","0:8:5:4","0:8:5:5","1:25:8","0:8:6:2","0:8:6:3","1:18:8","2:51","0:8:6:4","1:24:8","2:56","0:8:6:5","1:30:8","2:70","2:53","2:78","0:9:2:2","1:4:9","0:9:2:3","1:6:9","0:9:2:4","1:8:9","0:9:2:5","1:10:9","0:9:3:2","0:9:3:3","1:9:9","0:9:3:4","1:12:9","0:9:3:5","1:15:9","0:9:4:2","0:9:4:3","0:9:4:4","1:16:9","0:9:4:5","1:20:9","0:9:5:2","0:9:5:3","0:9:5:4","2:49","0:9:5:5","1:25:9","0:9:6:2","0:9:6:3","1:18:9","2:57","0:9:6:4","1:24:9","2:58","0:9:6:5","1:30:9","2:75","2:59","2:84"],"variants":[[6,0,1,2,3,4,5],[6,6,7,8,9,4,10],[6,11,7,8,10,12,4,9],[6,13,14,10,15,8,12,16],[6,17,18,12,19,8,20],[6,21,22,9,23,3,24],[6,25,26,16,27,28,3,29],[6,30,31,15,24,12,32],[6,33,22,9,15,20,12,32],[6,34,35,23,36,10,37],[4,38,39,4,10,3,2,8],[4,40,41,3,15,12,8,19],[4,42,43,10,24,3,27],[4,44,41,3,19,8,15],[4,45,46,16,23,9,3],[4,47,48,27,49,12,24],[4,50,43,10,27,15,3,24],[4,51,48,27,24,52,12,49],[4,53,54,20,55,10,52,23],[4,56,57,19,15,58,12,32],[4,59,60,52,36,61,10,62],[4,63,64,24,37,16,65],[4,66,48,27,20,67,10,37],[4,68,69,58,32,36,16,70],[4,71,72,49,65,19,73],[3,74,75,8,19,10,4,3],[3,76,77,12,23,16,3,27],[3,78,79,16,49,19,12,15],[3,80,81,9,62,10,20],[3,82,77,12,27,28,3,23],[3,83,84,19,24,15,12],[3,85,86,28,55,52,10,36],[3,87,88,20,65,16,32],[3,89,79,16,15,58,12,49],[3,90,86,28,36,61,10,55],[3,91,92,23,37,24,16],[3,93,94,29,95,19,65],[3,96,81,9,20,36,10,62],[3,97,88,20,32,49,16,65],[3,98,94,29,65,99,19,95],[3,100,101,32,102,9,99,103],[3,104,86,28,58,55,16,70],[3,105,106,61,107,19,73],[3,108,109,99,110,111,9,112],[3,113,114,62,115,27,116],[3,117,118,3,27,19,8,12],[3,119,120,10,24,9,12,15],[3,121,122,19,55,27,10,20],[3,123,124,27,65,28,16,58],[3,125,120,10,15,20,12,24],[3,126,127,9,36,23,10],[3,128,129,15,37,58,16,32],[3,130,131,23,95,61,19,107],[3,132,122,19,20,67,10,55],[3,133,129,15,32,36,16,37],[3,134,135,58,65,49,19],[3,136,137,67,102,99,9,110],[3,138,124,27,58,55,16,65],[3,139,131,23,107,19,95],[3,140,137,67,110,111,9,102],[3,141,142,103,115,62,27],[3,143,129,15,24,144,19,73],[3,145,146,24,37,147,9,112],[3,148,149,32,73,65,27,116],[3,150,151,37,116,152,28,153],[3,154,155,12,15,27,3,10],[3,156,157,16,36,28,10,20],[3,158,159,9,37,15,16,58],[3,160,161,28,95,52,19,24],[3,162,157,16,20,61,10,36],[3,163,164,27,32,24,16],[3,165,166,52,65,29,19,107],[3,167,168,58,102,67,9,37],[3,169,159,9,58,32,16,37],[3,170,166,52,107,103,19,65],[3,171,172,61,110,55,9],[3,173,174,36,115,107,27,73],[3,175,161,28,24,176,19,95],[3,177,168,58,37,144,9,102],[3,178,174,36,73,147,27,115],[3,179,180,55,116,65,28],[3,181,166,52,67,110,9,112],[3,182,183,29,147,95,27,116],[3,184,185,103,186,187,28,153],[3,188,189,176,190,191,15,192],[3,193,194,10,20,15,12,16],[3,195,196,19,32,52,16,58],[3,197,198,27,65,20,19,24],[3,199,200,15,102,23,9,67],[3,201,196,19,58,67,16,32],[3,202,203,28,107,36,19],[3,204,205,20,110,49,9,37],[3,206,207,61,115,99,27,147],[3,208,198,27,24,111,19,65],[3,209,205,20,37,62,9,110],[3,210,211,24,73,37,27],[3,212,213,49,116,176,28,186],[3,214,200,15,67,70,9,102],[3,215,207,61,147,216,27,115],[3,217,213,49,186,110,28,116],[3,218,219,107,190,95,15],[3,220,205,20,49,102,27,116],[3,221,222,67,70,223,28,153],[3,224,225,55,226,186,15,192],[3,227,228,144,229,230,52,231],[3,232,233,16,58,20,10,19],[3,234,235,9,107,23,19,24],[3,236,237,28,110,58,9,67],[3,238,239,52,115,61,27,49],[3,240,235,9,24,99,19,107],[3,241,242,15,37,32,9],[3,243,244,23,73,103,27,147],[3,245,246,24,116,55,28,70],[3,247,237,28,67,144,9,110],[3,248,244,23,147,27,73],[3,249,250,29,186,65,28],[3,251,252,99,190,152,15,226],[3,253,239,52,49,191,27,115],[3,254,246,24,70,73,28,116],[3,255,252,99,226,256,15,190],[3,257,258,111,229,102,52],[3,259,244,23,32,226,28,153],[3,260,261,36,95,262,15,192],[3,263,264,107,116,265,52,231],[3,266,267,147,268,269,20,270]],"weight":420},"science-part":{"title":"Часть пути","patterns":["Путь до школы — %d минут. Пройдена одна %d-я часть пути. Сколько минут ещё идти?","На пройденную часть ушло %d минут. Осталось %d − %d.","%d мин"],"strings":["0:6:2","1:3:6:3","2:3","2:5","2:4","2:2","0:9:3","1:3:9:3","2:6","2:8","2:7","0:8:2","1:4:8:4","0:12:3","1:4:12:4","2:11","2:9","2:10","0:16:4","1:4:16:4","2:12","2:15","2:13","0:10:2","1:5:10:5","0:15:3","1:5:15:5","2:14","0:20:4","1:5:20:5","2:19","2:16","2:17","0:25:5","1:5:25:5","2:20","2:24","2:21","0:12:2","1:6:12:6","0:18:3","1:6:18:6","0:24:4","1:6:24:6","2:18","2:23","0:30:5","1:6:30:6","2:29","2:25","2:26","0:14:2","1:7:14:7","0:21:3","1:7:21:7","0:28:4","1:7:28:7","2:27","0:35:5","1:7:35:7","2:28","2:34","2:30","2:31","0:16:2","1:8:16:8","0:24:3","1:8:24:8","2:22","0:32:4","1:8:32:8","0:40:5","1:8:40:8","2:32","2:39","2:35","2:36","0:18:2","1:9:18:9","0:27:3","1:9:27:9","0:36:4","1:9:36:9","2:33","0:45:5","1:9:45:9","2:44","2:40","2:41"],"variants":[[30,0,1,2,3,4,5],[30,6,7,8,2,9,10],[20,11,12,4,10,8,2,3],[20,13,14,9,4,15,16,17],[20,18,19,20,4,21,22],[15,23,24,3,16,9,4,8],[15,25,26,17,3,27,20,22],[15,28,29,21,3,30,31,32],[15,33,34,35,3,36,37],[15,38,39,8,15,17,3,10],[15,40,41,20,8,32,21,31],[15,42,43,44,8,45,35,37],[15,46,47,36,8,48,49,50],[15,51,52,10,22,20,8,9],[15,53,54,27,10,35,44,30],[15,55,56,37,10,57,36,49],[15,58,59,60,10,61,62,63],[15,64,65,9,21,27,10,16],[15,66,67,31,9,45,37,68],[15,69,70,36,9,63,60,48],[15,71,72,73,9,74,75,76],[15,77,78,16,32,31,9,17],[15,79,80,44,16,50,36,49],[15,81,82,57,16,75,73,83],[15,84,85,76,16,86,87,88]],"weight":420},"science-pattern":{"title":"Числовой ряд","patterns":["Ряд увеличивается каждый раз на одно и то же число: %d, %d, %d, … Какое число следующее?","Каждый следующий член больше предыдущего на %d.","%d"],"strings":["0:3:5:7","1:2","2:9","2:11","2:10","2:7","0:3:6:9","1:3","2:12","2:15","2:13","0:3:7:11","1:4","2:19","2:14","2:16","0:3:8:13","1:5","2:18","2:23","2:28","0:3:9:15","1:6","2:21","2:27","2:39","0:4:6:8","2:8","0:4:7:10","0:4:8:12","2:20","2:17","0:4:9:14","2:24","2:29","0:4:10:16","2:22","2:40","0:5:7:9","0:5:8:11","0:5:9:13","0:5:10:15","2:25","2:30","0:5:11:17","2:41","0:6:8:10","0:6:9:12","0:6:10:14","0:6:11:16","2:26","2:31","0:6:12:18","2:42","0:7:9:11","0:7:10:13","0:7:11:15","0:7:12:17","2:32","0:7:13:19","2:43","0:8:10:12","0:8:11:14","0:8:12:16","0:8:13:18","2:33","0:8:14:20","2:44","0:9:11:13","0:9:12:15","0:9:13:17","0:9:14:19","2:34","0:9:15:21","2:45"],"variants":[[12,0,1,2,3,4,5],[12,6,7,8,9,3,10],[12,11,12,9,13,14,15],[12,16,17,18,19,15,20],[12,21,22,23,24,18,25],[12,26,1,4,8,27,2,3],[12,28,7,10,15,14,8],[12,29,12,15,30,9,31],[12,32,17,13,33,18,34],[12,35,22,36,20,30,37],[12,38,1,3,10,14,2],[12,39,7,14,31,15,10,9],[12,40,12,31,23,18,15],[12,41,17,30,42,43,13,23],[12,44,22,19,34,36,45],[12,46,1,8,14,15,4],[12,47,7,9,18,14,15],[12,48,12,18,36,30,31,13],[12,49,17,23,50,36,51],[12,52,22,33,43,53,19,42],[12,54,1,10,9,18,3],[12,55,7,15,13,30,9,31],[12,56,12,13,19,36,18,30],[12,57,17,36,24,33,58],[12,59,22,42,51,50,60],[12,61,1,14,15,30,8],[12,62,7,31,30,36,15,18],[12,63,12,30,33,13,23],[12,64,17,19,20,50,65],[12,66,22,50,58,20,67],[12,68,1,9,31,36,10],[12,69,7,18,23,33,31,13],[12,70,12,23,42,50,30,36],[12,71,17,33,34,20,72],[12,73,22,24,65,43,74]],"weight":420},"science-scales":{"title":"Весы","patterns":["Две одинаковые коробки вместе с гирей %d кг весят %d кг. Сколько весит одна коробка?","Убираем гирю: остаётся %d кг. Делим на две коробки.","%d кг"],"strings":["0:2:8","1:6","2:3","2:6","2:5","2:4","2:1","0:3:9","2:2","0:4:10","2:7","0:5:11","2:8","0:6:12","2:9","0:2:10","1:8","0:3:11","0:4:12","0:5:13","0:6:14","2:10","0:2:12","1:10","0:3:13","0:4:14","0:5:15","0:6:16","2:11","0:2:14","1:12","2:12","0:3:15","0:4:16","0:5:17","0:6:18","0:2:16","1:14","2:14","0:3:17","0:4:18","0:5:19","0:6:20","2:13","0:2:18","1:16","2:16","0:3:19","0:4:20","0:5:21","0:6:22","0:2:20","1:18","2:18","0:3:21","2:15","0:4:22","0:5:23","0:6:24"],"variants":[[12,0,1,2,3,4,5,6],[12,7,1,2,3,5,8],[12,9,1,2,3,10,8,4],[12,11,1,2,3,12,6,4],[12,13,1,2,3,14,8,5],[12,15,16,5,12,3,8,4],[12,17,16,5,12,10,4,6],[12,18,16,5,12,3,2,4],[12,19,16,5,12,14,2,3],[12,20,16,5,12,21,8,10],[12,22,23,4,21,10,12,2,3],[12,24,23,4,21,12,10,8,3],[12,25,23,4,21,14,3,6,10],[12,26,23,4,21,10,5,3],[12,27,23,4,21,28,5,12],[12,29,30,3,31,12,21,5,10],[12,32,30,3,31,14,2,10],[12,33,30,3,31,21,12,8],[12,34,30,3,31,28,10,6,12],[12,35,30,3,31,14,4,10],[12,36,37,10,38,14,31,4,12],[12,39,37,10,38,21,28,5,12],[12,40,37,10,38,28,21,2,14],[12,41,37,10,38,31,14,8],[12,42,37,10,38,43,12,6,21],[12,44,45,12,46,21,38,3,14],[12,47,45,12,46,28,43,4,14],[12,48,45,12,46,31,5,21],[12,49,45,12,46,43,28,2,21],[12,50,45,12,46,38,21,8,28],[12,51,52,14,53,28,46,10,21],[12,54,52,14,53,31,55,3,21],[12,56,52,14,53,43,38,4,28],[12,57,52,14,53,38,43,5,28],[12,58,52,14,53,55,31,2]],"weight":420},"science-sharing":{"title":"Поровну","patterns":["%d карандашей разложили поровну в %d коробки. Из одной коробки взяли %d. Сколько в ней осталось?","Сначала в каждой было %d ÷ %d = %d. Затем вычитаем %d.","%d"],"strings":["0:6:2:2","1:6:2:3:2","2:1","2:3","2:2","2:0","0:6:2:3","1:6:2:3:3","0:9:3:2","1:9:3:3:2","0:9:3:3","1:9:3:3:3","0:12:4:2","1:12:4:3:2","0:12:4:3","1:12:4:3:3","0:15:5:2","1:15:5:3:2","0:15:5:3","1:15:5:3:3","0:18:6:2","1:18:6:3:2","0:18:6:3","1:18:6:3:3","0:8:2:2","1:8:2:4:2","2:4","0:8:2:3","1:8:2:4:3","0:8:2:4","1:8:2:4:4","0:12:3:2","1:12:3:4:2","0:12:3:3","1:12:3:4:3","0:12:3:4","1:12:3:4:4","0:16:4:2","1:16:4:4:2","0:16:4:3","1:16:4:4:3","0:16:4:4","1:16:4:4:4","0:20:5:2","1:20:5:4:2","0:20:5:3","1:20:5:4:3","0:20:5:4","1:20:5:4:4","0:24:6:2","1:24:6:4:2","0:24:6:3","1:24:6:4:3","0:24:6:4","1:24:6:4:4","0:10:2:2","1:10:2:5:2","2:5","0:10:2:3","1:10:2:5:3","0:10:2:4","1:10:2:5:4","0:10:2:5","1:10:2:5:5","0:15:3:2","1:15:3:5:2","0:15:3:3","1:15:3:5:3","0:15:3:4","1:15:3:5:4","0:15:3:5","1:15:3:5:5","0:20:4:2","1:20:4:5:2","0:20:4:3","1:20:4:5:3","0:20:4:4","1:20:4:5:4","0:20:4:5","1:20:4:5:5","0:25:5:2","1:25:5:5:2","0:25:5:3","1:25:5:5:3","0:25:5:4","1:25:5:5:4","0:25:5:5","1:25:5:5:5","0:30:6:2","1:30:6:5:2","0:30:6:3","1:30:6:5:3","0:30:6:4","1:30:6:5:4","0:30:6:5","1:30:6:5:5","0:12:2:2","1:12:2:6:2","2:6","0:12:2:3","1:12:2:6:3","0:12:2:4","1:12:2:6:4","0:12:2:5","1:12:2:6:5","0:18:3:2","1:18:3:6:2","0:18:3:3","1:18:3:6:3","0:18:3:4","1:18:3:6:4","0:18:3:5","1:18:3:6:5","0:24:4:2","1:24:4:6:2","0:24:4:3","1:24:4:6:3","0:24:4:4","1:24:4:6:4","0:24:4:5","1:24:4:6:5","0:30:5:2","1:30:5:6:2","0:30:5:3","1:30:5:6:3","0:30:5:4","1:30:5:6:4","0:30:5:5","1:30:5:6:5","0:36:6:2","1:36:6:6:2","0:36:6:3","1:36:6:6:3","0:36:6:4","1:36:6:6:4","0:36:6:5","1:36:6:6:5","0:14:2:2","1:14:2:7:2","2:7","0:14:2:3","1:14:2:7:3","0:14:2:4","1:14:2:7:4","0:14:2:5","1:14:2:7:5","0:21:3:2","1:21:3:7:2","0:21:3:3","1:21:3:7:3","0:21:3:4","1:21:3:7:4","0:21:3:5","1:21:3:7:5","0:28:4:2","1:28:4:7:2","0:28:4:3","1:28:4:7:3","0:28:4:4","1:28:4:7:4","0:28:4:5","1:28:4:7:5","0:35:5:2","1:35:5:7:2","0:35:5:3","1:35:5:7:3","0:35:5:4","1:35:5:7:4","0:35:5:5","1:35:5:7:5","0:42:6:2","1:42:6:7:2","0:42:6:3","1:42:6:7:3","0:42:6:4","1:42:6:7:4","0:42:6:5","1:42:6:7:5","0:16:2:2","1:16:2:8:2","2:8","0:16:2:3","1:16:2:8:3","0:16:2:4","1:16:2:8:4","0:16:2:5","1:16:2:8:5","0:24:3:2","1:24:3:8:2","0:24:3:3","1:24:3:8:3","0:24:3:4","1:24:3:8:4","0:24:3:5","1:24:3:8:5","0:32:4:2","1:32:4:8:2","0:32:4:3","1:32:4:8:3","0:32:4:4","1:32:4:8:4","0:32:4:5","1:32:4:8:5","0:40:5:2","1:40:5:8:2","0:40:5:3","1:40:5:8:3","0:40:5:4","1:40:5:8:4","0:40:5:5","1:40:5:8:5","0:48:6:2","1:48:6:8:2","0:48:6:3","1:48:6:8:3","0:48:6:4","1:48:6:8:4","0:48:6:5","1:48:6:8:5","0:18:2:2","1:18:2:9:2","2:9","0:18:2:3","1:18:2:9:3","0:18:2:4","1:18:2:9:4","0:18:2:5","1:18:2:9:5","0:27:3:2","1:27:3:9:2","0:27:3:3","1:27:3:9:3","0:27:3:4","1:27:3:9:4","0:27:3:5","1:27:3:9:5","0:36:4:2","1:36:4:9:2","0:36:4:3","1:36:4:9:3","0:36:4:4","1:36:4:9:4","0:36:4:5","1:36:4:9:5","0:45:5:2","1:45:5:9:2","0:45:5:3","1:45:5:9:3","0:45:5:4","1:45:5:9:4","0:45:5:5","1:45:5:9:5","0:54:6:2","1:54:6:9:2","0:54:6:3","1:54:6:9:3","0:54:6:4","1:54:6:9:4","0:54:6:5","1:54:6:9:5"],"variants":[[6,0,1,2,3,4,5],[6,6,7,5,3,4,2],[6,8,9,2,3,4,5],[6,10,11,5,3,4,2],[6,12,13,2,3,4,5],[6,14,15,5,3,4,2],[6,16,17,2,3,4,5],[6,18,19,5,3,4,2],[6,20,21,2,3,4,5],[6,22,23,5,3,4,2],[4,24,25,4,26,3,5],[4,27,28,2,26,3,4],[4,29,30,5,26,3,4],[4,31,32,4,26,3,2],[4,33,34,2,26,3,5,4],[4,35,36,5,26,3,2,4],[4,37,38,4,26,3,2],[4,39,40,2,26,3,4],[4,41,42,5,26,3,4],[4,43,44,4,26,3,2],[4,45,46,2,26,3,4],[4,47,48,5,26,3,2,4],[4,49,50,4,26,3,2],[4,51,52,2,26,3,4],[4,53,54,5,26,3,4],[3,55,56,3,57,26,5,4],[3,58,59,4,57,26,2,3],[3,60,61,2,57,26,4],[3,62,63,5,57,26,3,4],[3,64,65,3,57,26,2,4],[3,66,67,4,57,26,5,3],[3,68,69,2,57,26,4],[3,70,71,5,57,26,4],[3,72,73,3,57,26,4],[3,74,75,4,57,26,2,3],[3,76,77,2,57,26,5,4],[3,78,79,5,57,26,2,4],[3,80,81,3,57,26,4],[3,82,83,4,57,26,3],[3,84,85,2,57,26,4],[3,86,87,5,57,26,4],[3,88,89,3,57,26,4],[3,90,91,4,57,26,3],[3,92,93,2,57,26,4],[3,94,95,5,57,26,2,4],[3,96,97,26,98,57,5,4,3],[3,99,100,3,98,57,2],[3,101,102,4,98,57,26,3],[3,103,104,2,98,57,3],[3,105,106,26,98,57,2,4,3],[3,107,108,3,98,57,5],[3,109,110,4,98,57,2,26,3],[3,111,112,2,98,57,4,3],[3,113,114,26,98,57,4,3],[3,115,116,3,98,57,2],[3,117,118,4,98,57,5,26,3],[3,119,120,2,98,57,3],[3,121,122,26,98,57,3,4],[3,123,124,3,98,57,4],[3,125,126,4,98,57,2,26,3],[3,127,128,2,98,57,5,3],[3,129,130,26,98,57,4,3],[3,131,132,3,98,57,4,26],[3,133,134,4,98,57,26,3],[3,135,136,2,98,57,3],[3,137,138,57,139,98,5,4,3],[3,140,141,26,139,98,2,3],[3,142,143,3,139,98,4,26],[3,144,145,4,139,98,3,57],[3,146,147,57,139,98,2,4,3],[3,148,149,26,139,98,5,3],[3,150,151,3,139,98,2,26],[3,152,153,4,139,98,57,3],[3,154,155,57,139,98,4,3],[3,156,157,26,139,98,2,3],[3,158,159,3,139,98,5,26],[3,160,161,4,139,98,2,57,3],[3,162,163,57,139,98,3,4],[3,164,165,26,139,98,4,3],[3,166,167,3,139,98,2,26],[3,168,169,4,139,98,5,57,3],[3,170,171,57,139,98,26,4,3],[3,172,173,26,139,98,3],[3,174,175,3,139,98,4,26],[3,176,177,4,139,98,2,57,3],[3,178,179,98,180,139,5,4,26],[3,181,182,57,180,139,2,3,26],[3,183,184,26,180,139,4],[3,185,186,3,180,139,57,26],[3,187,188,98,180,139,2,4,26],[3,189,190,57,180,139,5,3,26],[3,191,192,26,180,139,2],[3,193,194,3,180,139,4,57,26],[3,195,196,98,180,139,4,26],[3,197,198,57,180,139,2,3,26],[3,199,200,26,180,139,5],[3,201,202,3,180,139,2,57,26],[3,203,204,98,180,139,3,4,26],[3,205,206,57,180,139,4,3,26],[3,207,208,26,180,139,2],[3,209,210,3,180,139,5,57,26],[3,211,212,98,180,139,26,4],[3,213,214,57,180,139,3,26],[3,215,216,26,180,139,4],[3,217,218,3,180,139,2,57,26],[3,219,220,139,221,180,5,4,26],[3,222,223,98,221,180,2,3,26],[3,224,225,57,221,180,4,26],[3,226,227,26,221,180,3,57],[3,228,229,139,221,180,2,4,26],[3,230,231,98,221,180,5,3,26],[3,232,233,57,221,180,2,26],[3,234,235,26,221,180,4,57],[3,236,237,139,221,180,4,26],[3,238,239,98,221,180,2,3,26],[3,240,241,57,221,180,5,26],[3,242,243,26,221,180,2,57],[3,244,245,139,221,180,3,4,26],[3,246,247,98,221,180,4,3,26],[3,248,249,57,221,180,2,26],[3,250,251,26,221,180,5,57],[3,252,253,139,221,180,26,4],[3,254,255,98,221,180,3,26],[3,256,257,57,221,180,4,26],[3,258,259,26,221,180,2,57]],"weight":420},"science-units":{"title":"Лента","patterns":["От ленты длиной %d м отрезали %d см. Сколько сантиметров осталось?","%d м — это %d см. Теперь вычитаем отрезанную длину.","%d см"],"strings":["0:2:30","1:2:200","2:170","2:197","2:140","2:100","0:3:30","1:3:300","2:270","2:297","2:240","2:200","0:4:30","1:4:400","2:370","2:397","2:340","2:300","0:5:30","1:5:500","2:470","2:497","2:440","2:400","0:6:30","1:6:600","2:570","2:597","2:540","2:500","0:2:40","2:160","2:196","2:120","0:3:40","2:260","2:296","2:220","0:4:40","2:360","2:396","2:320","0:5:40","2:460","2:496","2:420","0:6:40","2:560","2:596","2:520","0:2:50","2:150","2:195","2:149","2:151","0:3:50","2:250","2:295","2:249","2:251","0:4:50","2:350","2:395","2:349","2:351","0:5:50","2:450","2:495","2:449","2:451","0:6:50","2:550","2:595","2:549","2:551","0:2:60","2:194","2:80","0:3:60","2:294","2:180","0:4:60","2:394","2:280","0:5:60","2:494","2:380","0:6:60","2:594","2:480","0:2:70","2:130","2:193","2:60","0:3:70","2:230","2:293","0:4:70","2:330","2:393","0:5:70","2:430","2:493","0:6:70","2:530","2:593","0:2:80","2:192","2:40","0:3:80","2:292","0:4:80","2:392","0:5:80","2:492","0:6:80","2:592","0:2:90","2:110","2:191","2:20","0:3:90","2:210","2:291","0:4:90","2:310","2:391","0:5:90","2:410","2:491","0:6:90","2:510","2:591"],"variants":[[12,0,1,2,3,4,5],[12,6,7,8,9,10,11],[12,12,13,14,15,16,17],[12,18,19,20,21,22,23],[12,24,25,26,27,28,29],[12,30,1,31,32,33,5],[12,34,7,35,36,37,11],[12,38,13,39,40,41,17],[12,42,19,43,44,45,23],[12,46,25,47,48,49,29],[12,50,1,51,52,5,53,54],[12,55,7,56,57,11,58,59],[12,60,13,61,62,17,63,64],[12,65,19,66,67,23,68,69],[12,70,25,71,72,29,73,74],[12,75,1,4,76,77,5],[12,78,7,10,79,80,11],[12,81,13,16,82,83,17],[12,84,19,22,85,86,23],[12,87,25,28,88,89,29],[12,90,1,91,92,93,5],[12,94,7,95,96,31,11],[12,97,13,98,99,35,17],[12,100,19,101,102,39,23],[12,103,25,104,105,43,29],[12,106,1,33,107,108,5],[12,109,7,37,110,4,11],[12,111,13,41,112,10,17],[12,113,19,45,114,16,23],[12,115,25,49,116,22,29],[12,117,1,118,119,120,5],[12,121,7,122,123,33,11],[12,124,13,125,126,37,17],[12,127,19,128,129,41,23],[12,130,25,131,132,45,29]],"weight":420}},"student":{"science-area":{"title":"Плитка","patterns":["Пол имеет размеры %d м на %d м. Квадратная плитка имеет сторону %d м. Сколько плиток покроют пол?","По одной стороне поместится %d плиток, по другой %d. Перемножаем.","%d"],"strings":["0:6:4:2","1:3:2","2:6","2:12","2:24","2:5","2:10","0:9:6:3","2:18","2:54","2:15","0:12:8:4","2:96","2:20","0:6:6:2","1:3:3","2:9","2:36","0:9:9:3","2:27","2:81","0:12:12:4","2:144","0:6:8:2","1:3:4","2:48","2:7","2:14","0:9:12:3","2:108","2:21","0:12:16:4","2:192","2:28","0:6:10:2","1:3:5","2:30","2:60","2:8","2:16","0:9:15:3","2:45","2:135","0:12:20:4","2:240","2:32","0:8:4:2","1:4:2","0:12:6:3","2:72","0:16:8:4","2:128","0:8:6:2","1:4:3","0:12:9:3","0:16:12:4","0:8:8:2","1:4:4","2:64","0:12:12:3","0:16:16:4","2:256","0:8:10:2","1:4:5","2:40","2:80","0:12:15:3","2:180","0:16:20:4","2:320","0:10:4:2","1:5:2","0:15:6:3","2:90","0:20:8:4","2:160","0:10:6:2","1:5:3","0:15:9:3","0:20:12:4","0:10:8:2","1:5:4","0:15:12:3","0:20:16:4","0:10:10:2","1:5:5","2:25","2:50","2:100","0:15:15:3","2:75","2:225","0:20:20:4","2:400","0:12:4:2","1:6:2","0:18:6:3","0:24:8:4","0:12:6:2","1:6:3","0:18:9:3","2:162","0:24:12:4","2:288","0:12:8:2","1:6:4","0:18:12:3","2:216","0:24:16:4","2:384","0:12:10:2","1:6:5","2:120","2:11","2:22","0:18:15:3","2:270","2:33","0:24:20:4","2:480","2:44","0:14:4:2","1:7:2","2:56","0:21:6:3","2:42","2:126","0:28:8:4","2:224","0:14:6:2","1:7:3","2:84","0:21:9:3","2:63","2:189","0:28:12:4","2:336","0:14:8:2","1:7:4","2:112","0:21:12:3","2:252","0:28:16:4","2:448","0:14:10:2","1:7:5","2:35","2:70","2:140","0:21:15:3","2:105","2:315","0:28:20:4","2:560","0:16:4:2","1:8:2","0:24:6:3","0:32:8:4","0:16:6:2","1:8:3","0:24:9:3","0:32:12:4","0:16:8:2","1:8:4","0:24:12:3","0:32:16:4","2:512","0:16:10:2","1:8:5","2:13","2:26","0:24:15:3","2:360","2:39","0:32:20:4","2:640","2:52","0:18:4:2","1:9:2","0:27:6:3","0:36:8:4","0:18:6:2","1:9:3","0:27:9:3","2:243","0:36:12:4","2:432","0:18:8:2","1:9:4","0:27:12:3","2:324","0:36:16:4","2:576","0:18:10:2","1:9:5","0:27:15:3","2:405","0:36:20:4","2:720"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,2,8,9,5,10],[1,11,1,2,4,12,5,13],[1,14,15,16,8,17,2,3],[1,18,15,16,19,20,2,8],[1,21,15,16,17,22,2,4],[1,23,24,3,4,25,26,27],[1,28,24,3,17,29,26,30],[1,31,24,3,25,32,26,33],[1,34,35,10,36,37,38,39],[1,40,35,10,41,42,38,4],[1,43,35,10,37,44,38,45],[1,46,47,38,39,45,2,3],[1,48,47,38,4,49,2,8],[1,50,47,38,45,51,2,4],[1,52,53,3,4,25,26,27],[1,54,53,3,17,29,26,30],[1,55,53,3,25,32,26,33],[1,56,57,39,45,58,38],[1,59,57,39,25,22,38,4],[1,60,57,39,58,61,38,45],[1,62,63,13,64,65,16,8],[1,66,63,13,37,67,16,19],[1,68,63,13,65,69,16,17],[1,70,71,6,13,64,26,27],[1,72,71,6,36,73,26,30],[1,74,71,6,64,75,26,33],[1,76,77,10,36,37,38,39],[1,78,77,10,41,42,38,4],[1,79,77,10,37,44,38,45],[1,80,81,13,64,65,16,8],[1,82,81,13,37,67,16,19],[1,83,81,13,65,69,16,17],[1,84,85,86,87,88,6,13],[1,89,85,86,90,91,6,36],[1,92,85,86,88,93,6,64],[1,94,95,3,4,25,38,39],[1,96,95,3,17,29,38,4],[1,97,95,3,25,32,38,45],[1,98,99,8,17,49,16],[1,100,99,8,9,101,16,19],[1,102,99,8,49,103,16,17],[1,104,105,4,25,12,6,13],[1,106,105,4,49,107,6,36],[1,108,105,4,12,109,6,64],[1,110,111,36,37,112,113,114],[1,115,111,36,73,116,113,117],[1,118,111,36,112,119,113,120],[1,121,122,27,33,123,16,8],[1,124,122,27,125,126,16,19],[1,127,122,27,123,128,16,17],[1,129,130,30,125,131,6,13],[1,132,130,30,133,134,6,36],[1,135,130,30,131,136,6,64],[1,137,138,33,123,139,113,114],[1,140,138,33,131,141,113,117],[1,142,138,33,139,143,113,120],[1,144,145,146,147,148,3,4],[1,149,145,146,150,151,3,17],[1,152,145,146,148,153,3,25],[1,154,155,39,45,58,6,13],[1,156,155,39,25,22,6,36],[1,157,155,39,58,61,6,64],[1,158,159,4,25,12,113,114],[1,160,159,4,49,107,113,117],[1,161,159,4,12,109,113,120],[1,162,163,45,58,51,3,4],[1,164,163,45,12,103,3,17],[1,165,163,45,51,166,3,25],[1,167,168,64,65,75,169,170],[1,171,168,64,112,172,169,173],[1,174,168,64,75,175,169,176],[1,177,178,8,17,49,113,114],[1,179,178,8,9,101,113,117],[1,180,178,8,49,103,113,120],[1,181,182,19,9,29,3,4],[1,183,182,19,20,184,3,17],[1,185,182,19,29,186,3,25],[1,187,188,17,49,22,169,170],[1,189,188,17,29,190,169,173],[1,191,188,17,22,192,169,176],[1,193,194,41,73,67,27,33],[1,195,194,41,42,196,27,125],[1,197,194,41,67,198,27,123]],"weight":84},"science-decimal":{"title":"Без запятой","patterns":["Одна упаковка весит %d,%d кг. Сколько граммов весят %d таких упаковок?","%d,%d кг — это %d г. Умножаем на %d.","%d г"],"strings":["0:0:2:3","1:0:2:200:3","2:600","2:60","2:6000","2:200","2:500","2:300","0:0:3:3","1:0:3:300:3","2:900","2:90","2:9000","0:0:4:3","1:0:4:400:3","2:1200","2:120","2:12000","2:400","2:700","0:0:5:3","1:0:5:500:3","2:1500","2:150","2:15000","2:800","0:0:2:4","1:0:2:200:4","2:80","2:8000","0:0:3:4","1:0:3:300:4","0:0:4:4","1:0:4:400:4","2:1600","2:160","2:16000","0:0:5:4","1:0:5:500:4","2:2000","2:20000","0:0:2:5","1:0:2:200:5","2:1000","2:100","2:10000","0:0:3:5","1:0:3:300:5","0:0:4:5","1:0:4:400:5","0:0:5:5","1:0:5:500:5","2:2500","2:250","2:25000","0:0:2:6","1:0:2:200:6","0:0:3:6","1:0:3:300:6","2:1800","2:180","2:18000","0:0:4:6","1:0:4:400:6","2:2400","2:240","2:24000","0:0:5:6","1:0:5:500:6","2:3000","2:30000","2:1100","0:0:2:7","1:0:2:200:7","2:1400","2:140","2:14000","0:0:3:7","1:0:3:300:7","2:2100","2:210","2:21000","0:0:4:7","1:0:4:400:7","2:2800","2:280","2:28000","0:0:5:7","1:0:5:500:7","2:3500","2:350","2:35000","0:0:2:8","1:0:2:200:8","0:0:3:8","1:0:3:300:8","0:0:4:8","1:0:4:400:8","2:3200","2:320","2:32000","0:0:5:8","1:0:5:500:8","2:4000","2:40000","2:1300","0:0:2:9","1:0:2:200:9","0:0:3:9","1:0:3:300:9","2:2700","2:270","2:27000","0:0:4:9","1:0:4:400:9","2:3600","2:360","2:36000","0:0:5:9","1:0:5:500:9","2:4500","2:450","2:45000"],"variants":[[3,0,1,2,3,4,5,6,7],[3,8,9,10,11,12,7,2],[3,13,14,15,16,17,18,19,7],[3,20,21,22,23,24,6,25,7],[3,26,27,25,28,29,5,2,18],[3,30,31,15,16,17,7,19,18],[3,32,33,34,35,36,18,25],[3,37,38,39,5,40,6,10,18],[3,41,42,43,44,45,5,19,6],[3,46,47,22,23,24,7,25,6],[3,48,49,39,5,40,18,10,6],[3,50,51,52,53,54,6,43],[3,55,56,15,16,17,5,25,2],[3,57,58,59,60,61,7,10,2],[3,62,63,64,65,66,18,43,2],[3,67,68,69,7,70,6,71,2],[3,72,73,74,75,76,5,10,19],[3,77,78,79,80,81,7,43,19],[3,82,83,84,85,86,18,71,19],[3,87,88,89,90,91,6,15,19],[3,92,93,34,35,36,5,43,25],[3,94,95,64,65,66,7,71,25],[3,96,97,98,99,100,18,15,25],[3,101,102,103,18,104,6,105,25],[3,106,107,59,60,61,5,71,10],[3,108,109,110,111,112,7,15,10],[3,113,114,115,116,117,18,105,10],[3,118,119,120,121,122,6,74,10]],"weight":84},"science-departure":{"title":"Расписание","patterns":["До встречи %d минут. Дорога занимает %d, а сборы %d минуты. Сколько свободных минут остаётся?","Из времени до встречи вычитаем время дороги и сборов.","%d мин"],"strings":["0:60:10:6","1","2:44","2:50","2:54","2:56","2:48","0:60:10:9","2:41","2:51","2:55","2:47","0:60:10:12","2:38","2:46","0:60:15:6","2:39","2:45","2:43","0:60:15:9","2:36","2:42","0:60:15:12","2:33","2:53","0:60:20:6","2:34","2:40","0:60:20:9","2:31","2:37","0:60:20:12","2:28","2:52","0:60:25:6","2:29","2:35","0:60:25:9","2:26","2:32","0:60:25:12","2:23","0:80:10:6","2:64","2:70","2:74","2:76","2:68","0:80:10:9","2:61","2:71","2:75","2:67","0:80:10:12","2:58","2:66","0:80:15:6","2:59","2:65","2:63","0:80:15:9","2:62","0:80:15:12","2:73","0:80:20:6","2:60","0:80:20:9","2:57","0:80:20:12","2:72","0:80:25:6","2:49","0:80:25:9","0:80:25:12","0:100:10:6","2:84","2:90","2:94","2:96","2:88","0:100:10:9","2:81","2:91","2:95","2:87","0:100:10:12","2:78","2:86","0:100:15:6","2:79","2:85","2:83","0:100:15:9","2:82","0:100:15:12","2:93","0:100:20:6","2:80","0:100:20:9","2:77","0:100:20:12","2:92","0:100:25:6","2:69","0:100:25:9","0:100:25:12","0:120:10:6","2:104","2:110","2:114","2:116","2:108","0:120:10:9","2:101","2:111","2:115","2:107","0:120:10:12","2:98","2:106","0:120:15:6","2:99","2:105","2:103","0:120:15:9","2:102","0:120:15:12","2:113","0:120:20:6","2:100","0:120:20:9","2:97","0:120:20:12","2:112","0:120:25:6","2:89","0:120:25:9","0:120:25:12","0:140:10:6","2:124","2:130","2:134","2:136","2:128","0:140:10:9","2:121","2:131","2:135","2:127","0:140:10:12","2:118","2:126","0:140:15:6","2:119","2:125","2:123","0:140:15:9","2:122","0:140:15:12","2:133","0:140:20:6","2:120","0:140:20:9","2:117","0:140:20:12","2:132","0:140:25:6","2:109","0:140:25:9","0:140:25:12","0:160:10:6","2:144","2:150","2:154","2:156","2:148","0:160:10:9","2:141","2:151","2:155","2:147","0:160:10:12","2:138","2:146","0:160:15:6","2:139","2:145","2:143","0:160:15:9","2:142","0:160:15:12","2:153","0:160:20:6","2:140","0:160:20:9","2:137","0:160:20:12","2:152","0:160:25:6","2:129","0:160:25:9","0:160:25:12","0:180:10:6","2:164","2:170","2:174","2:176","2:168","0:180:10:9","2:161","2:171","2:175","2:167","0:180:10:12","2:158","2:166","0:180:15:6","2:159","2:165","2:163","0:180:15:9","2:162","0:180:15:12","2:173","0:180:20:6","2:160","0:180:20:9","2:157","0:180:20:12","2:172","0:180:25:6","2:149","0:180:25:9","0:180:25:12"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,8,3,9,10,11],[1,12,1,13,3,6,4,14],[1,15,1,16,17,4,10,18],[1,19,1,20,17,9,4,21],[1,22,1,23,17,6,24,8],[1,25,1,26,27,4,13],[1,28,1,29,27,9,24,30],[1,31,1,32,27,6,33,20],[1,34,1,35,36,4,24,23],[1,37,1,38,36,9,33,39],[1,40,1,41,36,6,9,29],[1,42,1,43,44,45,46,47],[1,48,1,49,44,50,51,52],[1,53,1,54,44,47,45,55],[1,56,1,57,58,45,51,59],[1,60,1,5,58,50,45,61],[1,62,1,24,58,47,63,49],[1,64,1,4,65,45,54],[1,66,1,9,65,50,63,67],[1,68,1,6,65,47,69,5],[1,70,1,71,10,45,63,24],[1,72,1,14,10,50,69,33],[1,73,1,18,10,47,50,9],[1,74,1,75,76,77,78,79],[1,80,1,81,76,82,83,84],[1,85,1,86,76,79,77,87],[1,88,1,89,90,77,83,91],[1,92,1,46,90,82,77,93],[1,94,1,63,90,79,95,81],[1,96,1,45,97,77,86],[1,98,1,50,97,82,95,99],[1,100,1,47,97,79,101,46],[1,102,1,103,51,77,95,63],[1,104,1,55,51,82,101,69],[1,105,1,59,51,79,82,50],[1,106,1,107,108,109,110,111],[1,112,1,113,108,114,115,116],[1,117,1,118,108,111,109,119],[1,120,1,121,122,109,115,123],[1,124,1,78,122,114,109,125],[1,126,1,95,122,111,127,113],[1,128,1,77,129,109,118],[1,130,1,82,129,114,127,131],[1,132,1,79,129,111,133,78],[1,134,1,135,83,109,127,95],[1,136,1,87,83,114,133,101],[1,137,1,91,83,111,114,82],[1,138,1,139,140,141,142,143],[1,144,1,145,140,146,147,148],[1,149,1,150,140,143,141,151],[1,152,1,153,154,141,147,155],[1,156,1,110,154,146,141,157],[1,158,1,127,154,143,159,145],[1,160,1,109,161,141,150],[1,162,1,114,161,146,159,163],[1,164,1,111,161,143,165,110],[1,166,1,167,115,141,159,127],[1,168,1,119,115,146,165,133],[1,169,1,123,115,143,146,114],[1,170,1,171,172,173,174,175],[1,176,1,177,172,178,179,180],[1,181,1,182,172,175,173,183],[1,184,1,185,186,173,179,187],[1,188,1,142,186,178,173,189],[1,190,1,159,186,175,191,177],[1,192,1,141,193,173,182],[1,194,1,146,193,178,191,195],[1,196,1,143,193,175,197,142],[1,198,1,199,147,173,191,159],[1,200,1,151,147,178,197,165],[1,201,1,155,147,175,178,146],[1,202,1,203,204,205,206,207],[1,208,1,209,204,210,211,212],[1,213,1,214,204,207,205,215],[1,216,1,217,218,205,211,219],[1,220,1,174,218,210,205,221],[1,222,1,191,218,207,223,209],[1,224,1,173,225,205,214],[1,226,1,178,225,210,223,227],[1,228,1,175,225,207,229,174],[1,230,1,231,179,205,223,191],[1,232,1,183,179,210,229,197],[1,233,1,187,179,207,210,178]],"weight":84},"science-duration":{"title":"Время в пути","patterns":["Маршрут длиной %d км проходят со скоростью %d км/ч. На остановку ушло ещё %d часа. Сколько часов занял весь путь?","Движение заняло %d часов. Прибавляем время остановки.","%d ч"],"strings":["0:6:3:2","1:2","2:4","2:2","2:6","2:3","2:5","0:6:3:3","2:8","0:6:3:4","2:10","0:9:3:2","1:3","2:7","0:9:3:3","2:9","0:9:3:4","2:12","2:11","0:12:3:2","1:4","0:12:3:3","0:12:3:4","2:16","0:15:3:2","1:5","0:15:3:3","2:15","0:15:3:4","2:20","2:13","0:8:4:2","0:8:4:3","0:8:4:4","0:12:4:2","0:12:4:3","0:12:4:4","0:16:4:2","0:16:4:3","0:16:4:4","0:20:4:2","0:20:4:3","0:20:4:4","0:10:5:2","0:10:5:3","0:10:5:4","0:15:5:2","0:15:5:3","0:15:5:4","0:20:5:2","0:20:5:3","0:20:5:4","0:25:5:2","0:25:5:3","0:25:5:4","0:12:6:2","0:12:6:3","0:12:6:4","0:18:6:2","0:18:6:3","0:18:6:4","0:24:6:2","0:24:6:3","0:24:6:4","0:30:6:2","0:30:6:3","0:30:6:4","0:14:7:2","0:14:7:3","0:14:7:4","0:21:7:2","0:21:7:3","0:21:7:4","0:28:7:2","0:28:7:3","0:28:7:4","0:35:7:2","0:35:7:3","0:35:7:4","0:16:8:2","0:16:8:3","0:16:8:4","0:24:8:2","0:24:8:3","0:24:8:4","0:32:8:2","0:32:8:3","0:32:8:4","0:40:8:2","0:40:8:3","0:40:8:4","0:18:9:2","0:18:9:3","0:18:9:4","0:27:9:2","0:27:9:3","0:27:9:4","0:36:9:2","0:36:9:3","0:36:9:4","0:45:9:2","0:45:9:3","0:45:9:4"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,6,3,5,4,8],[1,9,1,4,3,2,8,10],[1,11,12,6,5,3,4,13],[1,14,12,4,5,15,6,13],[1,16,12,13,5,2,17,18],[1,19,20,4,2,3,8],[1,21,20,13,2,5,17,10],[1,22,20,8,2,23,17],[1,24,25,13,6,3,10,15],[1,26,25,8,6,5,27,18],[1,28,25,15,6,2,29,30],[1,31,1,2,3,4,5,6],[1,32,1,6,3,5,4,8],[1,33,1,4,3,2,8,10],[1,34,12,6,5,3,4,13],[1,35,12,4,5,15,6,13],[1,36,12,13,5,2,17,18],[1,37,20,4,2,3,8],[1,38,20,13,2,5,17,10],[1,39,20,8,2,23,17],[1,40,25,13,6,3,10,15],[1,41,25,8,6,5,27,18],[1,42,25,15,6,2,29,30],[1,43,1,2,3,4,5,6],[1,44,1,6,3,5,4,8],[1,45,1,4,3,2,8,10],[1,46,12,6,5,3,4,13],[1,47,12,4,5,15,6,13],[1,48,12,13,5,2,17,18],[1,49,20,4,2,3,8],[1,50,20,13,2,5,17,10],[1,51,20,8,2,23,17],[1,52,25,13,6,3,10,15],[1,53,25,8,6,5,27,18],[1,54,25,15,6,2,29,30],[1,55,1,2,3,4,5,6],[1,56,1,6,3,5,4,8],[1,57,1,4,3,2,8,10],[1,58,12,6,5,3,4,13],[1,59,12,4,5,15,6,13],[1,60,12,13,5,2,17,18],[1,61,20,4,2,3,8],[1,62,20,13,2,5,17,10],[1,63,20,8,2,23,17],[1,64,25,13,6,3,10,15],[1,65,25,8,6,5,27,18],[1,66,25,15,6,2,29,30],[1,67,1,2,3,4,5,6],[1,68,1,6,3,5,4,8],[1,69,1,4,3,2,8,10],[1,70,12,6,5,3,4,13],[1,71,12,4,5,15,6,13],[1,72,12,13,5,2,17,18],[1,73,20,4,2,3,8],[1,74,20,13,2,5,17,10],[1,75,20,8,2,23,17],[1,76,25,13,6,3,10,15],[1,77,25,8,6,5,27,18],[1,78,25,15,6,2,29,30],[1,79,1,2,3,4,5,6],[1,80,1,6,3,5,4,8],[1,81,1,4,3,2,8,10],[1,82,12,6,5,3,4,13],[1,83,12,4,5,15,6,13],[1,84,12,13,5,2,17,18],[1,85,20,4,2,3,8],[1,86,20,13,2,5,17,10],[1,87,20,8,2,23,17],[1,88,25,13,6,3,10,15],[1,89,25,8,6,5,27,18],[1,90,25,15,6,2,29,30],[1,91,1,2,3,4,5,6],[1,92,1,6,3,5,4,8],[1,93,1,4,3,2,8,10],[1,94,12,6,5,3,4,13],[1,95,12,4,5,15,6,13],[1,96,12,13,5,2,17,18],[1,97,20,4,2,3,8],[1,98,20,13,2,5,17,10],[1,99,20,8,2,23,17],[1,100,25,13,6,3,10,15],[1,101,25,8,6,5,27,18],[1,102,25,15,6,2,29,30]],"weight":84},"science-mean":{"title":"Средний результат","patterns":["За три дня решили %d, %d и %d задачи. Сколько задач в среднем за день?","Сумма равна %d. Делим на три дня.","%d"],"strings":["0:1:4:7","1:12","2:4","2:3","2:5","2:6","2:2","0:2:5:8","1:15","2:7","0:3:6:9","1:18","2:8","0:4:7:10","1:21","2:9","0:5:8:11","1:24","2:10","0:6:9:12","1:27","2:11","0:7:10:13","1:30","2:12"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,4,2,5,9,3],[12,10,11,5,4,9,12,2],[12,13,14,9,5,12,15,4],[12,16,17,12,9,15,18,5],[12,19,20,15,12,18,21,9],[12,22,23,18,15,21,24,12]],"weight":84},"science-percent":{"title":"Проценты","patterns":["В кружке %d человек. %d% выбрали геометрию. Сколько это человек?","%d% — это %d человек. Нужно взять эту долю %d раз.","%d"],"strings":["0:30:20","1:10:3:2","2:6","2:24","2:3","2:20","2:5","2:9","0:30:30","1:10:3:3","2:21","2:30","2:12","0:30:40","1:10:3:4","2:18","2:7","2:15","0:30:50","1:10:3:5","2:8","0:40:20","1:10:4:2","2:32","2:4","0:40:30","1:10:4:3","2:28","2:16","0:40:40","1:10:4:4","2:40","0:40:50","1:10:4:5","0:50:20","1:10:5:2","2:10","0:50:30","1:10:5:3","2:35","0:50:40","1:10:5:4","2:25","0:50:50","1:10:5:5","2:50","0:60:20","1:10:6:2","2:48","0:60:30","1:10:6:3","2:42","0:60:40","1:10:6:4","2:36","0:60:50","1:10:6:5","2:11","0:70:20","1:10:7:2","2:14","2:56","0:70:30","1:10:7:3","2:49","0:70:40","1:10:7:4","0:70:50","1:10:7:5","0:80:20","1:10:8:2","2:64","0:80:30","1:10:8:3","0:80:40","1:10:8:4","0:80:50","1:10:8:5","2:13","0:90:20","1:10:9:2","2:72","2:27","0:90:30","1:10:9:3","2:63","0:90:40","1:10:9:4","2:54","2:45","0:90:50","1:10:9:5"],"variants":[[3,0,1,2,3,4,5,6,7],[3,8,9,7,10,4,11,2,12],[3,13,14,12,15,4,16,17],[3,18,19,17,4,20,15],[3,21,22,20,23,24,5,2,12],[3,25,26,12,27,24,11,16,28],[3,29,30,28,3,24,31,20,5],[3,32,33,5,24,7,3],[3,34,35,36,31,6,5,16,17],[3,37,38,17,39,6,11,20,5],[3,40,41,5,11,6,31,7,42],[3,43,44,42,6,45,36,11],[3,46,47,12,48,2,5,20,15],[3,49,50,15,51,2,11,7,3],[3,52,53,3,54,2,31,36,11],[3,55,56,11,2,45,57,54],[3,58,59,60,61,16,5,7,10],[3,62,63,10,64,16,11,36,27],[3,65,66,27,51,16,31,57,39],[3,67,68,39,16,45,12,51],[3,69,70,28,71,20,5,36,3],[3,72,73,3,61,20,11,57,23],[3,74,75,23,48,20,31,12],[3,76,77,31,20,45,78,48],[3,79,80,15,81,7,5,57,82],[3,83,84,82,85,7,11,12,54],[3,86,87,54,88,7,31,78,89],[3,90,91,89,7,45,60,88]],"weight":84},"science-perimeter":{"title":"Размеры участка","patterns":["Периметр прямоугольника %d м, длина %d м. Какова ширина?","Полупериметр %d м — это длина плюс ширина. Вычитаем длину.","%d м"],"strings":["0:10:3","1:5","2:2","2:3","2:5","2:4","2:7","0:12:3","1:6","2:6","2:9","0:14:3","1:7","2:8","2:11","0:16:3","1:8","2:10","2:13","0:12:4","0:14:4","0:16:4","2:12","0:18:4","1:9","2:14","0:14:5","0:16:5","0:18:5","0:20:5","1:10","2:15","0:16:6","0:18:6","0:20:6","0:22:6","1:11","2:16","0:18:7","0:20:7","0:22:7","0:24:7","1:12","2:17","0:20:8","0:22:8","0:24:8","0:26:8","1:13","2:18","0:22:9","0:24:9","0:26:9","0:28:9","1:14","2:19"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,3,9,10,2,5],[3,11,12,5,3,6,13,14],[3,15,16,4,3,13,17,18],[3,19,8,2,5,9,13],[3,20,12,3,5,6,9,17],[3,21,16,5,13,22,3,4],[3,23,24,4,5,10,17,25],[3,26,12,2,4,6,5,10],[3,27,16,3,4,13,9,14],[3,28,24,5,4,10,13,18],[3,29,30,4,17,31,5,9],[3,32,16,2,9,13,5,17],[3,33,24,3,9,10,22],[3,34,30,5,9,17,13,25],[3,35,36,4,9,14,17,37],[3,38,24,2,6,10,5,14],[3,39,30,3,6,17,9,18],[3,40,36,5,6,14,13,31],[3,41,42,4,6,22,17,43],[3,44,30,2,13,17,5,22],[3,45,36,3,13,14,9,25],[3,46,42,5,13,22,37],[3,47,48,4,13,18,17,49],[3,50,36,2,10,14,5,18],[3,51,42,3,10,22,9,31],[3,52,48,5,10,18,13,43],[3,53,54,4,10,25,17,55]],"weight":84},"science-ratio":{"title":"Пропорция","patterns":["На %d одинаковых блокнота нужно %d рублей. Сколько стоят %d таких блокнотов?","Один блокнот стоит %d рублей. Умножаем на новое количество.","%d руб."],"strings":["0:2:6:4","1:3","2:12","2:6","2:8","2:9","0:2:6:5","2:15","0:2:6:6","2:18","2:10","0:3:9:5","2:11","0:3:9:6","0:3:9:7","2:21","2:13","0:4:12:6","2:14","0:4:12:7","0:4:12:8","2:24","2:16","0:5:15:7","2:17","0:5:15:8","0:5:15:9","2:27","2:19","0:2:8:4","1:4","0:2:8:5","2:20","0:2:8:6","0:3:12:5","0:3:12:6","0:3:12:7","2:28","0:4:16:6","0:4:16:7","0:4:16:8","2:32","0:5:20:7","2:22","0:5:20:8","2:23","0:5:20:9","2:36","0:2:10:4","1:5","0:2:10:5","2:25","0:2:10:6","2:30","0:3:15:5","0:3:15:6","0:3:15:7","2:35","0:4:20:6","0:4:20:7","0:4:20:8","2:40","0:5:25:7","0:5:25:8","0:5:25:9","2:45","2:29","0:2:12:4","1:6","0:2:12:5","0:2:12:6","0:3:18:5","0:3:18:6","0:3:18:7","2:42","0:4:24:6","2:26","0:4:24:7","0:4:24:8","2:48","0:5:30:7","0:5:30:8","2:33","0:5:30:9","2:54","2:34","0:2:14:4","1:7","0:2:14:5","0:2:14:6","0:3:21:5","0:3:21:6","0:3:21:7","2:49","0:4:28:6","0:4:28:7","2:31","0:4:28:8","2:56","0:5:35:7","2:37","0:5:35:8","2:38","0:5:35:9","2:63","2:39","0:2:16:4","1:8","0:2:16:5","0:2:16:6","0:3:24:5","0:3:24:6","0:3:24:7","0:4:32:6","0:4:32:7","0:4:32:8","2:64","0:5:40:7","0:5:40:8","2:43","0:5:40:9","2:72","2:44","0:2:18:4","1:9","0:2:18:5","0:2:18:6","0:3:27:5","0:3:27:6","0:3:27:7","0:4:36:6","0:4:36:7","0:4:36:8","0:5:45:7","2:47","0:5:45:8","0:5:45:9","2:81"],"variants":[[1,0,1,2,3,4,5],[1,6,1,7,3,5,2],[1,8,1,9,3,2,10,7],[1,11,1,7,5,3,12,2],[1,13,1,9,5,2,7],[1,14,1,15,5,2,16,9],[1,17,1,9,2,3,18,7],[1,19,1,15,2,5,7,9],[1,20,1,21,2,22,15],[1,23,1,15,7,3,24,9],[1,25,1,21,7,5,9,15],[1,26,1,27,7,2,28,21],[1,29,30,22,4,10,2],[1,31,30,32,4,2,12,22],[1,33,30,21,4,22,2,32],[1,34,30,32,2,4,18,22],[1,35,30,21,2,7,32],[1,36,30,37,2,22,21],[1,38,30,21,22,4,9,32],[1,39,30,37,22,2,28,21],[1,40,30,41,22,32,37],[1,42,30,37,32,4,43,21],[1,44,30,41,32,2,45,37],[1,46,30,47,32,22,21,41],[1,48,49,32,10,2,7],[1,50,49,51,10,7,16,32],[1,52,49,53,10,32,18,51],[1,54,49,51,7,10,24,32],[1,55,49,53,7,9,51],[1,56,49,57,7,32,28,53],[1,58,49,53,32,10,43,51],[1,59,49,57,32,7,45,53],[1,60,49,61,32,21,57],[1,62,49,57,51,10,27,53],[1,63,49,61,51,7,37,57],[1,64,49,65,51,32,66,61],[1,67,68,21,2,18,9],[1,69,68,53,2,9,7,21],[1,70,68,47,2,21,22,53],[1,71,68,53,9,2,32,21],[1,72,68,47,9,15,53],[1,73,68,74,9,21,43,47],[1,75,68,47,21,2,76,53],[1,77,68,74,21,9,27,47],[1,78,68,79,21,37,74],[1,80,68,74,53,2,41,47],[1,81,68,79,53,9,82,74],[1,83,68,84,53,21,85,79],[1,86,87,37,18,22,15],[1,88,87,57,18,15,24,37],[1,89,87,74,18,37,9,57],[1,90,87,57,15,18,45,37],[1,91,87,74,15,21,57],[1,92,87,93,15,37,51,74],[1,94,87,74,37,18,53,57],[1,95,87,93,37,15,96,74],[1,97,87,98,37,41,93],[1,99,87,93,57,18,100,74],[1,101,87,98,57,15,102,93],[1,103,87,104,57,37,105,98],[1,106,107,41,22,9,21],[1,108,107,61,22,21,28,41],[1,109,107,79,22,41,32,61],[1,110,107,61,21,22,76,41],[1,111,107,79,21,27,61],[1,112,107,98,21,41,37,79],[1,113,107,79,41,22,85,61],[1,114,107,98,41,21,57,79],[1,115,107,116,41,47,98],[1,117,107,98,61,22,74,79],[1,118,107,116,61,21,119,98],[1,120,107,121,61,41,122,116],[1,123,124,47,9,32,27],[1,125,124,65,9,27,15,47],[1,126,124,84,9,47,43,65],[1,127,124,65,27,9,66,47],[1,128,124,84,27,53,65],[1,129,124,104,27,47,96,84],[1,130,124,84,47,9,102,65],[1,131,124,104,47,27,105,84],[1,132,124,121,47,61,104],[1,133,124,104,65,9,134,84],[1,135,124,121,65,27,79,104],[1,136,124,137,65,47,93,121]],"weight":84},"science-remainder":{"title":"Остаток","patterns":["В книге %d страниц. Прочитали %d-ю часть книги. Сколько страниц осталось?","Прочитано %d страниц. Вычитаем из общего количества.","%d"],"strings":["0:12:2","1:6","2:6","2:10","2:4","2:5","2:7","0:18:3","2:12","2:15","2:9","0:24:4","2:18","2:20","2:8","0:18:2","1:9","2:16","0:27:3","2:24","2:17","2:19","0:36:4","2:27","2:32","0:24:2","1:12","2:22","0:36:3","2:33","0:48:4","2:36","2:44","0:30:2","1:15","2:28","0:45:3","2:30","2:42","0:60:4","2:45","2:56","0:16:2","1:8","2:14","0:24:3","2:21","0:32:4","0:32:2","1:16","0:48:3","0:64:4","2:48","2:60","2:47","2:49","0:40:2","1:20","2:38","0:60:3","2:40","2:57","0:80:4","2:76","0:20:2","1:10","2:11","0:30:3","0:40:4","0:50:2","1:25","2:25","2:26","0:75:3","2:50","2:72","0:100:4","2:75","2:96","2:13","0:36:2","1:18","2:34","0:54:3","2:51","0:72:4","2:54","2:68","0:48:2","1:24","2:46","0:72:3","2:69","0:96:4","2:92","0:60:2","1:30","2:58","0:90:3","2:87","0:120:4","2:90","2:116","0:28:2","1:14","0:42:3","2:39","0:56:4","2:52","0:42:2","1:21","0:63:3","0:84:4","2:63","2:80","0:56:2","1:28","0:84:3","2:81","0:112:4","2:84","2:108","0:70:2","1:35","2:35","0:105:3","2:70","2:102","0:140:4","2:105","2:136","0:64:2","1:32","2:62","0:96:3","2:64","2:93","0:128:4","2:124","0:80:2","1:40","2:78","0:120:3","2:117","0:160:4","2:120","2:156","0:54:2","1:27","0:81:3","0:108:4","2:104","0:72:2","1:36","0:108:3","0:144:4","2:140","0:90:2","1:45","2:88","0:135:3","2:132","0:180:4","2:135","2:176"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,8,2,9,10],[1,11,1,12,2,13,8,14],[1,15,16,10,17,2,14,3],[1,18,16,12,10,19,20,21],[1,22,16,23,10,24,8],[1,25,26,8,27,2,14],[2,28,26,19,8,29,10],[2,30,26,31,8,32,17],[1,33,34,9,35,2,3],[2,36,34,37,9,38,10],[1,39,34,40,9,41,8,13],[1,42,43,14,44,4,6,10],[1,45,43,17,14,46,8,2],[1,47,43,19,14,35,17],[1,25,26,8,27,14,2],[1,48,49,17,37,14,9,20],[1,50,49,24,17,40,8],[1,51,49,52,17,53,54,55],[1,56,57,13,58,14,3],[1,59,57,60,13,61,8,9],[2,62,57,53,13,63,17],[1,64,65,3,12,4,10,66],[1,67,65,13,3,23,9,2],[1,68,65,37,3,31,13,14],[1,33,34,9,35,3,2],[1,39,34,40,9,41,13,8],[1,56,57,13,58,3,14],[1,59,57,60,13,61,9,8],[1,69,70,71,52,3,19,72],[1,73,70,74,71,75,9],[1,76,70,77,71,78,13],[1,25,26,8,27,4,66,79],[1,28,26,19,8,29,12,2],[1,30,26,31,8,32,19,14],[1,80,81,12,82,8,2],[1,83,81,31,12,84,10],[1,85,81,86,12,87,19,8],[1,88,89,19,90,8,14],[1,91,89,52,19,92,12,8],[1,93,89,75,19,94,17],[1,95,96,37,97,8,3],[1,98,96,53,37,99,12,9],[1,100,96,101,37,102,19,13],[1,103,104,44,72,4,79,9],[1,105,104,35,44,106,46,2],[1,107,104,38,44,108,35,14],[1,109,110,46,60,44,2],[1,111,110,38,46,53,10],[1,112,110,113,46,114,35,8],[1,115,116,35,86,44,14],[1,117,116,41,35,118,46,8],[1,119,116,120,35,121,17],[1,122,123,124,87,44,3],[1,125,123,126,124,127,46,9],[1,128,123,129,124,130,35,13],[1,48,49,17,37,4,9,20],[1,50,49,24,17,40,19,2],[1,51,49,52,17,53,24,14],[1,88,89,19,90,17,2],[1,91,89,52,19,92,10],[1,93,89,75,19,94,24,8],[1,131,132,24,133,17,14],[1,134,132,135,24,136,19,8],[1,137,132,78,24,138,17],[1,139,140,60,141,17,3],[1,142,140,114,60,143,19,9],[1,144,140,145,60,146,24,13],[1,80,81,12,82,4,20,21],[1,83,81,31,12,84,23,2],[1,85,81,86,12,87,31,14],[1,147,148,23,108,12,2],[1,149,148,86,23,141,10],[1,150,148,118,23,151,31,8],[1,152,153,31,126,12,14],[1,154,153,75,31,129,23,8],[1,155,153,121,31,156,17],[1,157,158,40,159,12,3],[1,160,158,101,40,161,23,9],[1,162,158,163,40,164,31,13]],"weight":84},"science-scale":{"title":"Масштаб","patterns":["На плане %d см соответствует %d м. Дорожка занимает %d см на плане. Какова её длина в метрах?","Каждый сантиметр плана — %d м. Умножаем на %d.","%d м"],"strings":["0:1:20:3","1:20:3","2:60","2:6","2:600","2:50","2:40","0:1:30:3","1:30:3","2:90","2:9","2:900","0:1:40:3","1:40:3","2:120","2:12","2:1200","2:70","2:80","0:1:50:3","1:50:3","2:150","2:15","2:1500","2:100","0:1:20:4","1:20:4","2:8","2:800","0:1:30:4","1:30:4","0:1:40:4","1:40:4","2:160","2:16","2:1600","0:1:50:4","1:50:4","2:200","2:20","2:2000","0:1:20:5","1:20:5","2:10","2:1000","0:1:30:5","1:30:5","0:1:40:5","1:40:5","0:1:50:5","1:50:5","2:250","2:25","2:2500","0:1:20:6","1:20:6","0:1:30:6","1:30:6","2:180","2:18","2:1800","0:1:40:6","1:40:6","2:240","2:24","2:2400","0:1:50:6","1:50:6","2:300","2:30","2:3000","2:110","0:1:20:7","1:20:7","2:140","2:14","2:1400","0:1:30:7","1:30:7","2:210","2:21","2:2100","0:1:40:7","1:40:7","2:280","2:28","2:2800","0:1:50:7","1:50:7","2:350","2:35","2:3500","0:1:20:8","1:20:8","0:1:30:8","1:30:8","0:1:40:8","1:40:8","2:320","2:32","2:3200","0:1:50:8","1:50:8","2:400","2:4000","2:130","0:1:20:9","1:20:9","0:1:30:9","1:30:9","2:270","2:27","2:2700","0:1:40:9","1:40:9","2:360","2:36","2:3600","0:1:50:9","1:50:9","2:450","2:45","2:4500"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,9,10,11,2],[3,12,13,14,15,16,17,18],[3,19,20,21,22,23,18,24],[3,25,26,18,27,28,2],[3,29,30,14,15,16,17,9],[3,31,32,33,34,35,18,14],[3,36,37,38,39,40,9,21],[3,41,42,24,43,44,17,18],[3,45,46,21,22,23,18,14],[3,47,48,38,39,40,9,33],[3,49,50,51,52,53,24,38],[3,54,55,14,15,16,18,24],[3,56,57,58,59,60,9,21],[3,61,62,63,64,65,24,38],[3,66,67,68,69,70,71,51],[3,72,73,74,75,76,9,14],[3,77,78,79,80,81,24,58],[3,82,83,84,85,86,71,63],[3,87,88,89,90,91,14,68],[3,92,93,33,34,35,24,74],[3,94,95,63,64,65,71,79],[3,96,97,98,99,100,14,84],[3,101,102,103,6,104,105,89],[3,106,107,58,59,60,71,33],[3,108,109,110,111,112,14,63],[3,113,114,115,116,117,105,98],[3,118,119,120,121,122,74,103]],"weight":84},"science-speed":{"title":"Темп движения","patterns":["За %d часа велосипедист проехал %d км. Сколько километров он проедет за %d часов с той же скоростью?","Скорость равна %d ÷ %d = %d км/ч. Умножаем на новое время.","%d км"],"strings":["0:2:6:4","1:6:2:3","2:12","2:6","2:8","2:10","0:2:6:5","2:15","2:9","0:2:6:6","2:18","2:14","0:3:9:5","1:9:3:3","2:11","0:3:9:6","2:17","2:19","0:3:9:7","2:21","2:13","0:4:12:6","1:12:4:3","2:20","0:4:12:7","2:24","0:4:12:8","2:16","2:28","0:5:15:7","1:15:5:3","2:25","0:5:15:8","2:30","0:5:15:9","2:27","2:35","0:2:8:4","1:8:2:4","0:2:8:5","0:2:8:6","0:3:12:5","1:12:3:4","0:3:12:6","0:3:12:7","0:4:16:6","1:16:4:4","0:4:16:7","0:4:16:8","2:32","2:31","2:33","0:5:20:7","1:20:5:4","2:22","0:5:20:8","2:23","0:5:20:9","2:36","2:40","0:2:10:4","1:10:2:5","0:2:10:5","0:2:10:6","0:3:15:5","1:15:3:5","0:3:15:6","0:3:15:7","0:4:20:6","1:20:4:5","0:4:20:7","0:4:20:8","0:5:25:7","1:25:5:5","0:5:25:8","0:5:25:9","2:45","2:29","0:2:12:4","1:12:2:6","0:2:12:5","0:2:12:6","0:3:18:5","1:18:3:6","0:3:18:6","0:3:18:7","2:42","0:4:24:6","1:24:4:6","2:26","0:4:24:7","0:4:24:8","2:48","0:5:30:7","1:30:5:6","0:5:30:8","0:5:30:9","2:54","2:34","2:50","0:2:14:4","1:14:2:7","0:2:14:5","0:2:14:6","0:3:21:5","1:21:3:7","0:3:21:6","0:3:21:7","2:49","0:4:28:6","1:28:4:7","0:4:28:7","0:4:28:8","2:56","2:44","0:5:35:7","1:35:5:7","2:37","0:5:35:8","2:38","0:5:35:9","2:63","2:39","2:55","0:2:16:4","1:16:2:8","0:2:16:5","0:2:16:6","0:3:24:5","1:24:3:8","0:3:24:6","0:3:24:7","0:4:32:6","1:32:4:8","0:4:32:7","0:4:32:8","2:64","0:5:40:7","1:40:5:8","0:5:40:8","2:43","0:5:40:9","2:72","2:60","0:2:18:4","1:18:2:9","0:2:18:5","0:2:18:6","0:3:27:5","1:27:3:9","0:3:27:6","0:3:27:7","0:4:36:6","1:36:4:9","0:4:36:7","0:4:36:8","2:52","0:5:45:7","1:45:5:9","2:47","0:5:45:8","0:5:45:9","2:81","2:65"],"variants":[[1,0,1,2,3,4,5],[1,6,1,7,3,8,2],[1,9,1,10,3,2,5,11],[1,12,13,7,8,3,14],[1,15,13,10,8,2,16,17],[1,18,13,19,8,2,20],[1,21,22,10,2,3,11,23],[1,24,22,19,2,8,7,25],[1,26,22,25,2,27,28],[1,29,30,19,7,3,16,31],[1,32,30,25,7,8,10,33],[1,34,30,35,7,2,17,36],[1,37,38,27,4,5,2],[1,39,38,23,4,2,14,11],[1,40,38,25,4,27,2],[1,41,42,23,2,4,11,10],[1,43,42,25,2,7,19],[1,44,42,28,2,27,25],[1,45,46,25,27,4,10],[1,47,46,28,27,2,17],[1,48,46,49,27,23,50,51],[1,52,53,28,23,4,54,33],[1,55,53,49,23,2,56,36],[1,57,53,58,23,27,25,59],[1,60,61,23,5,2,11],[1,62,61,31,5,7,20,27],[1,63,61,33,5,23,11,10],[1,64,65,31,7,5,16,19],[1,66,65,33,7,10,25],[1,67,65,36,7,23,17,35],[1,68,69,33,23,5,54,28],[1,70,69,36,23,7,56,49],[1,71,69,59,23,25,58],[1,72,73,36,31,5,35],[1,74,73,59,31,7,28],[1,75,73,76,31,23,77],[1,78,79,25,2,11,27],[1,80,79,33,2,10,7],[1,81,79,58,2,25,27,23],[1,82,83,33,10,2,23,25],[1,84,83,58,10,19,35],[1,85,83,86,10,25,54,33],[1,87,88,58,25,2,89,49],[1,90,88,86,25,10,35,58],[1,91,88,92,25,28,59],[1,93,94,86,33,2,49,59],[1,95,94,92,33,10,51,76],[1,96,94,97,33,25,98,99],[1,100,101,28,11,27,10],[1,102,101,36,11,19,16,23],[1,103,101,86,11,28,10,54],[1,104,105,36,19,11,56,35],[1,106,105,86,19,25,33],[1,107,105,108,19,28,31,51],[1,109,110,86,28,11,33,58],[1,111,110,108,28,19,50,59],[1,112,110,113,28,49,114],[1,115,116,108,36,11,117,76],[1,118,116,113,36,19,119,99],[1,120,116,121,36,28,122,123],[1,124,125,49,27,10,23],[1,126,125,59,27,25,17,54],[1,127,125,92,27,49,23,25],[1,128,129,59,25,27,89,33],[1,130,129,92,25,35,51],[1,131,129,113,25,49,28,58],[1,132,133,92,49,27,98,59],[1,134,133,113,49,25,36,114],[1,135,133,136,49,58,92],[1,137,138,113,59,27,86,99],[1,139,138,136,59,25,140,123],[1,141,138,142,59,49,114,143],[1,144,145,58,10,23,54],[1,146,145,76,10,35,19,25],[1,147,145,97,10,58,54,89],[1,148,149,76,35,10,77,51],[1,150,149,97,35,33,58],[1,151,149,121,35,58,50,122],[1,152,153,97,58,10,119,114],[1,154,153,121,58,35,122,92],[1,155,153,142,58,59,156],[1,157,158,121,76,10,159,123],[1,160,158,142,76,35,92,143],[1,161,158,162,76,58,108,163]],"weight":84},"science-unknown":{"title":"Неизвестное","patterns":["Число умножили на %d, затем прибавили %d. Получили %d. Какое было число?","Сначала вычитаем %d, затем делим на %d.","%d"],"strings":["0:2:2:8","1:2:2","2:3","2:6","2:5","2:4","2:8","0:2:3:9","1:3:2","2:9","2:2","0:2:4:10","1:4:2","2:7","2:10","0:3:2:11","1:2:3","2:11","0:3:3:12","1:3:3","2:12","0:3:4:13","1:4:3","2:13","0:4:2:14","1:2:4","2:14","0:4:3:15","1:3:4","2:15","0:4:4:16","1:4:4","2:16","0:5:2:17","1:2:5","2:17","0:5:3:18","1:3:5","2:18","0:5:4:19","1:4:5","2:19","0:2:2:10","0:2:3:11","0:2:4:12","0:3:2:14","0:3:3:15","0:3:4:16","0:4:2:18","0:4:3:19","0:4:4:20","2:20","0:5:2:22","2:22","0:5:3:23","2:23","0:5:4:24","2:24","0:2:2:12","0:2:3:13","0:2:4:14","0:3:2:17","0:3:3:18","0:3:4:19","0:4:2:22","0:4:3:23","0:4:4:24","0:5:2:27","2:25","2:27","0:5:3:28","2:28","0:5:4:29","2:21","2:29","0:2:2:14","0:2:3:15","0:2:4:16","0:3:2:20","0:3:3:21","0:3:4:22","0:4:2:26","2:26","0:4:3:27","0:4:4:28","0:5:2:32","2:30","2:32","0:5:3:33","2:33","0:5:4:34","2:34","0:2:2:16","0:2:3:17","0:2:4:18","0:3:2:23","0:3:3:24","0:3:4:25","0:4:2:30","0:4:3:31","2:31","0:4:4:32","0:5:2:37","2:35","2:37","0:5:3:38","2:38","0:5:4:39","2:39","0:2:2:18","0:2:3:19","0:2:4:20","0:3:2:26","0:3:3:27","0:3:4:28","0:4:2:34","0:4:3:35","0:4:4:36","2:36","0:5:2:42","2:40","2:42","0:5:3:43","2:43","0:5:4:44","2:44","0:2:2:20","0:2:3:21","0:2:4:22","0:3:2:29","0:3:3:30","0:3:4:31","0:4:2:38","0:4:3:39","0:4:4:40","0:5:2:47","2:45","2:47","0:5:3:48","2:48","0:5:4:49","2:41","2:49"],"variants":[[1,0,1,2,3,4,5,6],[1,7,8,2,3,9,10,5],[1,11,12,2,3,13,10,14],[1,15,16,2,9,4,13,17],[1,18,19,2,9,3,20],[1,21,22,2,9,13,4,23],[1,24,25,2,20,4,14,26],[1,27,28,2,20,3,9,29],[1,30,31,2,20,13,6,32],[1,33,34,2,29,4,23,35],[1,36,37,2,29,3,20,38],[1,39,40,2,29,13,17,41],[1,42,1,5,6,3,14],[1,43,8,5,6,13,4,17],[1,44,12,5,6,20,2,4],[1,45,16,5,20,3,14,26],[1,46,19,5,20,13,9,29],[1,47,22,5,20,6,32],[1,48,25,5,32,3,26,38],[1,49,28,5,32,13,23,41],[1,50,31,5,32,6,20,51],[1,52,34,5,51,3,38,53],[1,54,37,5,51,13,35,55],[1,56,40,5,51,6,32,57],[1,58,1,4,14,13,6,20],[1,59,8,4,14,6,13,23],[1,60,12,4,14,9,3,26],[1,61,16,4,29,13,23,35],[1,62,19,4,29,6,20,38],[1,63,22,4,29,9,17,41],[1,64,25,4,51,13,38,53],[1,65,28,4,51,6,35,55],[1,66,31,4,51,9,32,57],[1,67,34,4,68,13,55,69],[1,70,37,4,68,6,53,71],[1,72,40,4,68,9,73,74],[1,75,1,3,20,6,14,26],[1,76,8,3,20,9,29],[1,77,12,3,20,14,6,32],[1,78,16,3,38,6,32,51],[1,79,19,3,38,9,29,73],[1,80,22,3,38,14,26,53],[1,81,25,3,57,6,53,82],[1,83,28,3,57,9,73,69],[1,84,31,3,57,14,51,71],[1,85,34,3,86,6,71,87],[1,88,37,3,86,9,69,89],[1,90,40,3,86,14,82,91],[1,92,1,13,26,9,20,32],[1,93,8,13,26,14,17,35],[1,94,12,13,26,17,14,38],[1,95,16,13,73,9,41,55],[1,96,19,13,73,14,38,57],[1,97,22,13,73,17,35,68],[1,98,25,13,71,9,82,86],[1,99,28,13,71,14,68,100],[1,101,31,13,71,17,57,87],[1,102,34,13,103,9,89,104],[1,105,37,13,103,14,87,106],[1,107,40,13,103,17,100,108],[1,109,1,6,32,14,26,38],[1,110,8,6,32,17,23,41],[1,111,12,6,32,20,51],[1,112,16,6,57,14,53,82],[1,113,19,6,57,17,73,69],[1,114,22,6,57,20,51,71],[1,115,25,6,87,14,86,91],[1,116,28,6,87,17,74,103],[1,117,31,6,87,20,71,118],[1,119,34,6,120,14,106,121],[1,122,37,6,120,17,104,123],[1,124,40,6,120,20,118,125],[1,126,1,9,38,17,32,51],[1,127,8,9,38,20,29,73],[1,128,12,9,38,23,26,53],[1,129,16,9,69,17,68,74],[1,130,19,9,69,20,57,86],[1,131,22,9,69,23,55,100],[1,132,25,9,118,17,91,106],[1,133,28,9,118,20,89,108],[1,134,31,9,118,23,87,120],[1,135,34,9,136,17,123,137],[1,138,37,9,136,20,121,139],[1,140,40,9,136,23,141,142]],"weight":84}},"supermind":{"science-complement":{"title":"Обратное событие","patterns":["Из %d карточек %d выигрышные. Какова вероятность вытянуть невыигрышную?","Невыигрышных %d, всего %d. Можно также вычесть вероятность выигрыша из %d.","%d/%d"],"strings":["0:7:3","1:4:7:1","2:4:7","2:3:7","2:2:7","2:2:3","0:8:3","1:5:8:1","2:5:8","2:3:8","2:1:4","2:5:7","2:1:2","0:9:3","1:6:9:1","2:1:3","2:2:9","2:4:9","2:3:4","2:5:9","0:10:3","1:7:10:1","2:7:10","2:3:10","2:2:5","2:7:9","2:3:5","0:11:3","1:8:11:1","2:8:11","2:3:11","2:4:11","2:4:5","2:7:11","2:1:5","2:5:11","0:12:3","1:9:12:1","2:5:12","2:9:11","0:8:4","1:4:8:1","0:9:4","1:5:9:1","0:10:4","1:6:10:1","0:11:4","1:7:11:1","2:6:11","0:12:4","1:8:12:1","2:7:12","2:2:11","0:13:4","1:9:13:1","2:9:13","2:4:13","2:5:13","2:8:13","0:9:5","1:4:9:1","0:10:5","1:5:10:1","0:11:5","1:6:11:1","0:12:5","1:7:12:1","0:13:5","1:8:13:1","2:7:13","2:1:6","2:3:13","0:14:5","1:9:14:1","2:9:14","2:5:14","0:10:6","1:4:10:1","0:11:6","1:5:11:1","0:12:6","1:6:12:1","0:13:6","1:7:13:1","2:6:13","0:14:6","1:8:14:1","2:2:13","2:3:14","0:15:6","1:9:15:1","2:4:15","2:8:15","0:11:7","1:4:11:1","0:12:7","1:5:12:1","0:13:7","1:6:13:1","0:14:7","1:7:14:1","0:15:7","1:8:15:1","2:7:15","2:1:7","0:16:7","1:9:16:1","2:9:16","2:7:16","2:5:16"],"variants":[[1,0,1,2,3,4,5],[2,6,7,8,9,10,11,12],[1,13,14,5,15,16,17,18,19],[1,13,14,5,15,18,19],[2,20,21,22,23,24,25,26],[1,13,14,5,15,17,16,18,19],[1,27,28,29,30,31,32,33],[1,20,21,22,23,12,34,25,26],[1,27,28,29,30,35,32,33],[1,36,37,18,10,38,15,39,5],[1,40,41,12,10,2,9],[1,42,43,19,17,16,15,8],[2,44,45,26,24,34,5,12],[1,42,43,19,17,15,16,8],[1,44,45,26,24,23,5,12],[2,46,47,33,31,30,22,48],[1,49,50,5,15,29,51],[1,46,47,33,31,35,52,22,48],[1,49,50,5,15,38,10,29,51],[1,53,54,55,56,57,18,58],[1,59,60,17,19,16,12,15],[1,61,62,12,34,23,19,24],[1,63,64,48,35,52,31,26],[1,61,62,12,23,34,19,24],[1,63,64,48,35,30,26],[1,65,66,51,38,10,15,33,12],[1,63,64,48,35,31,52,26],[1,65,66,51,38,15,10,33,12],[1,67,68,58,57,56,5,69],[1,65,66,51,38,70,33,12],[1,67,68,58,57,71,5,69],[1,72,73,74,75,4,55,2],[1,76,77,24,26,34,17,23],[1,78,79,35,48,52,30,12,31],[1,80,81,12,70,15,48,38],[1,78,79,35,48,30,52,12,31],[1,80,81,12,10,48,38],[1,82,83,69,84,71,56,51],[1,80,81,12,15,70,48,38],[1,82,83,69,84,56,71,51],[1,85,86,2,3,4,58,12],[1,82,83,69,84,57,87,51],[1,85,86,2,3,75,88,58,12],[1,89,90,26,24,15,91,74,92],[1,93,94,31,33,52,24,30],[1,95,96,38,51,70,10,35,15],[1,97,98,84,69,87,56,12,57],[1,95,96,38,51,10,70,35,15],[1,97,98,84,69,71,12,57],[1,99,100,12,88,4,69,3],[1,97,98,84,69,56,87,12,57],[1,99,100,12,4,88,69,3],[1,101,102,92,103,91,2],[1,99,100,12,75,104,69,3],[1,101,102,92,103,15,34,2],[1,105,106,107,108,109,10,26,12]],"weight":60},"science-conditional":{"title":"Среди выбранных","patterns":["В классе %d человек. Из них %d посещают кружок, а %d участников кружка — девочки. Наугад выбирают именно участника кружка. Какова вероятность выбрать девочку?","Условие ограничивает выбор кружком: %d девочек из %d его участников. Остальной класс не входит в выбор.","%d/%d"],"strings":["0:8:6:3","1:3:6","2:1:2","2:3:8","2:3:4","2:1:4","2:3:7","0:9:6:3","2:1:3","2:2:3","0:10:6:3","2:3:10","2:3:5","2:2:5","0:11:6:3","2:3:11","2:6:11","2:5:11","0:10:8:4","1:4:8","2:4:5","2:1:5","2:4:9","0:11:8:4","2:4:11","2:8:11","0:12:8:4","0:13:8:4","2:4:13","2:8:13","2:5:13","0:12:10:5","1:5:10","2:5:12","2:5:6","2:1:6","0:13:10:5","2:10:13","2:3:13","0:14:10:5","2:5:14","2:5:7","2:2:7","0:15:10:5","0:14:12:6","1:6:12","2:6:7","2:1:7","2:6:13","0:15:12:6","0:16:12:6","0:17:12:6","2:6:17","2:12:17","2:5:17","0:16:14:7","1:7:14","2:7:16","2:7:8","2:1:8","2:7:15","0:17:14:7","2:7:17","2:14:17","2:3:17","0:18:14:7","2:7:18","2:7:9","2:2:9","0:19:14:7","2:7:19","2:14:19","2:5:19"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,2,8,9,3,6],[3,10,1,2,11,12,13,8,6],[3,14,1,2,15,16,17,11,6],[3,18,19,2,13,20,21,22],[3,23,19,2,24,25,15,13,22],[3,26,19,2,8,9,24,22],[3,27,19,2,28,29,30,8,22],[3,31,32,2,33,34,35,17],[3,36,32,2,30,37,38,33,17],[3,39,32,2,40,41,42,30,17],[3,43,32,2,8,9,40,17],[3,44,45,2,6,46,47,48],[3,49,45,2,13,20,21,6,48],[3,50,45,2,3,4,5,13,48],[3,51,45,2,52,53,54,3,48],[3,55,56,2,57,58,59,60],[3,61,56,2,62,63,64,57,60],[3,65,56,2,66,67,68,62,60],[3,69,56,2,70,71,72,66,60]],"weight":60},"science-dice":{"title":"Два кубика","patterns":["Бросают два обычных кубика. Какова вероятность, что на обоих выпадет число не больше %d?","На каждом кубике %d подходящих граней из %d. Для независимых бросков вероятности перемножаются.","%d/%d"],"strings":["0:2","1:2:6","2:1:9","2:1:3","2:1:36","2:1:18","2:8:9","0:3","1:3:6","2:1:4","2:1:2","2:1:12","2:1:6","2:3:4","0:4","1:4:6","2:4:9","2:2:3","2:2:9","2:5:9","0:5","1:5:6","2:25:36","2:5:6","2:5:36","2:5:18","2:11:36"],"variants":[[15,0,1,2,3,4,5,6],[15,7,8,9,10,2,11,12,13],[15,14,15,16,17,9,2,18,19],[15,20,21,22,23,16,24,25,26]],"weight":60},"science-expected":{"title":"Ожидаемый результат","patterns":["Каждый из %d независимых опытов успешен с вероятностью %d/%d. Сколько успешных опытов ожидается в среднем?","Среднее число успехов — число опытов, умноженное на вероятность: %d ÷ %d. Это среднее, а не гарантия.","%d"],"strings":["0:6:1:2","1:6:2","2:3","2:2","2:5","2:4","0:9:1:3","1:9:3","2:6","2:8","0:12:1:4","1:12:4","2:9","2:11","2:7","0:15:1:5","1:15:5","2:12","2:14","0:8:1:2","1:8:2","0:12:1:3","1:12:3","0:16:1:4","1:16:4","2:15","0:20:1:5","1:20:5","2:16","2:19","0:10:1:2","1:10:2","0:15:1:3","1:15:3","2:10","0:20:1:4","1:20:4","0:25:1:5","1:25:5","2:20","2:24","0:12:1:2","1:12:2","0:18:1:3","1:18:3","2:17","0:24:1:4","1:24:4","2:18","2:23","0:30:1:5","1:30:5","2:29","0:14:1:2","1:14:2","2:13","0:21:1:3","1:21:3","0:28:1:4","1:28:4","2:21","2:27","0:35:1:5","1:35:5","2:28","2:34"],"variants":[[3,0,1,2,3,4,5],[3,6,7,2,8,9,3,5],[3,10,11,2,12,5,13,14],[3,15,16,2,17,4,18,9],[3,19,20,5,3,14,8],[3,21,22,5,9,2,13,14],[3,23,24,5,17,25,9],[3,26,27,5,28,4,29,12],[3,30,31,4,3,12,14],[3,32,33,4,34,2,18,9],[3,35,36,4,25,5,29,12],[3,37,38,4,39,40,34],[3,41,42,8,3,13,9],[3,43,44,8,17,2,45,12],[3,46,47,8,48,5,49,34],[3,50,51,8,40,4,52,13],[3,53,54,14,3,55,12],[3,56,57,14,18,2,39,34],[3,58,59,14,60,5,61,13],[3,62,63,14,64,4,65,17]],"weight":60},"science-independent":{"title":"Независимые броски","patterns":["Честную монету бросают %d раза. Какова вероятность, что каждый раз выпадет орёл?","Вероятность орла %d/%d. Перемножаем её %d раза.","%d/%d"],"strings":["0:2","1:1:2:2","2:1:4","2:1:2","2:1:8","2:1:16","2:1:32","0:3","1:1:2:3","2:1:64","0:4","1:1:2:4","2:1:128"],"variants":[[20,0,1,2,3,4,5,6],[20,7,8,4,2,5,6,9],[20,10,11,5,4,6,9,12]],"weight":60},"science-median":{"title":"Медиана чётной выборки","patterns":["Числа по возрастанию: %d, %d, %d, %d. Чему равна медиана — среднее двух центральных?","Складываем два центральных числа и делим на два.","%d","%d/%d"],"strings":["0:3:5:7:10","1","2:6","2:5","2:7","2:4","3:13:2","3:17:2","0:3:5:8:11","2:8","3:19:2","0:3:5:9:12","2:9","3:15:2","3:21:2","0:3:6:8:11","3:9:2","0:3:6:9:12","0:3:6:10:13","2:10","3:23:2","0:3:7:9:12","0:3:7:10:13","0:3:7:11:14","2:11","3:25:2","0:3:8:10:13","3:11:2","0:3:8:11:14","0:3:8:12:15","2:12","3:27:2","0:4:6:8:11","0:4:6:9:12","0:4:6:10:13","0:4:7:9:12","0:4:7:10:13","0:4:7:11:14","0:4:8:10:13","0:4:8:11:14","0:4:8:12:15","0:4:9:11:14","0:4:9:12:15","0:4:9:13:16","2:13","3:29:2","0:5:7:9:12","0:5:7:10:13","0:5:7:11:14","0:5:8:10:13","0:5:8:11:14","0:5:8:12:15","0:5:9:11:14","0:5:9:12:15","0:5:9:13:16","0:5:10:12:15","0:5:10:13:16","0:5:10:14:17","2:14","3:31:2","0:6:8:10:13","0:6:8:11:14","0:6:8:12:15","0:6:9:11:14","0:6:9:12:15","0:6:9:13:16","0:6:10:12:15","0:6:10:13:16","0:6:10:14:17","0:6:11:13:16","0:6:11:14:17","0:6:11:15:18","2:15","3:33:2","0:7:9:11:14","0:7:9:12:15","0:7:9:13:16","0:7:10:12:15","0:7:10:13:16","0:7:10:14:17","0:7:11:13:16","0:7:11:14:17","0:7:11:15:18","0:7:12:14:17","0:7:12:15:18","0:7:12:16:19","2:16","3:35:2"],"variants":[[1,0,1,2,3,4,5,6,7],[1,8,1,6,3,9,5,4,10],[1,11,1,4,3,12,5,13,14],[1,15,1,4,2,9,16,10],[1,17,1,13,2,12,16,14],[1,18,1,9,2,19,16,20],[1,21,1,9,4,12,3,13,14],[1,22,1,7,4,19,3,9,20],[1,23,1,12,4,24,3,7,25],[1,26,1,12,9,19,27,20],[1,28,1,10,9,24,27,7,25],[1,29,1,19,9,30,27,12,31],[1,32,1,4,2,9,3,13,10],[1,33,1,13,2,12,3,9,14],[1,34,1,9,2,19,3,7,20],[1,35,1,9,4,12,27,14],[1,36,1,7,4,19,27,20],[1,37,1,12,4,24,27,25],[1,38,1,12,9,19,2,7,20],[1,39,1,10,9,24,2,12,25],[1,40,1,19,9,30,2,10,31],[1,41,1,19,12,24,6,25],[1,42,1,14,12,30,6,10,31],[1,43,1,24,12,44,6,19,45],[1,46,1,9,4,12,2,7,14],[1,47,1,7,4,19,2,12,20],[1,48,1,12,4,24,2,10,25],[1,49,1,12,9,19,6,20],[1,50,1,10,9,24,6,25],[1,51,1,19,9,30,6,31],[1,52,1,19,12,24,4,10,25],[1,53,1,14,12,30,4,19,31],[1,54,1,24,12,44,4,14,45],[1,55,1,24,19,30,13,31],[1,56,1,20,19,44,13,14,45],[1,57,1,30,19,58,13,24,59],[1,60,1,12,9,19,4,10,20],[1,61,1,10,9,24,4,19,25],[1,62,1,19,9,30,4,14,31],[1,63,1,19,12,24,13,25],[1,64,1,14,12,30,13,31],[1,65,1,24,12,44,13,45],[1,66,1,24,19,30,9,14,31],[1,67,1,20,19,44,9,24,45],[1,68,1,30,19,58,9,20,59],[1,69,1,30,24,44,7,45],[1,70,1,25,24,58,7,20,59],[1,71,1,44,24,72,7,30,73],[1,74,1,19,12,24,9,14,25],[1,75,1,14,12,30,9,24,31],[1,76,1,24,12,44,9,20,45],[1,77,1,24,19,30,7,31],[1,78,1,20,19,44,7,45],[1,79,1,30,19,58,7,59],[1,80,1,30,24,44,12,20,45],[1,81,1,25,24,58,12,30,59],[1,82,1,44,24,72,12,25,73],[1,83,1,44,30,58,10,59],[1,84,1,31,30,72,10,25,73],[1,85,1,58,30,86,10,44,87]],"weight":60},"science-ordering":{"title":"Первый и второй","patterns":["Из %d участников выбирают ведущего и помощника; это разные люди. Сколько вариантов?","На роль ведущего %d вариантов, затем для помощника остаётся %d. Роли различаются.","%d"],"strings":["0:5","1:5:4","2:20","2:10","2:25","2:12","2:15","0:6","1:6:5","2:30","2:36","2:24","0:7","1:7:6","2:42","2:21","2:49","2:35","0:8","1:8:7","2:56","2:28","2:64","2:48","0:9","1:9:8","2:72","2:81","2:63"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,6,10,2,11],[12,12,13,14,15,16,9,17],[12,18,19,20,21,22,14,23],[12,24,25,26,10,27,20,28]],"weight":60},"science-probability":{"title":"Случайный выбор","patterns":["В мешке %d красных и %d синих шаров. Один шар выбирают наугад. Какова вероятность красного?","Благоприятных исходов %d, всего исходов %d. Делим первое на второе.","%d/%d"],"strings":["0:3:2","1:3:5","2:3:5","2:2:5","2:1:2","2:3:4","0:3:3","1:3:6","2:3:7","2:1:3","0:3:4","1:3:7","2:4:7","2:3:8","2:2:7","2:2:3","0:3:5","1:3:8","2:5:8","2:1:4","2:5:7","0:4:2","1:4:6","2:4:5","0:4:3","1:4:7","0:4:4","1:4:8","2:4:9","0:4:5","1:4:9","2:5:9","0:5:2","1:5:7","2:5:6","0:5:3","1:5:8","0:5:4","1:5:9","0:5:5","1:5:10","2:5:11","0:6:2","1:6:8","2:6:7","0:6:3","1:6:9","0:6:4","1:6:10","2:6:11","0:6:5","1:6:11","0:7:2","1:7:9","2:7:9","2:2:9","2:7:10","2:7:8","0:7:3","1:7:10","2:3:10","2:7:11","0:7:4","1:7:11","2:4:11","2:7:12","0:7:5","1:7:12","2:5:12","2:7:13"],"variants":[[3,0,1,2,3,4,5],[3,6,7,4,8,9,2],[3,10,11,8,12,13,14,15,4],[3,16,17,13,18,9,19,20,8],[3,21,22,15,9,12,4,3,23],[3,24,25,12,8,4,15],[3,26,27,4,28,13,12],[3,29,30,28,31,3,9,18,4],[3,32,33,20,14,18,12,9,34],[3,35,36,18,13,31,4,8,20],[3,37,38,31,28,4,18],[3,39,40,4,41,3,31],[3,42,43,5,19,15,18,14,44],[3,45,46,15,9,2,31,13,5],[3,47,48,2,3,49,4,28,15],[3,50,51,49,41,4,2],[3,52,53,54,55,56,15,19,57],[3,58,59,56,60,61,2,9,54],[3,62,63,61,64,65,49,3,56],[3,66,67,65,68,69,4,41,61]],"weight":60},"science-routes":{"title":"Дерево вариантов","patterns":["В первом шаге алгоритм выбирает один из %d путей, во втором один из %d, в третьем один из %d. Сколько комбинаций трёх выборов?","Независимые количества вариантов перемножаются.","%d"],"strings":["0:3:2:2","1","2:12","2:7","2:6","2:10","0:3:2:3","2:18","2:8","2:9","2:15","0:3:2:4","2:24","2:20","0:3:3:2","0:3:3:3","2:27","2:26","2:28","0:3:3:4","2:36","0:3:4:2","2:14","0:3:4:3","2:21","0:3:4:4","2:48","2:11","0:3:5:2","2:30","2:16","0:3:5:3","2:45","0:3:5:4","2:60","2:32","0:4:2:2","2:17","0:4:2:3","0:4:2:4","0:4:3:2","0:4:3:3","0:4:3:4","0:4:4:2","0:4:4:3","0:4:4:4","2:64","0:4:5:2","2:40","0:4:5:3","0:4:5:4","2:80","2:13","0:5:2:2","0:5:2:3","0:5:2:4","0:5:3:2","0:5:3:3","0:5:3:4","0:5:4:2","0:5:4:3","0:5:4:4","0:5:5:2","2:50","2:25","0:5:5:3","2:75","0:5:5:4","2:100","0:6:2:2","0:6:2:3","0:6:2:4","0:6:3:2","0:6:3:3","2:54","0:6:3:4","2:72","0:6:4:2","0:6:4:3","0:6:4:4","2:96","0:6:5:2","2:22","0:6:5:3","2:90","2:33","0:6:5:4","2:120","2:44","0:7:2:2","0:7:2:3","2:42","0:7:2:4","2:56","0:7:3:2","0:7:3:3","2:63","0:7:3:4","2:84","0:7:4:2","0:7:4:3","0:7:4:4","2:112","0:7:5:2","2:70","2:35","0:7:5:3","2:105","0:7:5:4","2:140"],"variants":[[1,0,1,2,3,4,5],[1,6,1,7,8,4,9,10],[1,11,1,12,9,4,2,13],[1,14,1,7,8,9,4,2],[1,15,1,16,9,7,17,18],[1,19,1,20,5,9,2,12],[1,21,1,12,9,2,4,22],[1,23,1,20,5,2,9,24],[1,25,1,26,27,2,18],[1,28,1,29,5,10,4,30],[1,31,1,32,27,10,9,12],[1,33,1,34,2,10,35],[1,36,1,30,8,2,10,37],[1,38,1,12,9,8,2,7],[1,39,1,35,5,8,30,12],[1,40,1,12,9,2,8,22],[1,41,1,20,5,2,24],[1,42,1,26,27,2,30,18],[1,43,1,35,5,30,8],[1,44,1,26,27,30,2,12],[1,45,1,46,2,30,35],[1,47,1,48,27,13,8,7],[1,49,1,34,2,13,16],[1,50,1,51,52,13,30,20],[1,53,1,13,9,5,22],[1,54,1,29,5,10,24],[1,55,1,48,27,5,13,18],[1,56,1,29,5,10,30],[1,57,1,32,27,10,12],[1,58,1,34,2,10,13,35],[1,59,1,48,27,13,5,7],[1,60,1,34,2,13,10,16],[1,61,1,51,52,13,20],[1,62,1,63,2,64,5,13],[1,65,1,66,52,64,10,29],[1,67,1,68,22,64,13,48],[1,69,1,12,5,2,30],[1,70,1,20,27,2,7,12],[1,71,1,26,2,12,35],[1,72,1,20,27,7,2],[1,73,1,74,2,7,16],[1,75,1,76,52,7,12,20],[1,77,1,26,2,12,13],[1,78,1,76,52,12,7,29],[1,79,1,80,22,12,48],[1,81,1,34,52,29,2,82],[1,83,1,84,22,29,7,85],[1,86,1,87,10,29,12,88],[1,89,1,18,27,22,7],[1,90,1,91,2,22,24,16],[1,92,1,93,52,22,18,20],[1,94,1,91,2,24,22,13],[1,95,1,96,52,24,29],[1,97,1,98,22,24,18,48],[1,99,1,93,52,18,22,82],[1,100,1,98,22,18,24,85],[1,101,1,102,10,18,88],[1,103,1,104,22,105,12],[1,106,1,107,10,105,24,20],[1,108,1,109,30,105,18,26]],"weight":60},"science-union":{"title":"Два признака","patterns":["Из %d записей %d отмечены синим, %d — зелёным, %d — обоими цветами. Сколько отмечено хотя бы одним цветом?","Складываем две группы и один раз вычитаем пересечение: %d + %d − %d.","%d"],"strings":["0:30:9:6:3","1:9:6:3","2:12","2:15","2:9","2:6","2:18","0:40:12:8:4","1:12:8:4","2:16","2:20","2:8","2:24","0:50:15:10:5","1:15:10:5","2:25","2:10","2:30","0:60:18:12:6","1:18:12:6","2:36","0:70:21:14:7","1:21:14:7","2:28","2:35","2:21","2:14","2:42"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,10,2,11,12],[12,13,14,10,15,3,16,17],[12,18,19,12,17,6,2,20],[12,21,22,23,24,25,26,27]],"weight":60},"science-weighted":{"title":"Среднее по данным","patterns":["Есть %d значений, равных %d, и %d значений, равных %d. Каково среднее всех значений?","Вторая группа вдвое больше. Среднее: (%d + %d × %d) ÷ %d.","%d"],"strings":["0:3:6:6:6","1:6:2:6:3","2:6","2:4","2:5","2:7","0:3:6:6:9","1:6:2:9:3","2:8","2:9","0:3:6:6:12","1:6:2:12:3","2:10","2:12","0:3:9:6:6","1:9:2:6:3","0:3:9:6:9","1:9:2:9:3","0:3:9:6:12","1:9:2:12:3","2:11","0:3:12:6:6","1:12:2:6:3","0:3:12:6:9","1:12:2:9:3","0:3:12:6:12","1:12:2:12:3","2:13","0:3:15:6:6","1:15:2:6:3","2:15","0:3:15:6:9","1:15:2:9:3","0:3:15:6:12","1:15:2:12:3","2:14","0:4:6:8:6","0:4:6:8:9","0:4:6:8:12","0:4:9:8:6","0:4:9:8:9","0:4:9:8:12","0:4:12:8:6","0:4:12:8:9","0:4:12:8:12","0:4:15:8:6","0:4:15:8:9","0:4:15:8:12","0:5:6:10:6","0:5:6:10:9","0:5:6:10:12","0:5:9:10:6","0:5:9:10:9","0:5:9:10:12","0:5:12:10:6","0:5:12:10:9","0:5:12:10:12","0:5:15:10:6","0:5:15:10:9","0:5:15:10:12","0:6:6:12:6","0:6:6:12:9","0:6:6:12:12","0:6:9:12:6","0:6:9:12:9","0:6:9:12:12","0:6:12:12:6","0:6:12:12:9","0:6:12:12:12","0:6:15:12:6","0:6:15:12:9","0:6:15:12:12","0:7:6:14:6","0:7:6:14:9","0:7:6:14:12","0:7:9:14:6","0:7:9:14:9","0:7:9:14:12","0:7:12:14:6","0:7:12:14:9","0:7:12:14:12","0:7:15:14:6","0:7:15:14:9","0:7:15:14:12"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,5,2,9,4],[1,10,11,12,8,2,13],[1,14,15,5,8,9,2,4],[1,16,17,9,2,8,12],[1,18,19,20,12,9,13,5],[1,21,22,8,12,13,2],[1,23,24,12,20,13,9,5],[1,25,26,13,8,20,27],[1,28,29,9,13,30,2,5],[1,31,32,20,27,30,9,8],[1,33,34,27,35,30,13,9],[1,36,1,2,3,4,5],[1,37,7,8,5,2,9,4],[1,38,11,12,8,2,13],[1,39,15,5,8,9,2,4],[1,40,17,9,2,8,12],[1,41,19,20,12,9,13,5],[1,42,22,8,12,13,2],[1,43,24,12,20,13,9,5],[1,44,26,13,8,20,27],[1,45,29,9,13,30,2,5],[1,46,32,20,27,30,9,8],[1,47,34,27,35,30,13,9],[1,48,1,2,3,4,5],[1,49,7,8,5,2,9,4],[1,50,11,12,8,2,13],[1,51,15,5,8,9,2,4],[1,52,17,9,2,8,12],[1,53,19,20,12,9,13,5],[1,54,22,8,12,13,2],[1,55,24,12,20,13,9,5],[1,56,26,13,8,20,27],[1,57,29,9,13,30,2,5],[1,58,32,20,27,30,9,8],[1,59,34,27,35,30,13,9],[1,60,1,2,3,4,5],[1,61,7,8,5,2,9,4],[1,62,11,12,8,2,13],[1,63,15,5,8,9,2,4],[1,64,17,9,2,8,12],[1,65,19,20,12,9,13,5],[1,66,22,8,12,13,2],[1,67,24,12,20,13,9,5],[1,68,26,13,8,20,27],[1,69,29,9,13,30,2,5],[1,70,32,20,27,30,9,8],[1,71,34,27,35,30,13,9],[1,72,1,2,3,4,5],[1,73,7,8,5,2,9,4],[1,74,11,12,8,2,13],[1,75,15,5,8,9,2,4],[1,76,17,9,2,8,12],[1,77,19,20,12,9,13,5],[1,78,22,8,12,13,2],[1,79,24,12,20,13,9,5],[1,80,26,13,8,20,27],[1,81,29,9,13,30,2,5],[1,82,32,20,27,30,9,8],[1,83,34,27,35,30,13,9]],"weight":60},"science-without-return":{"title":"Без возвращения","patterns":["В мешке %d красных и %d синих шаров. Вынули красный шар и не вернули. Какова вероятность, что следующий тоже красный?","Красных осталось %d, а всего шаров %d.","%d/%d"],"strings":["0:3:2","1:2:4","2:1:2","2:3:5","2:2:5","2:3:4","0:3:3","1:2:5","2:1:3","0:3:4","1:2:6","2:3:7","2:2:7","2:2:3","0:3:5","1:2:7","2:3:8","2:1:4","2:5:7","0:4:2","1:3:5","2:4:5","0:4:3","1:3:6","2:4:7","0:4:4","1:3:7","0:4:5","1:3:8","2:4:9","2:5:8","0:5:2","1:4:6","2:5:6","0:5:3","1:4:7","0:5:4","1:4:8","2:5:9","0:5:5","1:4:9","0:6:2","1:5:7","2:6:7","0:6:3","1:5:8","0:6:4","1:5:9","0:6:5","1:5:10","2:6:11","2:5:11","0:7:2","1:6:8","2:7:9","2:7:8","0:7:3","1:6:9","2:7:10","0:7:4","1:6:10","2:7:11","0:7:5","1:6:11","2:7:12"],"variants":[[3,0,1,2,3,4,5],[3,6,7,4,2,8,3],[3,9,10,8,11,12,2,13],[3,14,15,12,16,17,11,18],[3,19,20,3,13,2,21,4],[3,22,23,2,24,11,13],[3,25,26,11,2,16,24],[3,27,28,16,29,8,2,30],[3,31,32,13,18,24,33,8],[3,34,35,24,30,2,18,11],[3,36,37,2,38,29,30],[3,39,40,29,2,4,38],[3,41,42,18,5,30,43,12],[3,44,45,30,13,38,5,16],[3,46,47,38,3,2,13,29],[3,48,49,2,50,51,3],[3,52,53,5,54,13,55,17],[3,56,57,13,58,3,54,8],[3,59,60,3,61,50,58,4],[3,62,63,50,64,2,61,51]],"weight":60}},"teacher":{"science-average":{"title":"Недостающий результат","patterns":["Среднее трёх чисел равно %d. Два числа — %d и %d. Найдите третье.","Сумма трёх чисел должна быть %d. Вычитаем два известных.","%d"],"strings":["0:3:1:4","1:9","2:4","2:3","2:2","2:5","0:4:2:5","1:12","2:6","2:7","0:5:3:6","1:15","2:9","0:6:4:7","1:18","2:8","2:11","0:7:5:8","1:21","2:13","0:8:6:9","1:24","2:10","2:15","0:9:7:10","1:27","2:17"],"variants":[[12,0,1,2,3,4,5],[12,6,7,5,2,3,8,9],[12,10,11,8,5,2,9,12],[12,13,14,9,8,5,15,16],[12,17,18,15,9,8,12,19],[12,20,21,12,15,9,22,23],[12,24,25,22,12,15,16,26]],"weight":84},"science-choices":{"title":"Варианты","patterns":["Есть %d маршрутов до станции и %d маршрутов от неё до музея. Сколько разных путей через станцию?","К каждому из %d первых маршрутов можно добавить любой из %d вторых.","%d"],"strings":["0:3:2","1:3:2","2:6","2:5","2:3","2:4","0:3:3","1:3:3","2:9","2:8","2:10","0:3:4","1:3:4","2:12","2:7","2:11","0:3:5","1:3:5","2:15","2:14","0:4:2","1:4:2","0:4:3","1:4:3","0:4:4","1:4:4","2:16","0:4:5","1:4:5","2:20","2:19","0:5:2","1:5:2","0:5:3","1:5:3","0:5:4","1:5:4","0:5:5","1:5:5","2:25","2:24","0:6:2","1:6:2","0:6:3","1:6:3","2:18","2:17","0:6:4","1:6:4","2:23","0:6:5","1:6:5","2:30","2:29","0:7:2","1:7:2","2:13","0:7:3","1:7:3","2:21","0:7:4","1:7:4","2:28","2:27","0:7:5","1:7:5","2:35","2:34","0:8:2","1:8:2","0:8:3","1:8:3","0:8:4","1:8:4","2:32","2:31","0:8:5","1:8:5","2:40","2:39","0:9:2","1:9:2","0:9:3","1:9:3","2:26","0:9:4","1:9:4","2:36","0:9:5","1:9:5","2:45","2:44"],"variants":[[3,0,1,2,3,4,5],[3,6,7,8,2,9,10],[3,11,12,13,14,8,9,15],[3,16,17,18,9,13,10,19],[3,20,21,9,2,5,14],[3,22,23,13,14,9,8,15],[3,24,25,26,9,13,18],[3,27,28,29,8,26,18,30],[3,31,32,10,14,3,9,8],[3,33,34,18,9,10,13,19],[3,35,36,29,8,18,26,30],[3,37,38,39,10,29,40],[3,41,42,13,9,2,10,15],[3,43,44,45,8,13,18,46],[3,47,48,40,10,45,29,49],[3,50,51,52,15,40,39,53],[3,54,55,19,8,14,13,56],[3,57,58,59,10,19,45,29],[3,60,61,62,15,59,40,63],[3,64,65,66,13,62,52,67],[3,68,69,26,10,9,19,18],[3,70,71,40,15,26,59,49],[3,72,73,74,13,40,62,75],[3,76,77,78,56,74,66,79],[3,80,81,45,15,8,26,46],[3,82,83,63,13,45,40,84],[3,85,86,87,56,63,74,66],[3,88,89,90,19,87,78,91]],"weight":84},"science-difference":{"title":"Разность","patterns":["Сумма двух чисел равна %d, а разность — %d. Какое число меньше?","Вычитаем разность из суммы и делим пополам.","%d"],"strings":["0:10:4","1","2:3","2:7","2:5","2:6","2:8","0:12:6","2:9","2:2","2:4","0:14:8","2:11","2:10","0:16:10","2:13","0:12:4","0:14:6","0:16:8","2:12","0:18:10","2:14","0:14:4","0:16:6","0:18:8","0:20:10","2:15","0:16:4","0:18:6","0:20:8","2:16","0:22:10","2:17","0:18:4","0:20:6","0:22:8","2:18","0:24:10","2:19","0:20:4","0:22:6","0:24:8","2:20","0:26:10","2:21","0:22:4","0:24:6","0:26:8","2:22","0:28:10","2:23"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,2,8,5,9,10],[3,11,1,2,12,3,5,13],[3,14,1,2,15,6,5,12],[3,16,1,10,6,5,13],[3,17,1,10,13,3,6,12],[3,18,1,10,19,6,2,4],[3,20,1,10,21,8,6,15],[3,22,1,4,8,3,13,19],[3,23,1,4,12,6,13,15],[3,24,1,4,15,8,13,21],[3,25,1,4,26,13,10,5],[3,27,1,5,13,6,19,21],[3,28,1,5,19,8,26],[3,29,1,5,21,13,19,30],[3,31,1,5,30,12,19,32],[3,33,1,3,12,8,21,30],[3,34,1,3,15,13,21,32],[3,35,1,3,26,12,21,36],[3,37,1,3,32,19,21,38],[3,39,1,6,19,13,30,36],[3,40,1,6,21,12,30,38],[3,41,1,6,30,19,42],[3,43,1,6,36,15,30,44],[3,45,1,8,15,12,36,42],[3,46,1,8,26,19,36,44],[3,47,1,8,32,15,36,48],[3,49,1,8,38,21,36,50]],"weight":84},"science-discount":{"title":"Скидка","patterns":["Книга стоила %d рублей. После скидки %d% сколько она стоит?","%d% — четверть цены, %d рублей. Вычитаем её.","%d руб."],"strings":["0:60:25","1:25:15","2:45","2:15","2:30","2:48","2:54","0:80:25","1:25:20","2:60","2:20","2:40","2:64","2:72","0:100:25","1:25:25","2:75","2:25","2:50","2:80","2:90","0:120:25","1:25:30","2:96","2:108","0:140:25","1:25:35","2:105","2:35","2:70","2:112","2:126","0:160:25","1:25:40","2:120","2:128","2:144","0:180:25","1:25:45","2:135","2:162"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,10,11,12,13],[12,14,15,16,17,18,19,20],[12,21,22,20,4,9,23,24],[12,25,26,27,28,29,30,31],[12,32,33,34,11,19,35,36],[12,37,38,39,2,20,36,40]],"weight":84},"science-fraction":{"title":"Доля числа","patterns":["Найдите %d/%d от числа %d.","Делим на знаменатель %d, затем умножаем на числитель %d.","%d"],"strings":["0:2:3:9","1:3:2","2:6","2:3","2:7","2:9","0:3:4:12","1:4:3","2:12","0:4:5:15","1:5:4","2:11","2:15","0:5:6:18","1:6:5","2:13","2:18","0:2:3:12","2:8","2:4","2:10","0:3:4:16","2:16","0:4:5:20","2:20","0:5:6:24","2:19","2:24","0:2:3:15","2:5","0:3:4:20","2:17","0:4:5:25","2:21","2:25","0:5:6:30","2:30","0:2:3:18","0:3:4:24","0:4:5:30","2:26","0:5:6:36","2:31","2:36","0:2:3:21","2:14","0:3:4:28","2:28","0:4:5:35","2:35","0:5:6:42","2:37","2:42","0:2:3:24","2:22","0:3:4:32","2:29","2:32","0:4:5:40","2:40","0:5:6:48","2:43","2:48","0:2:3:27","2:27","0:3:4:36","2:33","0:4:5:45","2:41","2:45","0:5:6:54","2:49","2:54"],"variants":[[3,0,1,2,3,4,5],[3,6,7,5,3,8,2],[3,9,10,8,3,11,12,5],[3,13,14,12,3,15,16,8],[3,17,1,18,19,20,8],[3,21,7,8,19,15,22,18],[3,23,10,22,19,24,8],[3,25,14,24,19,26,27,22],[3,28,1,20,29,15,12],[3,30,7,12,29,31,24,20],[3,32,10,24,29,33,34,12],[3,35,14,34,29,36,24],[3,37,1,8,2,22,16],[3,38,7,16,2,33,27,8],[3,39,10,27,2,40,36,16],[3,41,14,36,2,42,43,27],[3,44,1,45,4,26,33],[3,46,7,33,4,34,47,45],[3,48,10,47,4,42,49,33],[3,50,14,49,4,51,52,47],[3,53,1,22,18,54,27],[3,55,7,27,18,56,57,22],[3,58,10,57,18,43,59,27],[3,60,14,59,18,61,62,57],[3,63,1,16,5,34,64],[3,65,7,64,5,66,43,16],[3,67,10,43,5,68,69,64],[3,70,14,69,5,71,72,43]],"weight":84},"science-increase":{"title":"Рост","patterns":["В коллекции %d образцов. Их стало на %d% больше. Сколько образцов теперь?","Добавилось %d образцов. Складываем с исходным количеством.","%d"],"strings":["0:30:20","1:6","2:36","2:6","2:32","2:50","2:42","0:30:30","1:9","2:39","2:9","2:33","2:60","2:48","0:30:40","1:12","2:12","2:34","2:70","2:54","0:30:50","1:15","2:45","2:15","2:35","2:80","0:40:20","1:8","2:8","2:56","0:40:30","2:52","2:43","2:64","0:40:40","1:16","2:16","2:44","2:72","0:40:50","1:20","2:20","2:90","0:50:20","1:10","2:10","0:50:30","2:65","2:53","0:50:40","0:50:50","1:25","2:75","2:25","2:55","2:100","0:60:20","2:62","2:84","0:60:30","1:18","2:78","2:18","2:63","2:96","0:60:40","1:24","2:24","2:108","0:60:50","1:30","2:30","2:110","2:120","0:70:20","1:14","2:14","2:98","0:70:30","1:21","2:91","2:21","2:73","2:112","0:70:40","1:28","2:28","2:74","2:126","0:70:50","1:35","2:105","2:140","0:80:20","2:82","0:80:30","2:104","2:83","2:128","0:80:40","1:32","2:144","0:80:50","1:40","2:40","2:85","2:130","2:160","0:90:20","2:92","0:90:30","1:27","2:117","2:27","2:93","0:90:40","1:36","2:94","2:162","0:90:50","1:45","2:135","2:95","2:180"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,9,10,11,12,13],[3,14,15,6,16,17,18,19],[3,20,21,22,23,24,25,12],[3,26,27,13,28,6,12,29],[3,30,15,31,16,32,18,33],[3,34,35,29,36,37,25,38],[3,39,40,12,41,22,42,25],[3,43,44,12,45,31,18],[3,46,21,47,23,48,25],[3,49,40,18,41,19,42],[3,50,51,52,53,54,55],[3,56,15,38,16,57,25,58],[3,59,60,61,62,63,42,64],[3,65,66,58,67,33,55,68],[3,69,70,42,71,47,72,73],[3,74,75,58,76,38,42,77],[3,78,79,80,81,82,55,83],[3,84,85,77,86,87,72,88],[3,89,90,91,24,52,73,92],[3,93,35,64,36,94,55,83],[3,95,66,96,67,97,72,98],[3,99,100,83,4,58,73,101],[3,102,103,73,104,105,106,107],[3,108,60,68,62,109,72,88],[3,110,111,112,113,114,73,101],[3,115,116,88,2,117,106,118],[3,119,120,121,22,122,92,123]],"weight":84},"science-missing-side":{"title":"Ширина","patterns":["Площадь прямоугольника %d м², длина %d м. Каков его периметр?","Ширина равна %d м. Периметр — удвоенная сумма длины и ширины.","%d м"],"strings":["0:6:3","1:2","2:10","2:5","2:6","2:8","2:7","0:9:3","1:3","2:12","2:9","2:11","2:13","0:12:3","1:4","2:14","0:15:3","1:5","2:16","2:15","0:8:4","0:12:4","0:16:4","2:17","0:20:4","2:18","2:20","0:10:5","0:15:5","0:20:5","0:25:5","2:25","0:12:6","0:18:6","0:24:6","2:24","0:30:6","2:22","2:30","0:14:7","0:21:7","2:21","0:28:7","2:28","0:35:7","2:35","2:19","0:16:8","0:24:8","0:32:8","2:32","0:40:8","2:26","2:40","0:18:9","0:27:9","2:27","0:36:9","2:36","0:45:9","2:45","2:23"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,9,4,10,11,12],[3,13,14,15,6,9,2,11],[3,16,17,18,5,19,11,12],[3,20,1,9,4,5,2],[3,21,8,15,6,9,11,2],[3,22,14,18,5,9,19,23],[3,24,17,25,10,26,12,15],[3,27,1,15,6,2,9,10],[3,28,8,18,5,19,12,11],[3,29,14,25,10,26,15,12],[3,30,17,26,2,31,19],[3,32,1,18,5,9,15,2],[3,33,8,25,10,19,9],[3,34,14,26,2,35,18,15],[3,36,17,37,11,38,23,18],[3,39,1,25,10,15,18,11],[3,40,8,26,2,41,23,12],[3,42,14,37,11,43,25,19],[3,44,17,35,9,45,46,23],[3,47,1,26,2,18,25,9],[3,48,8,37,11,35,46,15],[3,49,14,35,9,50,26,18],[3,51,17,52,12,53,41,25],[3,54,1,37,11,25,26,12],[3,55,8,35,9,56,41,19],[3,57,14,52,12,58,37,23],[3,59,17,43,15,60,61,46]],"weight":84},"science-packing":{"title":"Упаковки","patterns":["%d деталей нужно упаковать по %d в коробку. Сколько коробок понадобится?","%d полных коробок и ещё одна для оставшейся детали.","%d"],"strings":["0:7:2","1:3","2:4","2:3","2:6","2:2","2:5","0:10:3","2:9","0:13:4","2:12","2:7","0:16:5","2:15","2:8","0:9:2","1:4","0:13:3","0:17:4","2:16","0:21:5","2:20","0:11:2","1:5","2:10","0:16:3","0:21:4","0:26:5","2:25","0:13:2","1:6","0:19:3","2:18","0:25:4","2:24","0:31:5","2:30","2:11","0:15:2","1:7","2:14","0:22:3","2:21","0:29:4","2:28","0:36:5","2:35","0:17:2","1:8","0:25:3","0:33:4","2:32","0:41:5","2:40","2:13","0:19:2","1:9","0:28:3","2:27","0:37:4","2:36","0:46:5","2:45"],"variants":[[3,0,1,2,3,4,5,6],[3,7,1,2,3,8,4],[3,9,1,2,3,10,11],[3,12,1,2,3,13,6,14],[3,15,16,6,2,14,5,4],[3,17,16,6,2,10,3,11],[3,18,16,6,2,19,14],[3,20,16,6,2,21,8],[3,22,23,4,6,24,5,11],[3,25,23,4,6,13,3,14],[3,26,23,4,6,21,2,8],[3,27,23,4,6,28,24],[3,29,30,11,4,10,5,14],[3,31,30,11,4,32,3,8],[3,33,30,11,4,34,2,24],[3,35,30,11,4,36,6,37],[3,38,39,14,11,40,5,8],[3,41,39,14,11,42,3,24],[3,43,39,14,11,44,2,37],[3,45,39,14,11,46,6,10],[3,47,48,8,14,19,5,24],[3,49,48,8,14,34,3,37],[3,50,48,8,14,51,2,10],[3,52,48,8,14,53,6,54],[3,55,56,24,8,32,5,37],[3,57,56,24,8,58,3,10],[3,59,56,24,8,60,2,54],[3,61,56,24,8,62,6,40]],"weight":84},"science-reverse":{"title":"До скидки","patterns":["После скидки %d% прибор стоит %d рублей. Сколько он стоил до скидки?","Новая цена — %d% старой. Делим %d на %d и умножаем на %d.","%d руб."],"strings":["0:20:24","1:80:24:8:10","2:30","2:27","2:36","2:48","2:44","0:20:32","1:80:32:8:10","2:40","2:64","2:52","0:20:40","1:80:40:8:10","2:50","2:45","2:60","2:80","0:20:48","1:80:48:8:10","2:54","2:72","2:96","2:68","0:20:56","1:80:56:8:10","2:70","2:63","2:84","2:112","2:76","0:20:64","1:80:64:8:10","2:128","0:20:72","1:80:72:8:10","2:90","2:81","2:108","2:144","2:92"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,4,5,10,11],[12,12,13,14,15,16,17],[12,18,19,16,20,21,22,23],[12,24,25,26,27,28,29,30],[12,31,32,17,21,22,33,28],[12,34,35,36,37,38,39,40]],"weight":84},"science-rhythm":{"title":"Совпадение","patterns":["Один сигнал звучит каждые %d минут, второй — каждые %d. Они прозвучали вместе. Через сколько минут это повторится?","Соседние числа не имеют общих делителей больше %d. Первое общее кратное — их произведение.","%d мин"],"strings":["0:2:3","1:1","2:6","2:5","2:3","2:4","2:12","0:3:4","2:7","2:9","2:24","0:4:5","2:20","2:16","2:40","0:5:6","2:30","2:11","2:25","2:60"],"variants":[[21,0,1,2,3,4,5,6],[21,7,1,6,8,5,9,10],[21,11,1,12,9,3,13,14],[21,15,1,16,17,2,18,19]],"weight":84},"science-unitprice":{"title":"Два набора","patterns":["%d одинаковых набора стоят %d рублей. Сколько стоят %d наборов и карандаш за %d рубля?","Один набор стоит %d. Умножаем на %d и прибавляем цену карандаша.","%d руб."],"strings":["0:2:6:4:2","1:3:4","2:14","2:12","2:8","2:10","0:2:6:5:3","1:3:5","2:18","2:15","2:9","0:2:6:6:4","1:3:6","2:22","0:3:9:5:2","2:17","2:11","2:13","0:3:9:6:3","2:21","0:3:9:7:4","1:3:7","2:25","0:4:12:6:2","2:20","2:16","0:4:12:7:3","2:24","0:4:12:8:4","1:3:8","2:28","0:5:15:7:2","2:23","2:19","0:5:15:8:3","2:27","2:30","0:5:15:9:4","1:3:9","2:31","2:35","0:2:8:4:2","1:4:4","0:2:8:5:3","1:4:5","0:2:8:6:4","1:4:6","0:3:12:5:2","0:3:12:6:3","0:3:12:7:4","1:4:7","2:32","0:4:16:6:2","2:26","0:4:16:7:3","0:4:16:8:4","1:4:8","2:36","0:5:20:7:2","0:5:20:8:3","0:5:20:9:4","1:4:9","2:40","0:2:10:4:2","1:5:4","0:2:10:5:3","1:5:5","0:2:10:6:4","1:5:6","2:34","0:3:15:5:2","0:3:15:6:3","2:33","0:3:15:7:4","1:5:7","2:39","0:4:20:6:2","0:4:20:7:3","2:38","0:4:20:8:4","1:5:8","2:44","0:5:25:7:2","2:37","2:29","0:5:25:8:3","2:43","0:5:25:9:4","1:5:9","2:49","2:45","0:2:12:4:2","1:6:4","0:2:12:5:3","1:6:5","0:2:12:6:4","1:6:6","0:3:18:5:2","0:3:18:6:3","0:3:18:7:4","1:6:7","2:46","2:42","0:4:24:6:2","0:4:24:7:3","0:4:24:8:4","1:6:8","2:52","2:48","0:5:30:7:2","0:5:30:8:3","2:51","0:5:30:9:4","1:6:9","2:58","2:54","2:50","0:2:14:4:2","1:7:4","0:2:14:5:3","1:7:5","0:2:14:6:4","1:7:6","0:3:21:5:2","0:3:21:6:3","0:3:21:7:4","1:7:7","2:53","0:4:28:6:2","0:4:28:7:3","0:4:28:8:4","1:7:8","2:60","2:56","0:5:35:7:2","0:5:35:8:3","2:59","2:41","0:5:35:9:4","1:7:9","2:67","2:63","2:55","0:2:16:4:2","1:8:4","0:2:16:5:3","1:8:5","0:2:16:6:4","1:8:6","0:3:24:5:2","0:3:24:6:3","0:3:24:7:4","1:8:7","0:4:32:6:2","0:4:32:7:3","0:4:32:8:4","1:8:8","2:68","2:64","0:5:40:7:2","0:5:40:8:3","0:5:40:9:4","1:8:9","2:76","2:72","0:2:18:4:2","1:9:4","0:2:18:5:3","1:9:5","0:2:18:6:4","1:9:6","0:3:27:5:2","2:47","0:3:27:6:3","2:57","0:3:27:7:4","1:9:7","0:4:36:6:2","0:4:36:7:3","2:66","0:4:36:8:4","1:9:8","0:5:45:7:2","2:65","0:5:45:8:3","2:75","0:5:45:9:4","1:9:9","2:85","2:81"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,9,10,3],[1,11,12,13,8,5,2],[1,14,7,15,9,16,17],[1,18,12,19,8,3,9],[1,20,21,22,19,17,15],[1,23,12,24,8,2,25],[1,26,21,27,19,9,8],[1,28,29,30,27,25,24],[1,31,21,32,19,15,33,22],[1,34,29,35,27,8,19,36],[1,37,38,39,35,33,32,40],[1,41,42,8,25,5,3],[1,43,44,32,24,16,2],[1,45,46,30,27,3,25],[1,47,44,13,24,2,25,8],[1,48,46,35,27,9,8,19],[1,49,50,51,30,25,24,27],[1,52,46,53,27,8,24],[1,54,50,39,30,33,13],[1,55,56,57,51,24,27],[1,58,50,36,30,13,27],[1,59,56,40,51,32,53],[1,60,61,62,57,27,30],[1,63,64,13,24,3,2],[1,65,66,30,22,17,25],[1,67,68,69,36,2,8],[1,70,66,35,22,15,33,19],[1,71,68,72,36,8,19,27],[1,73,74,75,40,33,32,35],[1,76,68,51,36,13,27,30],[1,77,74,78,40,32,53,51],[1,79,80,81,62,27,30,57],[1,82,74,83,40,35,84],[1,85,80,86,62,30,39],[1,87,88,89,90,84,72],[1,91,92,53,27,2,25],[1,93,94,72,36,9,8],[1,95,96,62,57,25,24],[1,97,94,51,36,24,13,27],[1,98,96,75,57,19,27,35],[1,99,100,101,102,13,53,36],[1,103,96,78,57,53,30,51],[1,104,100,90,102,35,36,57],[1,105,106,107,108,30,51,62],[1,109,100,81,102,51,69,62],[1,110,106,111,108,72,57,90],[1,112,113,114,115,69,78,116],[1,117,118,36,30,25,8],[1,119,120,78,40,15,24],[1,121,122,101,102,8,13],[1,123,120,83,40,32,22,35],[1,124,122,90,102,27,35,36],[1,125,126,127,89,22,84,72],[1,128,122,81,102,36,51,57],[1,129,126,107,89,39,69,62],[1,130,131,132,133,51,57,81],[1,134,126,111,89,83,75,90],[1,135,131,136,133,78,137,116],[1,138,139,140,141,75,86,142],[1,143,144,69,51,8,24],[1,145,146,86,62,33,13],[1,147,148,107,108,24,27],[1,149,146,102,62,53,30,36],[1,150,148,111,108,35,36,72],[1,151,152,132,133,30,51,57],[1,153,148,116,108,69,57,62],[1,154,152,136,133,40,78,81],[1,155,156,157,158,57,62,108],[1,159,152,114,133,102,81,116],[1,160,156,140,158,86,101,142],[1,161,162,163,164,81,108,132],[1,165,166,78,57,24,13],[1,167,168,108,90,19,27],[1,169,170,114,115,13,53],[1,171,168,172,90,84,39,72],[1,173,170,174,115,36,72,57],[1,175,176,140,141,39,40,75],[1,177,170,133,115,78,62,81],[1,178,176,179,141,75,102,108],[1,180,181,163,164,62,81,107],[1,182,176,183,141,172,89,142],[1,184,181,185,164,108,111,132],[1,186,187,188,189,89,127,183]],"weight":84},"science-work":{"title":"Производительность","patterns":["За %d часа мастер делает %d деталей. Сколько он сделает за %d часов, если будет работать вдвое быстрее?","Прежняя скорость %d деталей/ч, новая %d. Умножаем на время.","%d"],"strings":["0:2:6:2","1:3:6","2:12","2:6","2:11","2:13","0:2:6:3","2:18","2:9","2:15","0:2:6:4","2:24","2:23","2:25","0:3:9:2","0:3:9:3","2:27","0:3:9:4","2:36","0:4:12:2","0:4:12:3","0:4:12:4","2:48","0:5:15:2","2:30","0:5:15:3","2:45","0:5:15:4","2:60","0:2:8:2","1:4:8","2:16","2:8","2:17","0:2:8:3","2:20","0:2:8:4","2:32","2:31","2:33","0:3:12:2","0:3:12:3","0:3:12:4","0:4:16:2","0:4:16:3","0:4:16:4","2:64","0:5:20:2","2:40","0:5:20:3","0:5:20:4","2:80","0:2:10:2","1:5:10","2:10","2:19","2:21","0:2:10:3","0:2:10:4","2:39","2:41","0:3:15:2","0:3:15:3","0:3:15:4","0:4:20:2","0:4:20:3","0:4:20:4","0:5:25:2","2:50","0:5:25:3","2:75","0:5:25:4","2:100","0:2:12:2","1:6:12","0:2:12:3","0:2:12:4","2:47","2:49","0:3:18:2","0:3:18:3","2:54","0:3:18:4","2:72","0:4:24:2","0:4:24:3","0:4:24:4","2:96","0:5:30:2","0:5:30:3","2:90","0:5:30:4","2:120","0:2:14:2","1:7:14","2:28","2:14","2:29","0:2:14:3","2:42","2:35","0:2:14:4","2:56","2:55","2:57","0:3:21:2","0:3:21:3","2:63","0:3:21:4","2:84","0:4:28:2","0:4:28:3","0:4:28:4","2:112","0:5:35:2","2:70","0:5:35:3","2:105","0:5:35:4","2:140","0:2:16:2","1:8:16","0:2:16:3","0:2:16:4","2:65","0:3:24:2","0:3:24:3","0:3:24:4","0:4:32:2","0:4:32:3","0:4:32:4","2:128","0:5:40:2","0:5:40:3","0:5:40:4","2:160","0:2:18:2","1:9:18","2:37","0:2:18:3","0:2:18:4","2:71","2:73","0:3:27:2","0:3:27:3","2:81","0:3:27:4","2:108","0:4:36:2","0:4:36:3","0:4:36:4","2:144","0:5:45:2","0:5:45:3","2:135","0:5:45:4","2:180"],"variants":[[1,0,1,2,3,4,5],[1,6,1,7,8,2,9],[1,10,1,11,2,7,12,13],[1,14,1,2,3,7,4,5],[1,15,1,7,8,9,16],[1,17,1,11,2,7,18],[1,19,1,2,3,11,4,5],[1,20,1,7,8,11,9,18],[1,21,1,11,2,7,22],[1,23,1,2,3,24,4,5],[1,25,1,7,8,24,9,26],[1,27,1,11,2,24,7,28],[1,29,30,31,32,9,33],[1,34,30,11,2,31,35],[1,36,30,37,31,11,38,39],[1,40,30,31,32,11,9,33],[1,41,30,11,2,35,18],[1,42,30,37,31,11,22],[1,43,30,31,32,37,9,33],[1,44,30,11,2,37,35,22],[1,45,30,37,31,11,46],[1,47,30,31,32,48,9,33],[1,49,30,11,2,48,35,28],[1,50,30,37,31,48,11,51],[1,52,53,35,54,55,56],[1,57,53,24,9,35,13],[1,58,53,48,35,24,59,60],[1,61,53,35,54,24,55,56],[1,62,53,24,9,13,26],[1,63,53,48,35,24,28],[1,64,53,35,54,48,55,56],[1,65,53,24,9,48,13,28],[1,66,53,48,35,24,51],[1,67,53,35,54,68,55,56],[1,69,53,24,9,68,13,70],[1,71,53,48,35,68,24,72],[1,73,74,11,2,12,13],[1,75,74,18,7,11,24],[1,76,74,22,11,18,77,78],[1,79,74,11,2,18,12,13],[1,80,74,18,7,24,81],[1,82,74,22,11,18,83],[1,84,74,11,2,22,12,13],[1,85,74,18,7,22,24,83],[1,86,74,22,11,18,87],[1,88,74,11,2,28,12,13],[1,89,74,18,7,28,24,90],[1,91,74,22,11,28,18,92],[1,93,94,95,96,16,97],[1,98,94,99,56,95,100],[1,101,94,102,95,99,103,104],[1,105,94,95,96,99,16,97],[1,106,94,99,56,100,107],[1,108,94,102,95,99,109],[1,110,94,95,96,102,16,97],[1,111,94,99,56,102,100,109],[1,112,94,102,95,99,113],[1,114,94,95,96,115,16,97],[1,116,94,99,56,115,100,117],[1,118,94,102,95,115,99,119],[1,120,121,37,31,38,39],[1,122,121,22,11,37,48],[1,123,121,46,37,22,107,124],[1,125,121,37,31,22,38,39],[1,126,121,22,11,48,83],[1,127,121,46,37,22,87],[1,128,121,37,31,46,38,39],[1,129,121,22,11,46,48,87],[1,130,121,46,37,22,131],[1,132,121,37,31,51,38,39],[1,133,121,22,11,51,48,92],[1,134,121,46,37,51,22,135],[1,136,137,18,7,100,138],[1,139,137,81,16,18,26],[1,140,137,83,18,81,141,142],[1,143,137,18,7,81,100,138],[1,144,137,81,16,26,145],[1,146,137,83,18,81,147],[1,148,137,18,7,83,100,138],[1,149,137,81,16,83,26,147],[1,150,137,83,18,81,151],[1,152,137,18,7,90,100,138],[1,153,137,81,16,90,26,154],[1,155,137,83,18,90,81,156]],"weight":84}},"thought":{"science-binary":{"title":"Двоичная запись","patterns":["Число %d записано в двоичной системе. Каково его десятичное значение?","Разряды справа налево имеют веса %d, %d, %d, %d, %d… Складываем веса разрядов с единицей.","%d"],"strings":["0:110","1:1:2:4:8:16","2:6","2:7","2:4","2:2","2:12","2:3","0:111","2:5","2:14","0:1000","2:8","2:9","2:10","2:16","0:1001","2:11","2:13","2:18","0:1010","2:20","0:1011","2:15","2:22","0:1100","2:24","0:1110","2:28","0:1111","2:30","0:10010","2:19","2:36","0:10011","2:17","2:23","2:38","0:1101","2:26","0:10001","2:21","2:34","0:10110","2:44","0:10111","2:46"],"variants":[[1,0,1,2,3,4,5,6,7],[1,8,1,3,2,9,7,10],[2,11,1,12,13,14,6,15,4],[2,16,1,13,12,17,18,19,4],[2,20,1,14,17,12,10,21,9],[3,22,1,17,14,13,23,24,9],[2,25,1,6,18,10,12,26,2],[2,27,1,10,23,6,14,28,3],[2,29,1,23,10,18,17,30,3],[2,31,1,19,32,15,24,33,13],[1,34,1,32,19,35,36,37,13],[1,38,1,18,6,23,13,39,2],[1,40,1,35,15,32,41,42,12],[1,43,1,24,36,21,19,44,17],[1,45,1,36,24,41,32,46,17]],"weight":24},"science-capacity":{"title":"Двоичные состояния","patterns":["Устройство хранит %d бит. Каждый бит может быть %d или %d. Сколько разных состояний у устройства?","У каждого бита два варианта, поэтому всего %d^%d.","%d"],"strings":["0:4:0:1","1:2:4","2:16","2:2","2:4","2:8","2:32","2:64","0:5:0:1","1:2:5","2:128","0:6:0:1","1:2:6","2:256","0:7:0:1","1:2:7","2:512","0:8:0:1","1:2:8","2:1024","0:9:0:1","1:2:9","2:2048"],"variants":[[2,0,1,2,3,4,5,6,7],[4,8,9,6,4,5,2,7,10],[6,11,12,7,5,2,6,10,13],[6,14,15,10,2,6,7,13,16],[4,17,18,13,6,7,10,16,19],[2,20,21,16,7,10,13,19,22]],"weight":24},"science-doubling":{"title":"Удвоение","patterns":["В начале есть %d клетки. Их число удваивается каждый час. Сколько клеток будет через %d часа?","За %d часа множитель равен %d^%d. Умножаем исходное число на него.","%d"],"strings":["0:2:2","1:2:2:2","2:8","2:2","2:4","2:16","2:32","0:2:3","1:3:2:3","2:64","0:2:4","1:4:2:4","2:128","0:3:2","2:12","2:3","2:6","2:24","2:48","0:3:3","2:96","0:3:4","2:192","0:4:2","0:4:3","0:4:4","2:256","0:5:2","2:20","2:5","2:10","2:40","2:80","0:5:3","2:160","0:5:4","2:320"],"variants":[[2,0,1,2,3,4,5,6],[2,7,8,5,3,4,2,6,9],[2,10,11,6,4,2,5,9,12],[2,13,1,14,15,16,17,18],[2,19,8,17,15,16,14,18,20],[2,21,11,18,16,14,17,20,22],[2,23,1,5,4,2,6,9],[2,24,8,6,4,2,5,9,12],[2,25,11,9,2,5,6,12,26],[2,27,1,28,29,30,31,32],[2,33,8,31,29,30,28,32,34],[2,35,11,32,30,28,31,34,36]],"weight":24},"science-factorial":{"title":"Порядок запуска","patterns":["%d разных программы нужно запустить по одной в некотором порядке. Сколько разных порядков существует?","Для первого места %d вариантов, для второго на один меньше и так далее. Перемножаем числа от %d до %d.","%d"],"strings":["0:2","1:2:1:2","2:2","2:1","2:4","2:6","0:3","1:3:1:3","2:9","2:24","0:4","1:4:1:4","2:12","2:16","2:120","0:5","1:5:1:5","2:20","2:25","2:720"],"variants":[[6,0,1,2,3,4,5],[6,6,7,5,2,8,9],[6,10,11,9,12,5,13,14],[6,15,16,14,17,9,18,19]],"weight":24},"science-growth":{"title":"Рост по этапам","patterns":["На первом этапе %d задачи. На каждом следующем их втрое больше. Сколько задач на %d-м этапе?","До нужного этапа происходит %d утроения: %d × %d^%d.","%d"],"strings":["0:2:3","1:2:2:3:2","2:18","2:2","2:6","2:54","2:162","0:2:4","1:3:2:3:3","2:486","0:2:5","1:4:2:3:4","2:1458","0:3:3","1:2:3:3:2","2:27","2:3","2:9","2:81","2:243","0:3:4","1:3:3:3:3","2:729","0:3:5","1:4:3:3:4","2:2187","0:4:3","1:2:4:3:2","2:36","2:4","2:12","2:108","2:324","0:4:4","1:3:4:3:3","2:972","0:4:5","1:4:4:3:4","2:2916","0:5:3","1:2:5:3:2","2:45","2:5","2:15","2:135","2:405","0:5:4","1:3:5:3:3","2:1215","0:5:5","1:4:5:3:4","2:3645"],"variants":[[2,0,1,2,3,4,5,6],[2,7,8,5,3,4,2,6,9],[2,10,11,6,4,2,5,9,12],[2,13,14,15,16,17,18,19],[2,20,21,18,16,17,15,19,22],[2,23,24,19,17,15,18,22,25],[2,26,27,28,29,30,31,32],[2,33,34,31,29,30,28,32,35],[2,36,37,32,30,28,31,35,38],[2,39,40,41,42,43,44,45],[2,46,47,44,42,43,41,45,48],[2,49,50,45,43,41,44,48,51]],"weight":24},"science-order":{"title":"Скобки и степень","patterns":["Сколько будет (%d + %d)² − %d?","Сначала складываем в скобках, возводим сумму в квадрат и вычитаем %d.","%d"],"strings":["0:2:2:4","1:4","2:12","2:16","2:4","2:8","0:2:3:4","2:21","2:25","2:9","2:15","0:2:4:4","2:32","2:36","2:24","0:3:2:9","1:9","2:10","0:3:3:9","2:27","2:18","0:3:4:9","2:40","2:49","2:28","0:4:2:16","1:16","2:20","0:4:3:16","2:33","0:4:4:16","2:48","2:64","0:5:2:25","1:25","2:14","0:5:3:25","2:39","2:30","0:5:4:25","2:56","2:81"],"variants":[[2,0,1,2,3,4,5],[2,6,1,7,8,9,10,2],[2,11,1,12,13,3,14],[2,15,16,3,8,4,17,2],[2,18,16,19,13,9,20],[2,21,16,22,23,3,24,14],[2,25,26,27,13,4,2,3],[2,28,26,29,23,9,7,14],[2,30,26,31,32,3,12],[2,33,34,14,23,4,35,27],[2,36,34,37,32,9,14,38],[2,39,34,40,41,3,13,22]],"weight":24},"science-powers":{"title":"Степень","patterns":["Сколько будет %d² + %d²?","Возводим каждое число в квадрат отдельно и складываем: %d + %d.","%d"],"strings":["0:2:2","1:4:4","2:8","2:16","2:6","2:7","2:9","0:2:3","1:4:9","2:13","2:25","2:10","2:11","0:2:4","1:4:16","2:20","2:36","2:12","2:18","0:3:2","1:9:4","0:3:3","1:9:9","2:17","2:19","0:3:4","1:9:16","2:49","2:14","0:4:2","1:16:4","0:4:3","1:16:9","0:4:4","1:16:16","2:32","2:64","0:5:2","1:25:4","2:29","2:27","0:5:3","1:25:9","2:34","2:28","0:5:4","1:25:16","2:41","2:81","2:21"],"variants":[[2,0,1,2,3,4,5,6],[2,7,8,9,10,11,5,12],[2,13,14,15,16,17,2,18],[2,19,20,9,10,11,12,5],[2,21,22,18,16,17,23,24],[2,25,26,10,27,28,9,24],[2,29,30,15,16,17,18,2],[2,31,32,10,27,28,24,9],[2,33,34,35,36,3,15],[2,37,38,39,27,28,40,6],[2,41,42,43,36,3,44,28],[2,45,46,47,48,18,39,49]],"weight":24},"science-product":{"title":"Одинаковое основание","patterns":["Сколько будет %d^%d × %d^%d?","При умножении степеней одного основания показатели складываются: %d^%d.","%d"],"strings":["0:2:2:2:2","1:2:4","2:16","2:2","2:4","2:8","2:32","2:64","0:2:2:2:3","1:2:5","2:128","0:2:2:2:4","1:2:6","2:256","0:2:3:2:2","0:2:3:2:3","0:2:3:2:4","1:2:7","2:512","0:2:4:2:2","0:2:4:2:3","0:2:4:2:4","1:2:8","2:1024","0:2:5:2:2","0:2:5:2:3","0:2:5:2:4","1:2:9","2:2048"],"variants":[[2,0,1,2,3,4,5,6,7],[2,8,9,6,4,5,2,7,10],[2,11,12,7,5,2,6,10,13],[2,14,9,6,4,5,2,7,10],[2,15,12,7,5,2,6,10,13],[2,16,17,10,2,6,7,13,18],[2,19,12,7,5,2,6,10,13],[2,20,17,10,2,6,7,13,18],[2,21,22,13,6,7,10,18,23],[2,24,17,10,2,6,7,13,18],[2,25,22,13,6,7,10,18,23],[2,26,27,18,7,10,13,23,28]],"weight":24},"science-quadratic":{"title":"Положительный корень","patterns":["x² = %d − %d. Найдите положительный x.","Правая часть равна %d. Положительный квадратный корень — %d.","%d"],"strings":["0:6:2","1:4:2","2:2","2:4","2:6","2:3","0:7:3","2:5","2:7","0:8:4","2:8","0:11:2","1:9:3","2:9","2:11","0:12:3","2:12","0:13:4","2:13","0:18:2","1:16:4","2:16","2:18","0:19:3","2:19","0:20:4","2:20","0:27:2","1:25:5","2:25","2:27","0:28:3","2:28","0:29:4","2:29"],"variants":[[2,0,1,2,3,4,5],[2,6,1,2,3,7,8,5],[2,9,1,2,3,4,10,5],[2,11,12,5,13,7,14,3],[2,15,12,5,13,4,16,3],[2,17,12,5,13,8,18,3],[2,19,20,3,21,4,22,7],[2,23,20,3,21,8,24,7],[2,25,20,3,21,10,26,7],[2,27,28,7,29,8,30,4],[2,31,28,7,29,10,32,4],[2,33,28,7,29,13,34,4]],"weight":24},"science-quotient":{"title":"Деление степеней","patterns":["Чему равно %d^%d ÷ %d^%d?","При делении степеней одного основания показатели вычитаются. Остаётся %d^%d.","%d"],"strings":["0:3:4:3:2","1:3:2","2:9","2:1","2:3","2:27","2:81","0:3:5:3:2","1:3:3","2:243","0:3:6:3:2","1:3:4","2:729","0:3:5:3:3","0:3:6:3:3","0:3:7:3:3","0:3:6:3:4","0:3:7:3:4","0:3:8:3:4","0:3:7:3:5","0:3:8:3:5","0:3:9:3:5"],"variants":[[2,0,1,2,3,4,5,6],[2,7,8,5,3,4,2,6,9],[2,10,11,6,4,2,5,9,12],[2,13,1,2,3,4,5,6],[2,14,8,5,3,4,2,6,9],[2,15,11,6,4,2,5,9,12],[2,16,1,2,3,4,5,6],[2,17,8,5,3,4,2,6,9],[2,18,11,6,4,2,5,9,12],[2,19,1,2,3,4,5,6],[2,20,8,5,3,4,2,6,9],[2,21,11,6,4,2,5,9,12]],"weight":24},"science-reciprocal":{"title":"Отрицательная степень","patterns":["Чему равно %d^(−%d)?","Отрицательная степень означает обратное число: %d/%d² = %d/%d.","%d/%d","%d"],"strings":["0:2:2","1:1:2:1:4","2:1:4","2:1:2","2:1:8","2:1:9","3:1","0:3:2","1:1:3:1:9","2:1:3","2:1:6","2:1:27","2:1:16","0:4:2","1:1:4:1:16","2:1:64","2:1:25","0:5:2","1:1:5:1:25","2:1:5","2:1:10","2:1:125","2:1:36"],"variants":[[6,0,1,2,3,4,5,6],[6,7,8,5,9,10,11,12,2],[6,13,14,12,2,4,15,16,5],[6,17,18,16,19,20,21,22,12]],"weight":24},"science-root":{"title":"Квадратный корень","patterns":["Чему равно √%d − %d?","Корень равен %d, потому что %d² = %d. Затем вычитаем %d.","%d"],"strings":["0:16:2","1:4:4:16:2","2:2","2:4","2:6","2:1","2:3","0:36:2","1:6:6:36:2","2:8","2:16","2:10","0:64:2","1:8:8:64:2","2:30","2:14","0:36:3","1:6:6:36:3","2:9","2:15","0:81:3","1:9:9:81:3","2:12","2:24","0:144:3","1:12:12:144:3","2:45","2:33","0:64:4","1:8:8:64:4","2:28","0:144:4","1:12:12:144:4","2:32","2:44","0:256:4","1:16:16:256:4","2:20","2:60","0:100:5","1:10:10:100:5","2:5","0:225:5","1:15:15:225:5","2:40","2:70","0:400:5","1:20:20:400:5","2:25","2:75","2:95"],"variants":[[2,0,1,2,3,4,5,6],[2,7,8,3,4,9,10,11],[2,12,13,4,9,11,14,15],[2,16,17,6,4,18,19],[2,20,21,4,18,22,23],[2,24,25,18,22,19,26,27],[2,28,29,3,9,22,30],[2,31,32,9,22,10,33,34],[2,35,36,22,10,37,38],[2,39,40,41,11,19,26],[2,42,43,11,19,37,44,45],[2,46,47,19,37,48,49,50]],"weight":24}},"time":{"science-age":{"title":"Возраст через годы","patterns":["Сейчас старшему %d лет, младшему %d. Через сколько лет старший будет вдвое старше младшего?","Пусть пройдёт t лет: %d + t = %d(%d + t). Отсюда t = %d.","%d лет"],"strings":["0:9:3","1:9:2:3:3","2:3","2:6","2:9","2:12","2:1","0:12:4","1:12:2:4:4","2:4","2:8","2:16","2:2","0:15:5","1:15:2:5:5","2:5","2:10","2:15","2:20","0:18:6","1:18:2:6:6","2:18","2:24","0:21:7","1:21:2:7:7","2:7","2:14","2:21","2:28","0:24:8","1:24:2:8:8","2:32"],"variants":[[12,0,1,2,3,4,5,6],[12,7,8,9,10,5,11,12],[12,13,14,15,16,17,18,12],[12,19,20,3,5,21,22,2],[12,23,24,25,26,27,28,2],[12,29,30,10,11,22,31,9]],"weight":72},"science-catch":{"title":"Догнать","patterns":["Бегун движется со скоростью %d км/ч, впереди него на %d км идёт человек со скоростью %d км/ч. Через сколько часов бегун догонит его?","Разница скоростей — %d км/ч. Делим отставание на эту разницу.","%d ч"],"strings":["0:5:4:3","1:2","2:2","2:4","2:5","2:1","2:3","0:5:6:3","2:6","0:5:8:3","2:8","2:7","0:6:6:3","1:3","0:6:9:3","2:9","0:6:12:3","2:12","0:7:8:3","1:4","0:7:12:3","0:7:16:3","2:16","0:8:10:3","1:5","2:10","0:8:15:3","2:15","0:8:20:3","2:20","0:6:4:4","0:6:6:4","0:6:8:4","0:7:6:4","0:7:9:4","0:7:12:4","0:8:8:4","0:8:12:4","0:8:16:4","0:9:10:4","0:9:15:4","0:9:20:4","0:7:4:5","0:7:6:5","0:7:8:5","0:8:6:5","0:8:9:5","0:8:12:5","0:9:8:5","0:9:12:5","0:9:16:5","0:10:10:5","0:10:15:5","0:10:20:5","0:8:4:6","0:8:6:6","0:8:8:6","0:9:6:6","0:9:9:6","0:9:12:6","0:10:8:6","0:10:12:6","0:10:16:6","0:11:10:6","0:11:15:6","0:11:20:6","0:9:4:7","0:9:6:7","0:9:8:7","2:11","0:10:6:7","0:10:9:7","0:10:12:7","0:11:8:7","0:11:12:7","0:11:16:7","0:12:10:7","0:12:15:7","0:12:20:7","0:10:4:8","0:10:6:8","0:10:8:8","0:11:6:8","0:11:9:8","0:11:12:8","0:12:8:8","0:12:12:8","0:12:16:8","0:13:10:8","0:13:15:8","0:13:20:8"],"variants":[[1,0,1,2,3,4,5,6],[1,7,1,6,2,8,3],[1,9,1,3,2,10,11],[1,12,13,2,6,8,3,4],[1,14,13,6,15,8,2,3],[1,16,13,3,6,17,10,11],[1,18,19,2,3,10,4],[1,20,19,6,3,17,8],[1,21,19,3,22,10,11],[1,23,24,2,4,25,3],[1,26,24,6,4,27,8],[1,28,24,3,4,29,10,11],[1,30,1,2,3,8,5,6],[1,31,1,6,2,8,11],[1,32,1,3,2,10,6,4],[1,33,13,2,6,8,3],[1,34,13,6,15,8,11],[1,35,13,3,6,17,10],[1,36,19,2,3,10,8],[1,37,19,6,3,17,8,11],[1,38,19,3,22,10,6,4],[1,39,24,2,4,25,3,8],[1,40,24,6,4,27,8,11],[1,41,24,3,4,29,10],[1,42,1,2,3,11,5,6],[1,43,1,6,2,8,10],[1,44,1,3,2,10,15],[1,45,13,2,6,8,3,11],[1,46,13,6,15,8,10],[1,47,13,3,6,17,10,15],[1,48,19,2,3,10,11],[1,49,19,6,3,17,8,10],[1,50,19,3,22,10,15],[1,51,24,2,4,25,3,11],[1,52,24,6,4,27,8,10],[1,53,24,3,4,29,10,15],[1,54,1,2,3,10,5,6],[1,55,1,6,2,8,15],[1,56,1,3,2,10,25],[1,57,13,2,6,8,3,10],[1,58,13,6,15,8,2,3],[1,59,13,3,6,17,10,25],[1,60,19,2,3,10,5,6],[1,61,19,6,3,17,8,15],[1,62,19,3,22,10,25],[1,63,24,2,4,25,3,10],[1,64,24,6,4,27,8,15],[1,65,24,3,4,29,10,25],[1,66,1,2,3,15,5,6],[1,67,1,6,2,8,25],[1,68,1,3,2,10,69],[1,70,13,2,6,8,3,15],[1,71,13,6,15,8,25],[1,72,13,3,6,17,10,69],[1,73,19,2,3,10,15],[1,74,19,6,3,17,8,25],[1,75,19,3,22,10,69],[1,76,24,2,4,25,3,15],[1,77,24,6,4,27,8,25],[1,78,24,3,4,29,10,69],[1,79,1,2,3,25,5,6],[1,80,1,6,2,8,69],[1,81,1,3,2,10,17],[1,82,13,2,6,8,3,25],[1,83,13,6,15,8,69],[1,84,13,3,6,17,10],[1,85,19,2,3,10,25],[1,86,19,6,3,17,8,69],[1,87,19,3,22,10,17],[1,88,24,2,4,25,3],[1,89,24,6,4,27,8,69],[1,90,24,3,4,29,10,17]],"weight":72},"science-coins":{"title":"Монеты","patterns":["Есть %d монет по %d и %d рублей на сумму %d рублей. Сколько монет по %d рублей?","Заменим все монеты двухрублёвыми. Разница %d рублей даёт по %d рубля на каждую пятирублёвую монету.","%d"],"strings":["0:5:2:5:16:5","1:6:3","2:2","2:3","2:4","2:1","0:6:2:5:21:5","1:9:3","2:5","2:0","0:7:2:5:26:5","1:12:3","2:6","0:8:2:5:31:5","1:15:3","2:7","0:6:2:5:18:5","0:7:2:5:23:5","0:8:2:5:28:5","0:9:2:5:33:5","2:8","0:7:2:5:20:5","0:8:2:5:25:5","0:9:2:5:30:5","0:10:2:5:35:5","2:9","0:8:2:5:22:5","0:9:2:5:27:5","0:10:2:5:32:5","0:11:2:5:37:5","2:10","0:9:2:5:24:5","0:10:2:5:29:5","0:11:2:5:34:5","0:12:2:5:39:5","2:11","0:10:2:5:26:5","0:11:2:5:31:5","0:12:2:5:36:5","0:13:2:5:41:5","2:12"],"variants":[[3,0,1,2,3,4,5],[3,6,7,3,8,9,4],[3,10,11,4,3,12,5,8],[3,13,14,8,3,15,2,4,12],[3,16,1,2,4,8,3],[3,17,7,3,4,12,5],[3,18,11,4,15,9,8],[3,19,14,8,4,20,5,12],[3,21,1,2,8,12,3],[3,22,7,3,8,15,2,4],[3,23,11,4,8,20,5],[3,24,14,8,25,9,12],[3,26,1,2,12,15,4,3],[3,27,7,3,12,20,4],[3,28,11,4,12,25,2,8],[3,29,14,8,12,30,5],[3,31,1,2,15,20,8,4,3],[3,32,7,3,15,25,4,8],[3,33,11,4,15,30,3,8],[3,34,14,8,15,35,2,12],[3,36,1,2,20,25,12,8,3],[3,37,7,3,20,30,8,4],[3,38,11,4,20,35,12,8],[3,39,14,8,20,40,3,12]],"weight":72},"science-groups":{"title":"Две группы","patterns":["В первой группе %d человек, во второй — вдвое больше. Средний результат первой %d, второй %d. Каково среднее всех участников?","Второй результат имеет двойной вес: (%d + %d × %d) ÷ %d.","%d"],"strings":["0:3:6:6","1:6:2:6:3","2:6","2:4","2:5","2:7","0:3:6:9","1:6:2:9:3","2:8","2:9","0:3:6:12","1:6:2:12:3","2:10","2:12","0:3:9:6","1:9:2:6:3","0:3:9:9","1:9:2:9:3","0:3:9:12","1:9:2:12:3","2:11","0:3:12:6","1:12:2:6:3","0:3:12:9","1:12:2:9:3","0:3:12:12","1:12:2:12:3","2:13","0:3:15:6","1:15:2:6:3","2:15","0:3:15:9","1:15:2:9:3","0:3:15:12","1:15:2:12:3","2:14","0:4:6:6","0:4:6:9","0:4:6:12","0:4:9:6","0:4:9:9","0:4:9:12","0:4:12:6","0:4:12:9","0:4:12:12","0:4:15:6","0:4:15:9","0:4:15:12","0:5:6:6","0:5:6:9","0:5:6:12","0:5:9:6","0:5:9:9","0:5:9:12","0:5:12:6","0:5:12:9","0:5:12:12","0:5:15:6","0:5:15:9","0:5:15:12","0:6:6:6","0:6:6:9","0:6:6:12","0:6:9:6","0:6:9:9","0:6:9:12","0:6:12:6","0:6:12:9","0:6:12:12","0:6:15:6","0:6:15:9","0:6:15:12","0:7:6:6","0:7:6:9","0:7:6:12","0:7:9:6","0:7:9:9","0:7:9:12","0:7:12:6","0:7:12:9","0:7:12:12","0:7:15:6","0:7:15:9","0:7:15:12","0:8:6:6","0:8:6:9","0:8:6:12","0:8:9:6","0:8:9:9","0:8:9:12","0:8:12:6","0:8:12:9","0:8:12:12","0:8:15:6","0:8:15:9","0:8:15:12"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,5,2,9,4],[1,10,11,12,8,2,13],[1,14,15,5,8,9,2,4],[1,16,17,9,2,8,12],[1,18,19,20,12,9,13,5],[1,21,22,8,12,13,2],[1,23,24,12,20,13,9,5],[1,25,26,13,8,20,27],[1,28,29,9,13,30,2,5],[1,31,32,20,27,30,9,8],[1,33,34,27,35,30,13,9],[1,36,1,2,3,4,5],[1,37,7,8,5,2,9,4],[1,38,11,12,8,2,13],[1,39,15,5,8,9,2,4],[1,40,17,9,2,8,12],[1,41,19,20,12,9,13,5],[1,42,22,8,12,13,2],[1,43,24,12,20,13,9,5],[1,44,26,13,8,20,27],[1,45,29,9,13,30,2,5],[1,46,32,20,27,30,9,8],[1,47,34,27,35,30,13,9],[1,48,1,2,3,4,5],[1,49,7,8,5,2,9,4],[1,50,11,12,8,2,13],[1,51,15,5,8,9,2,4],[1,52,17,9,2,8,12],[1,53,19,20,12,9,13,5],[1,54,22,8,12,13,2],[1,55,24,12,20,13,9,5],[1,56,26,13,8,20,27],[1,57,29,9,13,30,2,5],[1,58,32,20,27,30,9,8],[1,59,34,27,35,30,13,9],[1,60,1,2,3,4,5],[1,61,7,8,5,2,9,4],[1,62,11,12,8,2,13],[1,63,15,5,8,9,2,4],[1,64,17,9,2,8,12],[1,65,19,20,12,9,13,5],[1,66,22,8,12,13,2],[1,67,24,12,20,13,9,5],[1,68,26,13,8,20,27],[1,69,29,9,13,30,2,5],[1,70,32,20,27,30,9,8],[1,71,34,27,35,30,13,9],[1,72,1,2,3,4,5],[1,73,7,8,5,2,9,4],[1,74,11,12,8,2,13],[1,75,15,5,8,9,2,4],[1,76,17,9,2,8,12],[1,77,19,20,12,9,13,5],[1,78,22,8,12,13,2],[1,79,24,12,20,13,9,5],[1,80,26,13,8,20,27],[1,81,29,9,13,30,2,5],[1,82,32,20,27,30,9,8],[1,83,34,27,35,30,13,9],[1,84,1,2,3,4,5],[1,85,7,8,5,2,9,4],[1,86,11,12,8,2,13],[1,87,15,5,8,9,2,4],[1,88,17,9,2,8,12],[1,89,19,20,12,9,13,5],[1,90,22,8,12,13,2],[1,91,24,12,20,13,9,5],[1,92,26,13,8,20,27],[1,93,29,9,13,30,2,5],[1,94,32,20,27,30,9,8],[1,95,34,27,35,30,13,9]],"weight":72},"science-meeting":{"title":"Встреча","patterns":["Между пунктами %d км. Навстречу выехали со скоростями %d и %d км/ч. Сколько километров проедет первый до встречи?","Встретятся через %d часа. Первый за это время проедет %d × %d км.","%d км"],"strings":["0:10:3:2","1:2:3:2","2:6","2:4","2:2","2:8","0:15:3:2","1:3:3:3","2:9","2:3","2:11","2:7","0:20:3:2","1:4:3:4","2:12","2:14","2:10","0:12:3:3","0:18:3:3","0:24:3:3","2:15","0:14:3:4","0:21:3:4","2:13","2:5","0:28:3:4","2:16","0:16:3:5","2:1","0:24:3:5","0:32:3:5","2:20","2:17","0:12:4:2","1:2:4:2","0:18:4:2","1:3:4:3","0:24:4:2","1:4:4:4","2:18","0:14:4:3","0:21:4:3","0:28:4:3","2:19","0:16:4:4","0:24:4:4","0:32:4:4","0:18:4:5","0:27:4:5","0:36:4:5","2:21","0:14:5:2","1:2:5:2","0:21:5:2","1:3:5:3","0:28:5:2","1:4:5:4","2:22","0:16:5:3","0:24:5:3","0:32:5:3","2:23","0:18:5:4","0:27:5:4","0:36:5:4","2:24","0:20:5:5","0:30:5:5","0:40:5:5","2:25","0:16:6:2","1:2:6:2","0:24:6:2","1:3:6:3","0:32:6:2","1:4:6:4","2:26","0:18:6:3","0:27:6:3","0:36:6:3","2:27","0:20:6:4","0:30:6:4","0:40:6:4","2:28","0:22:6:5","0:33:6:5","0:44:6:5","2:29","0:18:7:2","1:2:7:2","0:27:7:2","1:3:7:3","0:36:7:2","1:4:7:4","2:30","0:20:7:3","0:30:7:3","0:40:7:3","2:31","0:22:7:4","0:33:7:4","0:44:7:4","2:32","0:24:7:5","0:36:7:5","0:48:7:5","2:33","0:20:8:2","1:2:8:2","0:30:8:2","1:3:8:3","0:40:8:2","1:4:8:4","2:34","0:22:8:3","0:33:8:3","0:44:8:3","2:35","0:24:8:4","0:36:8:4","0:48:8:4","2:36","0:26:8:5","0:39:8:5","0:52:8:5","2:37"],"variants":[[1,0,1,2,3,4,5],[1,6,7,8,2,9,10,11],[1,12,13,14,5,3,15,16],[1,17,1,2,4,8,9],[1,18,7,8,9,14,2],[1,19,13,14,3,20,8],[1,21,1,2,5,4,16],[1,22,7,8,14,9,23,24],[1,25,13,14,26,3,5],[1,27,1,2,16,4,10,28],[1,29,7,8,20,9,15,3],[1,30,13,14,31,3,32,11],[1,33,34,5,3,4,16,2],[1,35,36,14,2,9,15,16],[1,37,38,26,5,3,39,15],[1,40,34,5,2,4,10,24],[1,41,36,14,8,9,20],[1,42,38,26,14,3,43,23],[1,44,34,5,4,14,3],[1,45,36,14,9,26,5],[1,46,38,26,3,31,14],[1,47,34,5,16,4,23,9],[1,48,36,14,20,9,32,11],[1,49,38,26,31,3,50,10],[1,51,52,16,3,4,14,5],[1,53,54,20,2,9,32,23],[1,55,56,31,5,3,57,39],[1,58,52,16,2,4,23,11],[1,59,54,20,8,9,39,14],[1,60,56,31,14,3,61,32],[1,62,52,16,5,4,15,2],[1,63,54,20,14,9,43,10],[1,64,56,31,26,3,65],[1,66,52,16,4,20,24],[1,67,54,20,9,31,16],[1,68,56,31,3,69,20],[1,70,71,14,3,4,15,16],[1,72,73,39,2,9,31,26],[1,74,75,65,5,3,76,57],[1,77,71,14,2,4,20,8],[1,78,73,39,8,9,50,20],[1,79,75,65,14,3,80,50],[1,81,71,14,5,4,26],[1,82,73,39,14,9,57,15],[1,83,75,65,26,3,84,31],[1,85,71,14,16,4,32,11],[1,86,73,39,20,9,61,23],[1,87,75,65,31,3,88,43],[1,89,90,15,3,4,26,14],[1,91,92,50,2,9,61,43],[1,93,94,84,5,3,95,76],[1,96,90,15,2,4,32,10],[1,97,92,50,8,9,65,39],[1,98,94,84,14,3,99,69],[1,100,90,15,5,4,39,16],[1,101,92,50,14,9,69,32],[1,102,94,84,26,3,103,65],[1,104,90,15,16,4,43,8],[1,105,92,50,20,9,76,26],[1,106,94,84,31,3,107,61],[1,108,109,26,3,4,39,15],[1,110,111,65,2,9,76,57],[1,112,113,103,5,3,114,95],[1,115,109,26,2,4,43,23],[1,116,111,65,8,9,80,50],[1,117,113,103,14,3,118,88],[1,119,109,26,5,4,31,14],[1,120,111,65,14,9,84,31],[1,121,113,103,26,3,122,84],[1,123,109,26,16,4,50,10],[1,124,111,65,20,9,88,43],[1,125,113,103,31,3,126,80]],"weight":72},"science-mixture":{"title":"Смесь","patterns":["Смешивают %d% и %d% растворы, чтобы получить %d г %d% раствора. Сколько граммов %d% раствора нужно?","%d% ровно посередине между %d% и %d%, поэтому нужны равные массы.","%d г","Смешивают %d% и %d% растворы, чтобы получить %d %d г %d% раствора. Сколько граммов %d% раствора нужно?"],"strings":["0:10:30:600:20:30","1:20:10:30","2:300","2:60","2:120","2:180","2:360","2:450","0:10:30:800:20:30","2:400","2:80","2:160","2:240","2:480","2:600","3:10:30:1:000:20:30","2:500","2:100","2:200","2:750","3:10:30:1:200:20:30","2:720","2:900","3:10:30:1:400:20:30","2:700","2:140","2:280","2:420","2:840","2:1050","3:10:30:1:600:20:30","2:800","2:320","2:960","2:1200"],"variants":[[12,0,1,2,3,4,5,6,7],[12,8,1,9,10,11,12,13,14],[12,15,1,16,17,18,2,14,19],[12,20,1,14,4,12,6,21,22],[12,23,1,24,25,26,27,28,29],[12,30,1,31,11,32,13,33,34]],"weight":72},"science-prices":{"title":"Два чека","patterns":["%d блокнота и карандаш стоят %d рублей, блокнот и карандаш — %d. Сколько стоит карандаш?","Разница чеков даёт цену блокнота — %d. Вычитаем её из меньшего чека.","%d руб."],"strings":["0:2:8:5","1:3","2:2","2:3","2:5","2:6","0:2:9:6","2:4","0:2:10:7","2:7","0:2:11:8","2:8","0:2:10:6","1:4","0:2:11:7","0:2:12:8","0:2:13:9","2:9","0:2:12:7","1:5","2:10","0:2:13:8","0:2:14:9","0:2:15:10","0:2:14:8","1:6","2:12","0:2:15:9","0:2:16:10","0:2:17:11","2:11","0:2:16:9","1:7","2:14","0:2:17:10","0:2:18:11","0:2:19:12","0:2:18:10","1:8","2:16","0:2:19:11","0:2:20:12","0:2:21:13","2:13"],"variants":[[3,0,1,2,3,4,5],[3,6,1,3,5,7,2],[3,8,1,7,3,9,5,4],[3,10,1,4,3,11,5],[3,12,13,2,7,5,11,3],[3,14,13,3,7,9,11],[3,15,13,7,11,4,3],[3,16,13,4,7,17,11,5],[3,18,19,2,4,9,20,3],[3,21,19,3,4,11,20,7],[3,22,19,7,4,17,20],[3,23,19,4,20,5,7],[3,24,25,2,5,11,26,3],[3,27,25,3,5,17,26,7],[3,28,25,7,5,20,26,4],[3,29,25,4,5,30,26],[3,31,32,2,9,17,33,3],[3,34,32,3,9,20,33,7],[3,35,32,7,9,30,33,4],[3,36,32,4,9,26,33,5],[3,37,38,2,11,20,39,3],[3,40,38,3,11,30,39,7],[3,41,38,7,11,26,39,4],[3,42,38,4,11,43,39,5]],"weight":72},"science-rectangle":{"title":"Длина и ширина","patterns":["Периметр прямоугольника %d, длина на %d больше ширины. Найдите площадь.","Ширина %d, длина %d. Площадь — произведение сторон.","%d"],"strings":["0:16:2","1:3:5","2:15","2:9","2:25","2:30","2:8","0:18:3","1:3:6","2:18","2:36","2:17","2:19","0:20:4","1:3:7","2:21","2:49","2:42","2:10","0:22:5","1:3:8","2:24","2:64","2:48","2:11","0:20:2","1:4:6","2:16","0:22:3","1:4:7","2:28","2:56","0:24:4","1:4:8","2:32","2:12","0:26:5","1:4:9","2:81","2:72","2:13","0:24:2","1:5:7","2:35","2:70","0:26:3","1:5:8","2:40","2:80","0:28:4","1:5:9","2:45","2:90","2:14","0:30:5","1:5:10","2:50","2:100","0:28:2","1:6:8","2:96","0:30:3","1:6:9","2:54","2:108","0:32:4","1:6:10","2:60","2:120","0:34:5","1:6:11","2:66","2:121","2:132","0:32:2","1:7:9","2:63","2:126","0:34:3","1:7:10","2:140","0:36:4","1:7:11","2:77","2:154","0:38:5","1:7:12","2:84","2:144","2:168","0:36:2","1:8:10","2:160","0:38:3","1:8:11","2:88","2:176","0:40:4","1:8:12","2:192","2:20","0:42:5","1:8:13","2:104","2:169","2:208"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,9,3,10,11,12],[3,13,14,15,3,16,17,18],[3,19,20,21,3,22,23,24],[3,25,26,21,27,10,23,18],[3,28,29,30,27,16,31,24],[3,32,33,34,27,22,35],[3,36,37,10,27,38,39,40],[3,41,42,43,4,16,44,35],[3,45,46,47,4,22,48,40],[3,49,50,51,4,38,52,53],[3,54,55,56,4,57,2],[3,58,59,23,10,22,60,53],[3,61,62,63,10,38,64,2],[3,65,66,67,10,57,68,27],[3,69,70,71,10,72,73,11],[3,74,75,76,16,38,77,27],[3,78,79,44,16,57,80,11],[3,81,82,83,16,72,84,9],[3,85,86,87,16,88,89,12],[3,90,91,48,22,57,92,9],[3,93,94,95,22,72,96,12],[3,97,98,60,22,88,99,100],[3,101,102,103,22,104,105,15]],"weight":72},"science-river":{"title":"Течение","patterns":["Скорость лодки по течению %d км/ч, против течения — %d км/ч. Какова скорость течения?","Разница скоростей — удвоенная скорость течения: %d ÷ %d.","%d км/ч"],"strings":["0:10:6","1:4:2","2:2","2:4","2:8","2:5","2:3","0:12:6","1:6:2","2:6","2:9","0:14:6","1:8:2","2:10","2:7","0:16:6","1:10:2","2:11","0:12:8","0:14:8","0:16:8","2:12","0:18:8","2:13","0:14:10","0:16:10","0:18:10","2:14","0:20:10","2:15","0:16:12","0:18:12","0:20:12","2:16","0:22:12","2:17","0:18:14","0:20:14","0:22:14","2:18","0:24:14","2:19","0:20:16","0:22:16","0:24:16","2:20","0:26:16","2:21"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,6,9,10,2,3],[3,11,12,3,4,13,14,6],[3,15,16,5,13,17,4,6],[3,18,1,2,3,13,9],[3,19,8,6,9,17,14,3],[3,20,12,3,4,21,6,5],[3,22,16,5,13,23,10,3],[3,24,1,2,3,21,14,5],[3,25,8,6,9,23,4,5],[3,26,12,3,4,27,10,5],[3,28,16,5,13,29,3,9],[3,30,1,2,3,27,4,9],[3,31,8,6,9,29,10],[3,32,12,3,4,33,13,9],[3,34,16,5,13,35,17,9],[3,36,1,2,3,33,10,14],[3,37,8,6,9,35,13,14],[3,38,12,3,4,39,17,14],[3,40,16,5,13,41,21,14],[3,42,1,2,3,39,13,4],[3,43,8,6,9,41,17,4],[3,44,12,3,4,45,21],[3,46,16,5,13,47,23,4]],"weight":72},"science-sum-difference":{"title":"Сумма и разность","patterns":["Сумма x и y равна %d, разность x − y равна %d. Найдите произведение xy.","Меньшее число — %d, большее — %d. Перемножаем их.","%d"],"strings":["0:10:4","1:3:7","2:21","2:15","2:25","2:10","2:12","0:12:6","1:3:9","2:27","2:18","2:36","0:14:8","1:3:11","2:33","2:49","2:14","2:24","0:16:10","1:3:13","2:39","2:64","2:16","2:30","0:12:4","1:4:8","2:32","0:14:6","1:4:10","2:40","2:28","0:16:8","1:4:12","2:48","0:18:10","1:4:14","2:56","2:81","0:14:4","1:5:9","2:45","2:35","2:20","0:16:6","1:5:11","2:55","0:18:8","1:5:13","2:65","0:20:10","1:5:15","2:75","2:50","2:100","0:16:4","1:6:10","2:60","0:18:6","1:6:12","2:72","2:54","0:20:8","1:6:14","2:84","0:22:10","1:6:16","2:96","2:66","2:121","2:22","0:18:4","1:7:11","2:77","2:63","0:20:6","1:7:13","2:91","2:70","2:42","0:22:8","1:7:15","2:105","0:24:10","1:7:17","2:119","2:144","0:20:4","1:8:12","2:80","0:22:6","1:8:14","2:112","2:88","0:24:8","1:8:16","2:128","0:26:10","1:8:18","2:104","2:169","2:26"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,9,10,11,6],[3,12,13,14,2,15,16,17],[3,18,19,20,17,21,22,23],[3,24,25,26,17,11,6,22],[3,27,28,29,30,15,16,17],[3,31,32,33,26,21,22],[3,34,35,36,11,37,10,29],[3,38,39,40,41,15,16,42],[3,43,44,45,29,21,22,23],[3,46,47,48,40,37,10,29],[3,49,50,51,52,53,42],[3,54,55,56,33,21,22,17],[3,57,58,59,60,37,10,11],[3,61,62,63,56,53,42,33],[3,64,65,66,67,68,69,56],[3,70,71,72,73,37,10,30],[3,74,75,76,77,53,42,78],[3,79,80,81,72,68,69,36],[3,82,83,84,63,85,17,77],[3,86,87,66,88,53,42,26],[3,89,90,91,92,68,69,33],[3,93,94,95,66,85,17,21],[3,96,97,85,98,99,100,88]],"weight":72},"science-two-conditions":{"title":"Два условия","patterns":["x + y = %d, %dx + y = %d. Чему равно y?","Вычитая первое уравнение из второго, получаем x = %d. Затем y = %d − %d.","%d","-%d"],"strings":["0:5:2:8","1:3:5:3","2:2","2:3","2:5","2:6","2:1","0:6:2:9","1:3:6:3","2:0","2:4","0:7:2:10","1:3:7:3","2:7","3:1","0:8:2:11","1:3:8:3","2:8","3:2","0:6:2:10","1:4:6:4","0:7:2:11","1:4:7:4","0:8:2:12","1:4:8:4","0:9:2:13","1:4:9:4","2:9","0:7:2:12","1:5:7:5","2:10","0:8:2:13","1:5:8:5","0:9:2:14","1:5:9:5","0:10:2:15","1:5:10:5","0:8:2:14","1:6:8:6","2:12","0:9:2:15","1:6:9:6","0:10:2:16","1:6:10:6","0:11:2:17","1:6:11:6","2:11","0:9:2:16","1:7:9:7","2:14","0:10:2:17","1:7:10:7","0:11:2:18","1:7:11:7","0:12:2:19","1:7:12:7","0:10:2:18","1:8:10:8","2:16","0:11:2:19","1:8:11:8","0:12:2:20","1:8:12:8","0:13:2:21","1:8:13:8","2:13"],"variants":[[3,0,1,2,3,4,5,6],[3,7,8,3,5,9,2,10],[3,11,12,10,3,13,5,14],[3,15,16,4,3,17,5,18],[3,19,20,2,10,5,17],[3,21,22,3,10,13,17,6],[3,23,24,10,17,9,3,4],[3,25,26,4,10,27,17,14],[3,28,29,2,4,13,30,3],[3,31,32,3,4,17,30,2],[3,33,34,10,4,27,30,6],[3,35,36,4,30,9,10,5],[3,37,38,2,5,17,39,10],[3,40,41,3,5,27,39],[3,42,43,10,5,30,39,2],[3,44,45,4,5,46,39,6],[3,47,48,2,13,27,49,4],[3,50,51,3,13,30,49,10],[3,52,53,10,13,46,49,3],[3,54,55,4,13,39,49,2],[3,56,57,2,17,30,58,5],[3,59,60,3,17,46,58,4],[3,61,62,10,17,39,58],[3,63,64,4,17,65,58,3]],"weight":72},"science-wheels":{"title":"Колёса","patterns":["На площадке %d велосипедов и трёхколёсных машинок. Всего %d колёс. Сколько трёхколёсных машинок?","Если бы всё было двухколёсным, было бы %d колёс. Каждое лишнее колесо означает одну машинку.","%d"],"strings":["0:5:12","1:10","2:2","2:3","2:4","2:1","0:6:15","1:12","2:5","2:0","0:7:18","1:14","2:6","0:8:21","1:16","2:7","0:6:14","0:7:17","0:8:20","0:9:23","1:18","2:8","0:7:16","0:8:19","0:9:22","0:10:25","1:20","2:9","0:8:18","0:9:21","0:10:24","0:11:27","1:22","2:10","0:9:20","0:10:23","0:11:26","0:12:29","1:24","2:11","0:10:22","0:11:25","0:12:28","0:13:31","1:26","2:12"],"variants":[[3,0,1,2,3,4,5],[3,6,7,3,8,9,4],[3,10,11,4,3,12,5,8],[3,13,14,8,3,15,2,4,12],[3,16,7,2,4,8,3],[3,17,11,3,4,12,5],[3,18,14,4,15,9,8],[3,19,20,8,4,21,5,12],[3,22,11,2,8,12,3],[3,23,14,3,8,15,2,4],[3,24,20,4,8,21,5],[3,25,26,8,27,9,12],[3,28,14,2,12,15,4,3],[3,29,20,3,12,21,4],[3,30,26,4,12,27,2,8],[3,31,32,8,12,33,5],[3,34,20,2,15,21,8,4,3],[3,35,26,3,15,27,4,8],[3,36,32,4,15,33,3,8],[3,37,38,8,15,39,2,12],[3,40,26,2,21,27,12,8,3],[3,41,32,3,21,33,8,4],[3,42,38,4,21,39,12,8],[3,43,44,8,21,45,3,12]],"weight":72}}};
+  const game=window.Economy, byID=new Map(definitions.map(it=>[it.id,it]));
+  function loadProgress(){
+    const saved=game.progress("quests")||{};
+    return {active:null,wins:0,losses:0,result:null,...saved,history:saved.history||{},cooldowns:saved.cooldowns||{}};
+  }
+  let state=loadProgress();
+  const copy = () => JSON.parse(JSON.stringify(state));
+  let host=null, overlay=null, frame=null, district=null, selected=null, cancelDialog=false, timer=null;
+  function commit(next,delta=0,cue=null){
+    if (!game.updateProgress("quests",next,{integrals:delta})) return false;
+    state=next;
+    // A restored result can be shown many times. Only the foreground transition
+    // that actually committed the answer, start or result produces its tone.
+    if(cue && !document.hidden && visible())window.DuoAudio?.play(cue);
+    return true;
+  }
+  function shuffle(list){
+    const shuffled=list.slice();for(let i=shuffled.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];}return shuffled;
+  }
+  const nonce = () => Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
+  function questions(id) {
+    const groups=bank[id], previous=state.history[id]||[], all=Object.keys(groups);
+    const ordered=shuffle(all.filter(k=>!previous.includes(k))).concat(shuffle(all.filter(k=>previous.includes(k))));
+    return ordered.slice(0,3).map(f=>{
+      // Each row represents one or more operand triples from the iPhone generator.
+      // Weights retain its conditional draw (e.g. c ranges from 2 to min(5,a)).
+      const family=groups[f];
+      let roll=Math.random()*family.weight;
+      const [,prompt,explanation,correct,...distractors]=family.variants.find(row=>(roll-=row[0])<0) || family.variants[family.variants.length-1];
+      function expand(index){
+        const [template,...numbers]=family.strings[index].split(":");let i=0;
+        return family.patterns[template].replace(/%d/g,()=>numbers[i++]);
+      }
+      const answer=expand(correct), wrong=shuffle(distractors).slice(0,3).map(expand);
+      return {id:nonce(),family:f,title:family.title,prompt:expand(prompt),choices:shuffle([answer,...wrong]),answer,explanation:expand(explanation)};
+
+    });
+  }
+  const retryAt=it=>Number(state.cooldowns[it.id])||0;
+  function availability(it,now,until=retryAt(it)){
+    if(state.active?.definition===it.id)return "active";
+    if(!game.owned(it.resource))return "locked";
+    if(until>now)return "cooldown";
+    return state.active?"busy":"ready";
+  }
+  function available(it,now=Date.now()){return availability(it,now)==="ready";}
+  function status(id,now=Date.now()){
+    const it=byID.get(id);if(!it)return null;
+    const until=retryAt(it),kind=availability(it,now,until);
+    return {kind,retryAt:until,countdown:kind==="cooldown"?prettyTime(until-now):""};
+  }
+  function availableCount(id) {return definitions.filter(it=>(!id||it.district===id)&&available(it)).length;}
+  function stake(it){const s=game.hud();return Math.min(1e250,it.rewardSeconds*Math.max(s.cps,s.clickPower));}
+  function start(id,now=Date.now()) {
+    const it=byID.get(id);if(!it || !available(it,now))return false;
+    const next=copy(), list=questions(id);
+    next.active={id:nonce(),definition:id,index:0,stake:stake(it),deadline:now+60000,selected:null,review:false,list};
+    next.history[id]=(next.history[id]||[]).concat(list.map(q=>q.family)).slice(-6);
+    next.result=null;return commit(next,0,"click");
+  }
+  function finish(won,message,end,timeout=false) {
+    const run=state.active;if(!run)return false;
+    const q=run.list[run.index], next=copy(), actual=won?run.stake:Math.min(game.hud().balance,run.stake*0.5);
+    next.active=null; next.cooldowns[run.definition]=end+byID.get(run.definition).minutes*60000;
+    next[won?"wins":"losses"]++;
+    next.result={id:run.id,title:byID.get(run.definition).title,won,actual,explanation:message,correct:q.answer,
+      selected:run.selected===null?null:q.choices[run.selected],timeout,seen:false};
+    return commit(next,won?actual:-actual,won?"golden":"loss");
+  }
+  function settleTimeout(now=Date.now()){
+    const r=state.active;
+    if (!r || r.review || now<r.deadline)return false;
+    return finish(false,"Время на ответ истекло. "+r.list[r.index].explanation,r.deadline,true);
+  }
+  function check(runID,qID,now){
+    if (settleTimeout(now)) return null;
+    const run=state.active;
+    return run && run.id===runID && run.list[run.index].id===qID ? run:null;
+  }
+  function choose(runID,qID,choice,now=Date.now()){
+    const run=check(runID,qID,now);
+    if(!run || run.review || !Number.isInteger(choice) || choice<0 || choice>=run.list[run.index].choices.length)return false;
+    const next=copy();next.active.selected=choice;return commit(next);
+  }
+  function confirm(runID,qID,now=Date.now()){
+    const r=check(runID,qID,now);if(!r || r.review || r.selected===null)return false;
+    const q=r.list[r.index], ok=q.choices[r.selected]===q.answer;
+    if(!ok||r.index===2)return finish(ok,q.explanation,now);
+    const next=copy();next.active.review=true;next.active.deadline=null;return commit(next,0,"correct");
+  }
+  function advance(runID,qID,now=Date.now()){
+    const r=check(runID,qID,now);if(!r||!r.review||r.index>=2)return false;
+    const next=copy();next.active.index++;next.active.review=false;next.active.selected=null;next.active.deadline=now+60000;
+    return commit(next);
+  }
+  function returnToMap(resultID) {
+    if (!state.result || state.result.id!==resultID || state.result.seen) return;
+    const next=copy();
+    next.result.seen=true;
+    if (!commit(next)) return;
+    if (overlay) close();
+    window.App.route("world");
+    const districtClose=document.querySelector('.pg-world .pg-overlay[data-kind="district"]:not([hidden]) .pg-close');
+    const focusTarget=districtClose || document.querySelector('#tabs [data-route="world"]');
+    focusTarget?.focus({preventScroll:true});
+  }
+  const {el,btn,format,dialog,dismissDialog}=window.DuoPanel;
+  function prettyTime(ms) {
+    const t=Math.max(0,Math.ceil(ms/1000));
+    if(t>=3600)return Math.floor(t/3600)+":"+String(Math.floor(t/60)%60).padStart(2,"0")+":"+String(t%60).padStart(2,"0");
+    return Math.floor(t/60)+":"+String(t%60).padStart(2,"0");
+  }
+  const visible=()=>host && host.isConnected && host.querySelector(".qc-wrap");
+  function draw(){
+    if(!host)return;
+    const previous=host.querySelector(".qc-wrap");
+    settleTimeout();
+    const outer=el("div","qc-wrap"),sc=el("div","hc-scroll qc-scroll");
+    const ownedItems=game.snapshot().resources, run=state.active, pending=state.result && !state.result.seen;
+    outer.dataset.view=run?(run.review?"review":"question"):pending?"result":selected?"preparation":"list";
+    const shellTitle=frame && frame.querySelector("#sheet-title,.qc-external-title");
+    const title=run?byID.get(run.definition).title:"Задания";
+    if(shellTitle)shellTitle.textContent=title;
+    else {const header=el("header","qc-local-head");header.append(el("h2",null,title));outer.append(header);}
+    const closeButton=frame && frame.querySelector("#close-sheet,.hc-standalone-head button");
+    if(closeButton)closeButton.setAttribute("aria-label",run?"Выйти из задания":pending?"На карту мира":selected?"К списку заданий":"Закрыть");
+    sc.setAttribute("role","region");sc.setAttribute("aria-label",title);
+    outer.append(sc);
+    function action(label,fn,cls="hc-action"){return btn(label,()=>{fn();draw();},cls);}
+    function stakePanel(amount,detail){
+      const panel=el("div","qc-stake");
+      panel.append(el("strong",null,"Награда"),el("b",null,format(amount)+" ∫"),el("small",null,"Штраф за задание · "+format(amount/2)+" ∫"));
+      return panel;
+    }
+    function hero(it,big=false){
+      const portrait=el("img",big?"qc-person qc-person-big":"qc-person");
+      const index=ownedItems.findIndex(r=>r.id===it.resource);
+      const path="art/resource-"+String(index).padStart(2,"0")+".webp";
+      portrait.src=window.duoArt?window.duoArt(path):path;portrait.alt="";return portrait;
+    }
+    function footer(button) {const foot=el("div","qc-foot");foot.append(button);outer.append(foot);}
+    function feedback(q,ok){
+      const box=el("article","qc-feedback");
+      box.append(el("span",ok?"qc-emblem qc-good":"qc-emblem qc-bad",ok?"✓":"×"),
+        el("h3",null,ok?"Верно!":"Ответ неверный"));
+      const text=el("div","qc-review");text.append(el("small",null,"Правильный ответ"),el("b","qc-good",q.answer),el("p",null,q.explanation));box.append(text);return box;
+    }
+    if(run){
+      const it=byID.get(run.definition), q=run.list[run.index];
+      const meta=el("div","qc-meta");meta.append(el("strong",null,"Вопрос "+(run.index+1)+" из 3"));
+      const bars=el("div","qc-bars");
+      for(let i=0;i<3;i++){const bar=el("i");if(i<run.index||i===run.index&&run.review)bar.className="done";bars.append(bar);}
+      meta.append(bars);
+      if(!run.review){
+        const clock=el("span","qc-clock",prettyTime(run.deadline-Date.now()));clock.setAttribute("aria-label","Осталось на вопрос");meta.append(clock);
+      }
+      outer.insertBefore(meta,sc);
+      if(!run.review){
+        const card=el("article","qc-question");
+        const h=el("h3","qc-question-heading");const symbol=el("i",null,"ƒ");symbol.setAttribute("aria-hidden","true");h.append(symbol,el("span",null,q.title));
+        card.append(h,el("p","qc-prompt",q.prompt));sc.append(card);
+        const choices=el("div","qc-options");card.append(choices);
+        const submit=action("Подтвердить ответ",()=>confirm(run.id,q.id));submit.disabled=run.selected===null;
+        q.choices.forEach((answer,index)=>{
+          const b=btn(answer,()=>{
+            if(choose(run.id,q.id,index)){
+              for(const [i,node] of Array.from(choices.children).entries())node.setAttribute("aria-pressed",String(i===index));
+              submit.disabled=false;
+            }else draw();
+          },"qc-choice");
+          b.setAttribute("aria-pressed",String(index===run.selected));choices.append(b);
+        });
+        card.append(stakePanel(run.stake));footer(submit);
+      }else{sc.append(feedback(q,true));footer(action("Следующий вопрос",()=>advance(run.id,q.id)));}
+      if(cancelDialog){
+        const veil=el("div","qc-veil"), panel=el("section","qc-decision");panel.setAttribute("role","alertdialog");panel.setAttribute("aria-modal","true");panel.setAttribute("aria-label","Покинуть испытание?");
+        for(const sibling of outer.children)sibling.setAttribute("inert","");
+        veil.addEventListener("keydown",event=>{
+          if(event.key!=="Tab")return;
+          const choices=Array.from(panel.querySelectorAll("button"));
+          const first=choices[0],last=choices[choices.length-1];
+          if(event.shiftKey&&document.activeElement===first){event.preventDefault();event.stopPropagation();last.focus();}
+          else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();event.stopPropagation();first.focus();}
+        });
+        panel.append(el("h3",null,"Покинуть испытание?"),el("p",null,"При выходе вы потеряете "+format(Math.min(game.hud().balance,run.stake*0.5))+" ∫."),
+          action("Продолжить решать",()=>{cancelDialog=false;}),action("Выйти из испытания",()=>{cancelDialog=false;finish(false,"Вы вышли из начатого испытания.",Date.now());},"hc-small nav-control"));veil.append(panel);outer.append(veil);
+      }
+    }else if(pending){
+      const r=state.result;
+      if(r.selected!==null&&!r.timeout)sc.append(feedback({answer:r.correct,explanation:r.explanation},r.won));
+      else{const box=el("article","qc-feedback");box.append(el("span","qc-emblem qc-bad","×"),el("h3",null,"Испытание завершено"),el("p",null,r.explanation));if(r.timeout)box.append(el("p",null,"Правильный ответ: "+r.correct));sc.append(box);}
+      const sum=el("section","qc-stake "+(r.won?"qc-win":"qc-loss"));sum.append(el("strong",null,r.won?"Все три ответа верны · награда":"Потеря"),el("b",null,format(r.actual)+" ∫"));sc.append(sum);
+      footer(btn("На карту мира",()=>returnToMap(r.id),"hc-action qc-return nav-control"));
+    }else if(selected && byID.has(selected)){
+      const it=byID.get(selected),ready=available(it);
+      const prep=el("article","qc-prep");
+      const h=el("div","qc-title-row");h.append(hero(it,true),el("h3",null,it.title));
+      outer.dataset.quest=it.id;
+      prep.append(action("Все задания",()=>{selected=null;},"qc-back nav-control"),h,
+        el("p","qc-prompt",it.subtitle+". Три вопроса, по минуте на каждый. Время идёт и при свёрнутой игре."),
+        el("p","qc-muted","Три верных ответа приносят весь приз. Если ошибиться, выйти или не успеть ответить, спишется половина приза."),
+        el("small","qc-muted","Уровень "+it.level+" · новая попытка через "+it.minutes+" мин после завершения."),stakePanel(stake(it)));
+      sc.append(prep);
+      const go=action(ready?"Начать задание":"Новая попытка через "+prettyTime(state.cooldowns[it.id]-Date.now()),()=>{if(start(it.id))selected=null;});go.disabled=!ready;footer(go);
+    }else{
+      const list=definitions.filter(it=>(!district||it.district===district) && game.owned(it.resource)>0);
+      sc.append(el("h3","qc-intro","Выберите испытание"),el("p","qc-lead","В каждом испытании три вопроса. На ответ даётся одна минута."));
+      if(!list.length){
+        const it=definitions.find(it=>!district || it.district===district);
+        const helper=it && ownedItems.find(r=>r.id===it.resource);
+        sc.append(el("p","qc-empty",helper?.discovered?"Пригласите жителя «"+helper.name+"» из раздела «Ресурсы», чтобы открыть задание.":"Задания появятся, когда вы пригласите жителей из «Ресурсов»."));
+      }
+      const catalog=el("div","qc-catalog");
+      if(list.length)sc.append(catalog);
+      list.forEach(it=>{
+        const ready=available(it),b=action("",()=>{selected=it.id;},"qc-listing"+(ready?" ready":""));
+        b.dataset.quest=it.id;
+        const body=el("span","qc-list-copy");body.append(el("strong",null,it.title),el("span",null,it.subtitle),
+          el("small",null,"Уровень "+it.level+" · отдых "+it.minutes+" мин"),el("small",ready?"qc-good":"",ready?"✧ Доступно":"Новая попытка через "+prettyTime(state.cooldowns[it.id]-Date.now())));
+        b.append(hero(it),body,el("b","qc-chevron","›"));catalog.append(b);
+      });
+      const tally=el("div","qc-counts");tally.append(el("span",null,"Победы: "+format(state.wins)),el("span",null,"Попытки: "+format(state.wins+state.losses)));sc.append(tally);
+    }
+    host.replaceChildren(outer);
+    if(previous?.dataset.view==="list" && outer.dataset.view==="preparation"){
+      outer.querySelector(".qc-back")?.focus({preventScroll:true});
+    }else if(previous?.dataset.view==="preparation" && outer.dataset.view==="list"){
+      const origin=outer.querySelector('.qc-listing[data-quest="'+previous.dataset.quest+'"]');
+      (origin||closeButton)?.focus({preventScroll:true});
+    }else if(previous?.querySelector(".qc-decision") && run && !cancelDialog){
+      closeButton?.focus({preventScroll:true});
+    }
+  }
+  function render(container,id) {
+    host=container;frame=overlay || host.closest("#dialog-layer");
+    if(frame)frame.classList.add("qc-screen");
+    host.classList.add("qc-host");
+    district=byID.has(id)?byID.get(id).district:id || null;
+    selected=byID.has(id)?id:null;cancelDialog=false;draw();
+  }
+  function back(){
+    if(visible() && state.result && !state.result.seen){returnToMap(state.result.id);return true;}
+    if(cancelDialog&&visible()){cancelDialog=false;draw();return true;}
+    if(state.active&&visible()){cancelDialog=true;draw();const keep=host.querySelector(".qc-decision button");if(keep)keep.focus();return true;}
+    if(selected && visible() && !state.active && (!state.result||state.result.seen)){selected=null;draw();return true;}
+    if(overlay){close();return true;}return false;
+  }
+  function close(){
+    if(host)host.classList.remove("qc-host");
+    if(frame){frame.classList.remove("qc-screen");frame.querySelector("#close-sheet")?.setAttribute("aria-label","Закрыть");}
+    if(overlay){dismissDialog(overlay);overlay=null;}
+    frame=null;host=null;cancelDialog=false;
+  }
+  function open(id){
+    close();const d=dialog("Задания",back);overlay=d.frame;
+    // Inherit the current theme and keep a single title bar in the standalone route.
+    document.getElementById("station")?.append(overlay);
+    const head=overlay.querySelector(".hc-standalone-head");
+    head.prepend(el("h2","qc-external-title","Задания"));render(d.body,id);
+  }
+  function timeTick(){const finished=settleTimeout();if(!visible())return;if(finished)draw();else if(state.active && !state.active.review){const n=host.querySelector(".qc-clock");if(n){const left=state.active.deadline-Date.now();n.textContent=prettyTime(left);n.classList.toggle("qc-clock-low",left<=10000);}}}
+  function restartTimer(){clearInterval(timer);timer=null;if(!document.hidden){timeTick();timer=setInterval(timeTick,500);}}
+  document.addEventListener("visibilitychange",restartTimer);
+  window.addEventListener("duoresume",restartTimer);window.addEventListener("duopause",()=>{clearInterval(timer);timer=null;});
+  window.Quests={open,close,back,render,start,choose,confirm,advance,settleTimeout,availableCount,status,
+    wins:()=>state.wins, refresh:timeTick, unmount:close,active:()=>state.active,available:id=>byID.has(id)&&available(byID.get(id)),definitions,
+    refreshProgress(){state=loadProgress();}};
+  restartTimer();
+})();
+
+;
+// The phase, pawl geometry, fixed integration step and contact impulses follow
+// DailyWheelPhysics.swift. Odds are selected and persisted before the launch.
+window.DuoWheel=(()=>{
+  "use strict";
+  const rad=Math.PI/180, tau=2*Math.PI, dt=1/960;
+  const wrap=a=>(a%360+360)%360, clamp=(n,a,b)=>Math.min(b,Math.max(a,n));
+  function geometry(prizes){
+    let sum=0;const arcs=[],pegs=[];
+    for(const p of prizes){
+      const start=sum*3.6-90,end=(sum+p.weight)*3.6-90,steps=Math.max(1,Math.round((end-start)/15));
+      arcs.push({p,start,end,mid:(start+end)/2});
+      for(let i=0;i<steps;i++)pegs.push(start+(end-start)*i/steps);
+      sum+=p.weight;
+    }
+    return {arcs,pegs};
+  }
+  function rest(angle,pegs){
+    const pins=pegs.map(a=>[(a+angle)*rad]).map(([a])=>[Math.cos(a),Math.sin(a)+1.125]);
+    function clear(def){
+      const dx=-Math.sin(def*rad),dy=Math.cos(def*rad);
+      return pins.every(([x,y])=>{const along=clamp(x*dx+y*dy,.014,.115);return Math.hypot(along*dx-x,along*dy-y)>=.014+3.5/193.5;});
+    }
+    if(clear(0))return 0;
+    for(let i=1;i<=300;i++){if(clear(-i/4))return -i/4;if(clear(i/4))return i/4;}
+    return 0;
+  }
+  function simulate(start,speed,pegs,record=false){
+    const pins=pegs.map(d=>({p:wrap(d)*rad,x:Math.cos(d*rad),y:Math.sin(d*rad)})).sort((a,b)=>a.p-b.p);
+    const states=record?new Float32Array(23041*4):null,drag=Math.exp(-.43*dt),friction=.055*dt,r=.014+3.5/193.5,reach2=(.115+r)**2;
+    let a=start*rad,v=speed,p=rest(start,pegs)*rad,pv=0,total=0,mask=0,still=0,steps=0,peak=a,recoil=0;
+    function save(i){if(states){i*=4;states[i]=a;states[i+1]=v;states[i+2]=p;states[i+3]=total;}}
+    save(0);
+    for(let i=1;i<=23040;i++){
+      const lastA=a,lastP=p;v*=drag;v=v>0?Math.max(0,v-friction):Math.min(0,v+friction);
+      pv+=(-220*Math.sin(p)-6.8*pv)*dt;a+=v*dt;p+=pv*dt;
+      let next=0,lo=0,hi=pins.length;const phase=wrap(-90-a/rad)*rad;
+      while(lo<hi){const k=(lo+hi)>>1;if(pins[k].p<phase)lo=k+1;else hi=k;}
+      for(let pass=0;pass<5;pass++){
+        const ca=Math.cos(a),sa=Math.sin(a);let collided=false;
+        for(let offset=0;offset<5;offset++){
+          const ix=(lo+pins.length-2+offset)%pins.length, pin=pins[ix],px=pin.x*ca-pin.y*sa,py=pin.x*sa+pin.y*ca,ry=py+1.125;
+          if(px*px+ry*ry>=reach2)continue;
+          const dx=-Math.sin(p),dy=Math.cos(p),along=clamp(px*dx+ry*dy,.014,.115),qx=along*dx,qy=-1.125+along*dy,
+            sx=qx-px,sy=qy-py,dist=Math.sqrt(sx*sx+sy*sy),pen=r-dist;
+          if(pen<=0)continue;
+          const nx=sx/Math.max(dist,1e-9),ny=sy/Math.max(dist,1e-9),pl=qx*ny-(qy+1.125)*nx,wl=px*ny-py*nx,
+            inverse=pl*pl/.00020+wl*wl;
+          if(inverse<=1e-9)continue;
+          const closing=pv*pl-v*wl;
+          if(closing<0){const impulse=-1.08*closing/inverse;pv+=impulse*pl/.00020;v-=impulse*wl;if(!pass && !(mask&(1<<ix)) && -closing>.025)total++;}
+          const fix=Math.max(0,pen-.000015)/inverse;p+=fix*pl/.00020;a-=fix*wl;next|=1<<ix;collided=true;
+        }
+        if(!collided)break;
+      }
+      mask=next;
+      if(p<-.78){p=-.78;pv=Math.max(0,-pv*.12);}else if(p>.78){p=.78;pv=Math.min(0,-pv*.12);}
+      peak=Math.max(peak,a);recoil=Math.max(recoil,peak-a);steps=i;
+      still=Math.abs(v)<.0002&&Math.abs(pv)<.002&&Math.abs(a-lastA)<.000001&&Math.abs(p-lastP)<.000002?still+1:0;
+      if(still>=90){v=pv=0;save(i);break;}save(i);
+    }
+    return {a,p,recoil,settled:still>=90,steps,states};
+  }
+  const tipAngle=(wheel,def)=>wrap(Math.atan2(-1.125+.115*Math.cos(def*rad),-.115*Math.sin(def*rad))/rad-wheel+90)-90;
+  const yieldTask=()=>new Promise(resolve=>setTimeout(resolve,0));
+  async function plan(table,id,start,opts={},alive=()=>true){
+    const arc=table.arcs.find(a=>a.p.id===id);if(!arc)return null;
+    const turns=opts.turns??6+Math.floor(Math.random()*4),duration=opts.duration??(7.6+Math.random()*1.2),padding=Math.min(2.4,(arc.end-arc.start)/3);
+    const landing=arc.start+padding+(arc.end-arc.start-padding*2)*(opts.fraction??Math.random());
+    const remainder=wrap(-90-landing-start),target=(start+turns*360+remainder+(remainder<8?360:0))*rad;
+    function acceptable(f){
+      const pos=wrap(-f.a/rad)-90,tip=tipAngle(f.a/rad,f.p/rad);
+      return f.settled && f.recoil<=3*rad && f.a>=(start+turns*360)*rad && pos>arc.start+.6 && pos<arc.end-.6 && tip>arc.start+.3&&tip<arc.end-.3&&Math.abs(f.p)<8*rad&&Math.abs(f.a-target)<Math.PI;
+    }
+    let lo=0,lowA=start*rad,hi=Math.max(10,(target-start*rad)*.65+5),highA=lowA,found;
+    for(let i=0;i<6;i++){await yieldTask();if(!alive())return null;highA=simulate(start,hi,table.pegs).a;if(highA>=target)break;hi*=1.25;}
+    for(let i=0;i<78;i++){
+      await yieldTask();if(!alive())return null;
+      const speed=i<18?lo+(hi-lo)*clamp((target-lowA)/Math.max(1e-9,highA-lowA),.06,.94):
+        Math.max(.1,(lo+hi)/2+(Math.floor((i-18)/2)+1)*.006*(i%2?1:-1));
+      const f=simulate(start,speed,table.pegs);
+      if(acceptable(f)){found=speed;break;}
+      if(i<18){if(f.a<target){lo=speed;lowA=f.a;}else{hi=speed;highA=f.a;}}
+    }
+    if(!found)return null;
+    const f=simulate(start,found,table.pegs,true);
+    return {duration,finish:f.a/rad,sample(t){const pos=Math.round(clamp(t/duration,0,1)*f.steps)*4;
+      return {angle:f.states[pos]/rad,speed:f.states[pos+1]/rad*f.steps*dt/duration,deflection:f.states[pos+2]/rad,contact:f.states[pos+3]};}};
+  }
+  const enamels=['#0e575c','#263861','#612b33','#12474d','#422e57','#4d381f','#144a69','#522936'];
+  function metal(g,x=-140,y=-170,x2=142,y2=170){const lin=g.createLinearGradient(x,y,x2,y2);['#ffe3a6','#ca9449','#57301b','#ffe3a6','#57301b','#ca9449'].forEach((c,i)=>lin.addColorStop(i/5,c));return lin;}
+  function circle(g,x,y,r,color,stroke,w=1){g.beginPath();g.arc(x,y,r,0,tau);if(color){g.fillStyle=color;g.fill();}if(stroke){g.lineWidth=w;g.strokeStyle=stroke;g.stroke();}}
+  function line(g,x,y,X,Y,ink,w){g.beginPath();g.moveTo(x,y);g.lineTo(X,Y);g.strokeStyle=ink;g.lineWidth=w;g.stroke();}
+  function canvas(host,cls){const c=document.createElement('canvas');c.width=c.height=Math.min(1240,Math.max(640,Math.ceil((host.clientWidth||480)*Math.min(devicePixelRatio||1,2))));c.className=cls;host.append(c);const g=c.getContext('2d');g.scale(c.width/400,c.height/400);g.translate(200,200);return g;}
+  function housing(g){
+    circle(g,0,0,199,metal(g));circle(g,0,0,195.5,'#57301b');circle(g,0,0,194,null,'#ffe3a6bd',.9);circle(g,0,0,192,'#061319');circle(g,0,0,180.5,null,metal(g),2.8);
+    for(let i=0;i<120;i++){g.save();g.rotate(i*tau/120);const m=i%5===0;line(g,0,m?183:186,0,190,m?'#ffe3a6d9':'#ffe3a666',m?1:.6);g.restore();}
+    for(let i=0;i<4;i++){const a=(45+i*90)*rad,x=186*Math.cos(a),y=186*Math.sin(a);circle(g,x,y,3.6,metal(g,x-2,y-2,x+2,y+2));line(g,x-1.7,y+1,x+1.7,y-1,'#061319',.85);}
+  }
+  function face(g,table,start,images){
+    g.clearRect(-200,-200,400,400);g.save();g.scale(.89,.89);
+    table.arcs.forEach(({p,start:a,end:b,mid})=>{
+      const fill=g.createRadialGradient(0,0,0,0,0,210);fill.addColorStop(.1,'#061319');fill.addColorStop(.58,enamels[p.id]);fill.addColorStop(.8,enamels[p.id]);fill.addColorStop(1,'#061319');
+      g.beginPath();g.moveTo(0,0);g.arc(0,0,193.8,a*rad,b*rad);g.closePath();g.fillStyle=fill;g.fill();
+      for(const r of [71,76,164,169]){g.beginPath();g.arc(0,0,r,(a+1.8)*rad,(b-1.8)*rad);g.lineWidth=.7;g.strokeStyle=r>160?'#ffe3a66b':'#ffe3a63a';g.stroke();}
+      line(g,55*Math.cos(a*rad),55*Math.sin(a*rad),194*Math.cos(a*rad),194*Math.sin(a*rad),'#ca9449',1.5);
+      g.save();g.rotate(mid*rad);g.translate(179,0);g.fillStyle='#ffe3a6';g.beginPath();g.moveTo(-3.8,0);g.lineTo(0,-2);g.lineTo(3.8,0);g.lineTo(0,2);g.closePath();g.fill();g.restore();
+      g.save();g.rotate(mid*rad);g.translate(122.4,0);if(wrap(mid+start)>=90&&wrap(mid+start)<270)g.rotate(Math.PI);
+      g.textAlign='left';g.textBaseline='middle';g.fillStyle='#ffe3a6';g.font='bold 16px Georgia,serif';
+      const val=p.resourceID?'×'+IntegralNumbers.exact(p.count):IntegralNumbers.exact(p.integrals);
+      const textWidth=Math.min(58,g.measureText(val).width),left=-(textWidth+25)/2;
+      if(images.has(p.id))g.drawImage(images.get(p.id),left,-11.5,23,23);else{g.font='italic 25px Georgia,serif';g.fillText('∫',left+2,0);}
+      g.font='bold 16px Georgia,serif';g.fillText(val,left+25,0,textWidth);g.restore();
+    });
+    circle(g,0,0,194,null,'#ca9449',1.5);
+    for(const a of table.pegs){const x=Math.cos(a*rad)*193.5,y=Math.sin(a*rad)*193.5;circle(g,x,y,3.5,metal(g,x-2,y-4,x+2,y+3),'#ffe3a6db',.65);}
+    g.restore();
+  }
+  function themedButton(host){
+    const skin=document.createElement('span');skin.className='dw-skin';
+    const art=document.createElement('canvas'),glyph=document.createElement('img');
+    glyph.alt='';glyph.src=duoArt('art/formula.svg');skin.append(art);skin.append(glyph);host.append(skin);
+    const look=window.Appearance?.paintDisk?.(art) || window.Appearance?.visual?.('skins',window.Appearance.selection().skins);
+    skin.style.backgroundColor=look?.color || '#fffdf6';
+    if(look?.dark)glyph.classList.add('dw-light-glyph');
+  }
+  function mount(host,offer,snapshot,label){
+    const table=geometry(offer.prizes),start=360*Math.random(),images=new Map();
+    const holder=document.createElement('div');holder.className='dw-instrument';holder.setAttribute('role','img');
+    holder.setAttribute('aria-label',table.arcs.map(({p})=>label(p)+' — '+p.weight+'%').join('. '));host.append(holder);
+    housing(canvas(holder,'dw-case'));const dial=canvas(holder,'dw-dial');face(dial,table,start,images);
+    const hub=document.createElement('span');hub.className='dw-hub';holder.append(hub);themedButton(hub);
+    const pawl=document.createElement('span'),pin=document.createElement('span');pawl.className='dw-pawl';pin.className='dw-axle';holder.append(pawl,pin);
+    const update=(a,d)=>{dial.canvas.style.transform='rotate('+a+'deg)';pawl.style.transform='rotate('+d+'deg)';};
+    update(start,rest(start,table.pegs));
+    for(const {p} of table.arcs)if(p.resourceID){const i=snapshot.resources.findIndex(r=>r.id===p.resourceID);
+      if(i>=0){const img=new Image();img.onload=()=>{if(holder.isConnected && table.arcs.some(a=>a.p.id===p.id&&a.p.resourceID===p.resourceID)){images.set(p.id,img);face(dial,table,start,images);}};img.src=duoArt('art/resource-'+String(i).padStart(2,'0')+'.webp');}}
+    return {async spin(prize,onDone){
+      // A capped resource may be paid out as integrals during the atomic award.
+      const awarded=table.arcs.find(a=>a.p.id===prize.id);
+      if(awarded && awarded.p.resourceID!==prize.resourceID){
+        awarded.p=prize;images.delete(prize.id);face(dial,table,start,images);
+      }
+      const media=matchMedia('(prefers-reduced-motion: reduce)');let closed=false,raf=0,delay=0,lastTick=-1000,lastContact=0;
+      const live=()=>!closed&&holder.isConnected;
+      function finish(){
+        if(closed)return;closed=true;cancelAnimationFrame(raf);clearTimeout(delay);
+        document.removeEventListener('visibilitychange',visibility);window.removeEventListener('duopause',finish);
+        if(media.removeEventListener)media.removeEventListener('change',preference);else media.removeListener(preference);
+        if(holder.isConnected)onDone();
+      }
+      function visibility(){if(document.hidden)finish();}function preference(){if(media.matches)finish();}
+      document.addEventListener('visibilitychange',visibility);window.addEventListener('duopause',finish);
+      if(media.addEventListener)media.addEventListener('change',preference);else media.addListener(preference);
+      if(media.matches||document.hidden){finish();return;}
+      try{
+        const spin=await plan(table,prize.id,start,{},live);
+        if(!spin||!live()){finish();return;}
+        const t0=performance.now();
+        function show(t){
+          if(!live()){finish();return;}
+          const elapsed=(t-t0)/1000,s=spin.sample(elapsed);update(s.angle,s.deflection);
+          if(s.contact>lastContact){if(t-lastTick>=47){window.DuoAudio?.play('tick');lastTick=t;}lastContact=s.contact;}
+          if(elapsed<spin.duration)raf=requestAnimationFrame(show);
+          else delay=setTimeout(finish,900);
+        }
+        raf=requestAnimationFrame(show);
+      }catch(_){finish();}
+    }};
+  }
+  return {geometry,rest,plan,tipAngle,mount,themedButton};
+})();
+
+;
+// Local profile icon. Legacy index 0 is the explicitly selected standard portrait.
+window.PlayerAvatar=(()=>{
+  'use strict';
+  const symbols=Object.freeze(["","🦊","🐼","🐸","🐙","🦉","🐧","🐱","🦋","🐳","🐲","🤖","👾","👻","🌟","🌙","🪐","☄️","🌈","💎","🔥","⚡️","🍄","🌵","🍀","🌻","🚀","🛸","🎮","🎲","🧩","⚛️","🔮","🎓","🧪","🧬","🧠","🦄","🦝","🦦","🦈","🐬","🐢","🦀","🐝","🐌","🕷️","🐞","🌊","🌋","❄️","🍉","🍋","🍓","🍩","🍕","🎸","🎨","🎯","🪁","🛰️","🗿","💫"]);
+  const key='duo.avatar',numerals=['','I','II','III','IV','V','VI','VII','VIII','IX','X'];
+  function read(){
+    try{
+      const raw=localStorage.getItem(key);
+      if(raw!==null && /^(0|[1-9][0-9]*)$/.test(raw)){
+        const n=Number(raw);if(n<symbols.length)return n;
+      }
+    }catch(_){}
+    return null;
+  }
+  function store(index){
+    try{localStorage.setItem(key,String(index));}catch(_){}
+  }
+  let chosen=read();
+  if(chosen===null){
+    chosen=1+Math.floor(Math.random()*(symbols.length-1));
+    store(chosen);
+  }
+  function choose(index){
+    if(!Number.isInteger(index)||index<0||index>=symbols.length)return;
+    chosen=index;store(index);window.dispatchEvent(new Event('duoavatar'));
+  }
+  window.addEventListener('storage',event=>{
+    if(event.key!==key)return;
+    const next=read();
+    if(next!==null && next!==chosen){chosen=next;window.dispatchEvent(new Event('duoavatar'));}
+  });
+  function render(disc,index=chosen,prestige=0){
+    const level=Number.isInteger(prestige)&&prestige>=1&&prestige<=10?prestige:0;
+    if(disc.dataset.avatar===String(index) && disc.dataset.prestige===String(level))return;
+    disc.classList.add('avatar-disc');
+    disc.setAttribute('aria-hidden','true');disc.dataset.avatar=String(index);disc.dataset.prestige=String(level);
+    const glyph=document.createElement('span');glyph.className='avatar-glyph';
+    if(symbols[index])glyph.textContent=symbols[index];
+    else glyph.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="7.5" r="4"/><path d="M3 21c0-5.9 4-9.2 9-9.2s9 3.3 9 9.2z"/></svg>';
+    disc.replaceChildren(glyph);
+    if(level){
+      const badge=document.createElement('span');badge.className='avatar-rank';badge.textContent=numerals[level];disc.append(badge);
+    }
+  }
+  return Object.freeze({symbols,render,choose,get index(){return chosen},get symbol(){return symbols[chosen]}});
+})();
+
+;
+window.Extras = (() => {
+  "use strict";
+  const roman=["0","I","II","III","IV","V","VI","VII","VIII","IX","X"];
+  const format=IntegralNumbers.exact;
+  const avatar=()=>PlayerAvatar.symbol;
+  let panel=null, screen='',sub='stats',confirm=false,spinning=false,spinTimer;
+  let statsFields=null;
+  const labels=['За всё время','Баланс','В этой эпохе','В секунду','Нажатий','Помощников','Престиж','Исследований','Достижений','Решено заданий','Ошибок','Золотых интегралов','Новых вселенных'];
+  function writeStat(index,value){
+    const node=statsFields[index];
+    const text=node.firstChild;
+    if(!text)node.textContent=value;
+    else if(text.data!==value)text.data=value;
+  }
+  function updateLiveStats(now){
+    if(!statsFields)return;
+    const totals=LiveCounters.totals(now);
+    writeStat(0,totals.lifetime);
+    writeStat(1,format(totals.balance));
+    writeStat(2,format(totals.runEarned));
+  }
+  function stats(s){
+    const q=Economy.progress('quests')||{}, e=ExtraModel.load();
+    const values=[s.cps,s.clicks,s.totalHelpers,roman[s.prestigeLevel||0],
+      s.researchCount,window.Honors?.earnedIDs?.().size??0,q.wins||0,q.losses||0,e.goldenClicks,s.cosmicAscensions||0];
+    updateLiveStats();
+    values.forEach((value,i)=>{
+      writeStat(i+3,typeof value==='number'?(i===0?IntegralNumbers.rate(value):format(value)):value);
+    });
+  }
+  function updateProfileAvatars(){
+    if(!panel || (screen!=='profile'&&screen!=='settings'))return;
+    const current=panel.querySelector('[data-current-avatar]');
+    if(current)PlayerAvatar.render(current);
+    panel.querySelectorAll('[data-avatar-option]').forEach(button=>{
+      button.setAttribute('aria-pressed',String(Number(button.dataset.avatarOption)===PlayerAvatar.index));
+    });
+  }
+  window.addEventListener('duoavatar',updateProfileAvatars);
+  function profile(){
+    statsFields=null;
+    panel.innerHTML='<div class="ex-wrap ex-profile-page"><div class="ex-segments"><button data-sub="stats">Статистика</button><button data-sub="settings">Настройки</button></div><div class="ex-inner"></div></div>';
+    const inner=panel.querySelector('.ex-inner');
+    panel.querySelectorAll('[data-sub]').forEach(b=>{
+      b.setAttribute('aria-pressed',String(b.dataset.sub===sub));
+      b.onclick=()=>{
+        if(sub===b.dataset.sub)return;
+        sub=b.dataset.sub;profile();
+        panel.querySelector('[data-sub="'+sub+'"]').focus({preventScroll:true});
+      };
+    });
+    if(sub==='stats'){
+      inner.innerHTML='<div class="ex-profile-heading"><span data-current-avatar></span><h2>Статистика</h2></div><p>Ваши открытия в одном месте</p><div class="ex-totals"></div><div class="ex-grid"></div>';
+      updateProfileAvatars();
+      labels.forEach((label,i)=>{
+        const card=document.createElement('div');card.className='ex-stat';
+        card.innerHTML='<span>'+label+'</span><b data-stat="'+i+'"></b>';
+        inner.querySelector(i<3?'.ex-totals':'.ex-grid').append(card);
+      });
+      statsFields=Array.from(inner.querySelectorAll('[data-stat]'));
+      stats(Economy.snapshot());
+      window.dispatchEvent(new Event('duocounterview'));
+      return;
+    }
+    inner.innerHTML='<h2>Настройки</h2><p>Ваш профиль и атмосфера игры</p><details class="ex-card"><summary class="ex-avatar-summary"><span data-current-avatar></span>Значок профиля</summary><div class="ex-avatars"></div></details><div class="ex-card"><strong>Сохранено на устройстве</strong><p>Прогресс хранится на этом устройстве.</p></div><div class="ex-card ex-switches"></div><div class="ex-card"><strong>С благодарностью авторам</strong><p>rmbk / uburuntu — оригинальные интегралы<br>Orteil — Cookie Clicker<br>PT Serif — ParaType</p><details class="font-attribution"><summary>Лицензия шрифта</summary><pre></pre></details></div>';
+    const licenseDetails=inner.querySelector('.font-attribution');
+    licenseDetails.ontoggle=async()=>{
+      if(!licenseDetails.open||licenseDetails.dataset.loaded)return;
+      const text=licenseDetails.querySelector('pre');
+      try{
+        const response=await fetch(window.duoArt('art/fonts/LICENSE.txt'));
+        if(!response.ok)throw new Error('font license');
+        text.textContent=await response.text();licenseDetails.dataset.loaded='true';
+      }catch(e){
+        text.textContent='PT Serif © 2010 ParaType Ltd. ParaType Free Font Licensing Agreement v1.3. Полный текст поставляется с приложением в art/fonts/LICENSE.txt.';
+      }
+    };
+    const picker=inner.querySelector('.ex-avatars');
+    PlayerAvatar.symbols.forEach((symbol,index)=>{
+      const button=document.createElement('button'),disc=document.createElement('span');
+      button.type='button';button.dataset.avatarOption=String(index);
+      button.setAttribute('aria-label',symbol||'Стандартный значок профиля');
+      PlayerAvatar.render(disc,index);button.append(disc);picker.append(button);
+      button.onclick=()=>PlayerAvatar.choose(index);
+    });
+    updateProfileAvatars();
+    [['sound','Музыка и звуки'],['haptics','Отклик на касания']].forEach(([key,name])=>{
+      const label=document.createElement('label');label.textContent=name;
+      const input=document.createElement('input');
+      input.type='checkbox';input.setAttribute('role','switch');input.checked=DuoAudio.enabled(key);
+      input.onchange=()=>DuoAudio.setEnabled(key,input.checked);
+      const track=document.createElement('span');track.className='ex-switch-track';track.setAttribute('aria-hidden','true');
+      label.append(input,track);inner.querySelector('.ex-switches').append(label);
+    });
+  }
+  function prestige(){
+    const s=Economy.snapshot(),max=s.prestigeLevel===10;
+    const enabled=s.resources.at(-1).owned>0&&s.balance>=ExtraModel.price&&!window.Quests?.active?.();
+    panel.innerHTML='<article class="ex-wrap ex-collapse"><div class="ex-hole" aria-hidden="true"></div><h2>'+(confirm?'Вы точно уверены?':max?'За гранью бесконечности':'Начало новой эпохи')+'</h2><p>'+(max?'Интегралы, ресурсы, улучшения и номер престижа обнулятся. Вы получите космическую награду; достижения и оформление сохранятся.':'Интегралы, ресурсы и улучшения начнутся с нуля. Каждый престиж добавляет 10% к базовому производству и открывает особое оформление. Достижения и награды сохранятся.')+'</p>'+(confirm?'<button class="ex-button nav-control" data-cancel>Остаться в этом мире</button>':'<p>Цена перехода<br><strong>8 888 888 888 888 888 888 888 888 ∫</strong></p>')+'<button class="ex-button" data-next '+(enabled?'':'disabled')+'>'+(confirm?'Да, создать новую вселенную':'Да, перейти в новую эпоху')+'</button></article>';
+    const cancel=panel.querySelector('[data-cancel]');if(cancel)cancel.onclick=()=>{confirm=false;prestige()};
+    panel.querySelector('[data-next]').onclick=()=>{if(!confirm){confirm=true;prestige()}else if(ExtraModel.collapse()){window.DuoAudio?.play('world-birth');App.closeSheet();App.route('home');window.dispatchEvent(new Event('duoprestige'))}};
+  }
+  function prizeText(p,s){return p.resourceID?(s.resources.find(r=>r.id===p.resourceID)?.name||'Ресурс')+' ×'+format(p.count):'+'+format(p.integrals)+' ∫'}
+  function wheel(){
+    const m=ExtraModel.load(),s=Economy.snapshot(),o=m.receipt?null:ExtraModel.offer();
+    const closeButton=document.getElementById('close-sheet');
+    if(closeButton){closeButton.disabled=false;closeButton.setAttribute('aria-label','Закрыть колесо');}
+    panel.innerHTML='<article class="ex-wrap ex-wheel"><p class="dw-date"></p><div class="dw-stage"></div><p class="dw-message" role="status" hidden></p></article>';
+    const view=panel.firstChild,stage=view.querySelector('.dw-stage'),msg=view.querySelector('.dw-message');
+    view.querySelector('.dw-date').textContent=new Intl.DateTimeFormat('ru',{day:'numeric',month:'long'}).format(new Date());
+    function message(text){msg.textContent=text;msg.hidden=false;}
+    if(m.receipt){
+      const receipt=document.createElement('div');receipt.className='dw-receipt';
+      receipt.innerHTML='<div class="dw-prize"></div><h3>Ваш подарок</h3><strong></strong><button class="ex-button" data-wheel-receipt>Отлично!</button>';
+      stage.append(receipt);
+      const prize=receipt.querySelector('.dw-prize'),id=m.receipt.resourceID;
+      if(id){
+        const i=s.resources.findIndex(r=>r.id===id),img=new Image();img.alt='';img.src=duoArt('art/resource-'+String(i).padStart(2,'0')+'.webp');prize.append(img);
+      }else DuoWheel.themedButton(prize);
+      receipt.querySelector('strong').textContent=prizeText(m.receipt,s);
+      receipt.querySelector('button').onclick=()=>{
+        if(ExtraModel.acknowledge()){App.closeSheet();return;}
+        message('Не удалось сохранить подтверждение. Попробуйте ещё раз.');
+      };
+      return;
+    }
+    if(!o||!ExtraModel.available(m)){
+      if(!ExtraModel.available(m)){stage.textContent='Следующий подарок — завтра';return;}
+      message('Не удалось сохранить состав колеса.');
+      const retry=document.createElement('button');retry.className='ex-button';retry.textContent='Попробовать ещё раз';retry.onclick=wheel;view.append(retry);return;
+    }
+    const wheelView=DuoWheel.mount(stage,o,s,p=>prizeText(p,s));
+    const footer=document.createElement('div');footer.className='dw-controls';view.append(footer);
+    const button=document.createElement('button');button.className='ex-button';button.dataset.wheelSpin='';button.textContent='Крутить колесо';footer.append(button);
+    const odds=document.createElement('details');odds.className='dw-prize-list';
+    const summary=document.createElement('summary');summary.textContent='Возможные призы';odds.append(summary);
+    for(const entry of o.prizes){
+      const row=document.createElement('div'),amount=document.createElement('span'),percent=document.createElement('b');
+      amount.textContent=prizeText(entry,s);percent.textContent=entry.weight+'%';row.append(amount,percent);odds.append(row);
+    }
+    footer.append(odds);
+    button.onclick=()=>{
+      if(spinning)return;
+      const prize=ExtraModel.spin();
+      if(!prize){wheel();const feedback=panel.querySelector('.dw-message');if(feedback){feedback.textContent='Не удалось запустить колесо. Попробуйте ещё раз.';feedback.hidden=false;}return;}
+      spinning=true;button.disabled=true;if(closeButton)closeButton.disabled=true;
+      button.textContent='Колесо вращается';
+      wheelView.spin(prize,()=>{spinning=false;if(panel?.contains(view)&&screen==='daily'){if(!document.hidden)window.DuoAudio?.play('reward');wheel();}});
+    };
+  }
+  function close(){
+    statsFields=null;
+    if(screen==='daily'){const b=document.getElementById('close-sheet');if(b){b.disabled=false;b.setAttribute('aria-label','Закрыть');}}
+    if(screen==='challenges')window.Quests?.close?.();
+    if(screen==='honors')window.Honors?.unmount?.();
+    clearTimeout(spinTimer);panel=null;screen='';spinning=false;confirm=false;
+  }
+  function render(id,container,args){
+    close();panel=container;screen=id;
+    if(id==='profile'||id==='settings'){sub=id==='settings'||args?.profileTab==='settings'?'settings':'stats';profile()}
+    else if(id==='help')Guide.render(panel,()=>App.closeSheet());
+    else if(id==='challenges')Quests.render(panel,typeof args==='string'?args:args?.districtID);
+    else if(id==='honors')Honors.render(panel);
+    else if(id==='daily')wheel();
+    else if(id==='prestige')prestige();
+  }
+  function refresh(s){
+    if(!panel?.isConnected)return;
+    if((screen==='profile'||screen==='settings')&&sub==='stats'&&s)stats(s);
+    if(screen==='challenges')window.Quests?.refresh?.();
+    if(screen==='honors')window.Honors?.refresh?.();
+  }
+  function back(){if(spinning)return true;if(screen==='prestige'&&confirm){confirm=false;prestige();return true}
+    if(screen==='challenges')return !!Quests.back?.();if(screen==='honors')return !!Honors.back?.();return false}
+  return {render,refresh,back,close,avatar,updateLiveStats,hasLiveStats:()=>!!statsFields,viewState:()=>screen==='profile'?{profileTab:sub}:null,dailyAvailable:()=>ExtraModel.available(),openPrestige:()=>App.openSheet('prestige')};
+})();
+
+;
+// Count only foreground time on the unobscured integral screen.
+(() => {
+  let home,button=null,raf=0,eventID=null,wait=45,previous=null,lastCommit=0,stopped=false,initialized=false;
+  let flightObserver;
+  const randomWait=()=>100+100*Math.random();
+  const now=()=>Date.now();
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+  function clearFlight(){
+    if(raf)cancelAnimationFrame(raf);
+    flightObserver?.disconnect();flightObserver=null;
+    raf=0;button?.remove();button=null;eventID=null;
+  }
+  function commit(m){m.goldWait=wait;ExtraModel.save(m);lastCommit=now()}
+  function show(e){
+    if(eventID===e.id || !home)return;
+    clearFlight();eventID=e.id;
+    button=document.createElement('button');button.className='ex-golden';button.type='button';button.textContent='∫';button.setAttribute('aria-label','Поймать золотой интеграл');home.append(button);
+    const stage=document.getElementById('apparatus');
+    const [px,py,vx,vy]=e.phase;
+    let left=0,top=0,halfWidth=0,halfHeight=0,lastDraw=-100;
+    function position(){
+      const s=reduced.matches?0:(now()-e.start)/1000;
+      const x=left+(1+Math.sin(px+s*vx))*halfWidth;
+      const y=top+(1+Math.sin(py+s*vy))*halfHeight;
+      button.style.transform='translate3d('+x+'px,'+y+'px,0)';
+    }
+    function measure(){
+      if(eventID!==e.id||!button)return;
+      const scene=home.getBoundingClientRect();
+      const playArea=stage.getBoundingClientRect();
+      const x=Math.max(scene.left,playArea.left),y=Math.max(scene.top,playArea.top);
+      const w=Math.min(scene.right,playArea.right)-x,h=Math.min(scene.bottom,playArea.bottom)-y;
+      // Keep the flight above the shortcuts and away from the score and the screen edges.
+      // On a very short screen the full home area still has room for a touch target.
+      const bounds=w>=72&&h>=84?{left:x,top:y,width:w,height:h}:scene;
+      const inset=Math.min(24,Math.max(8,Math.min(bounds.width,bounds.height)*.035));
+      const width=Math.max(0,bounds.width-2*inset),height=Math.max(0,bounds.height-2*inset);
+      button.style.setProperty('--flight-width',width+'px');
+      button.style.setProperty('--flight-height',height+'px');
+      const target=button.getBoundingClientRect();
+      left=bounds.left-scene.left+inset;top=bounds.top-scene.top+inset;
+      halfWidth=Math.max(0,(width-target.width)/2);halfHeight=Math.max(0,(height-target.height)/2);
+      position();
+    }
+    measure();
+    if(window.ResizeObserver){flightObserver=new ResizeObserver(measure);flightObserver.observe(home);flightObserver.observe(stage);}
+    function frame(t){
+      if(!button)return;
+      if(now()>=e.expires){tick();return}
+      if(t-lastDraw>=32){
+        lastDraw=t;position();
+      }
+      if(!reduced.matches)raf=requestAnimationFrame(frame);
+    }
+    frame(performance.now());
+    button.onclick=()=>{
+      const m=ExtraModel.load();if(m.goldEvent?.id!==e.id||now()>=e.expires)return;
+      const r=button.getBoundingClientRect(),hb=home.getBoundingClientRect();
+      wait=randomWait();m.goldEvent=null;m.goldWait=wait;m.goldenClicks++;
+      if(!ExtraModel.save(m,{integrals:e.reward}))return;
+      clearFlight();window.DuoAudio?.play('golden');
+      const n=document.createElement('b');n.className='ex-gold-reward';n.textContent='+'+IntegralNumbers.exact(e.reward)+' ∫';
+      home.append(n);n.style.left=Math.max(6,Math.min(home.clientWidth-n.offsetWidth-6,r.left-hb.left))+'px';n.style.top=(r.top-hb.top)+'px';setTimeout(()=>n.remove(),1750);
+    };
+  }
+  function tick(){
+    if(!window.App || !window.Economy?.progress)return;
+    if(!home)home=document.getElementById('home');
+    const visible=!stopped&&!document.hidden&&App.activeRoute==='home'&&!App.sheet&&!window.Quests?.active?.();
+    const t=now(),m=ExtraModel.load();
+    if(!initialized){wait=m.goldWait??45;previous=null;initialized=true}
+    if(previous!==null&&!m.goldEvent){const delta=(performance.now()-previous)/1000;if(delta>=0&&delta<=5)wait=Math.max(0,wait-delta)}
+    const was=previous!==null;previous=visible?performance.now():null;
+    if(m.goldEvent&&t>=m.goldEvent.expires){
+      m.goldEvent=null;wait=randomWait();clearFlight();commit(m);if(visible)window.DuoAudio?.play('miss');
+    }else if(visible && !m.goldEvent && wait<=0){
+      const s=Economy.hud();m.goldEvent={id:String(t),start:t,expires:t+5000,reward:Math.max(100*s.clickPower,45*s.cps),
+        phase:[Math.random()*6.283,Math.random()*6.283,(Math.random()<.5?-1:1)*(.23+Math.random()*.11),(Math.random()<.5?-1:1)*(.17+Math.random()*.09)]};
+      commit(m);
+    }else if((was&&!visible)||(visible&&t-lastCommit>5000))commit(m);
+    if(visible&&m.goldEvent)show(m.goldEvent);else if(button)clearFlight();
+  }
+  window.addEventListener('duonavigation',tick);
+  window.addEventListener('duopause',()=>{stopped=true;tick()});
+  window.addEventListener('duoresume',()=>{stopped=false;tick()});
+  window.addEventListener('duoprestige',()=>{initialized=false;clearFlight();tick()});
+  document.addEventListener('visibilitychange',tick);
+  setInterval(tick,500);
+})();
+
+;
+// Keep awards in order and defer their sound and banner while a panel has focus.
+window.HonorNotices=(()=>{
+  const waiting=[];
+  const displayTime=3400;
+  let enabled=false,suspended=false,current=null,node=null,timer=0,until=0,remaining=0;
+  const station=document.getElementById('station'),tabs=document.getElementById('tabs');
+  function place(){
+    if(!node)return;
+    if(node.parentNode!==station)station.append(node);
+    const bottom=station.getBoundingClientRect().bottom;
+    const tabRect=tabs.getBoundingClientRect();
+    const offset=tabRect.height?Math.max(0,bottom-tabRect.top):0;
+    node.style.setProperty('--notice-bottom',offset+'px');
+  }
+  function pause(){
+    if(!current||!node)return;
+    clearTimeout(timer);timer=0;
+    remaining=Math.max(0,until-performance.now());
+    node.remove();node=null;
+  }
+  function showNext(){
+    const app=window.App;
+    if(!enabled || suspended || document.hidden || !app || app.sheet || app.activeRoute==='appearance' ||
+        station.querySelector('.pg-overlay:not([hidden]),.pg-scrim:not([hidden]),.pg-details:not([hidden])')){
+      pause();return;
+    }
+    if(node){place();return;}
+    if(timer || (!current && !waiting.length))return;
+    const first=!current;
+    if(first){current=waiting.shift();remaining=displayTime;}
+    node=document.createElement('aside');
+    node.className='ex-notice';node.setAttribute('role','status');node.setAttribute('aria-atomic','true');
+    node.innerHTML='<span class="ex-notice-medal" aria-hidden="true">✦</span><div><small>Новое достижение</small><strong></strong><span></span></div><i aria-hidden="true">✧</i>';
+    node.querySelector('strong').textContent=current.title;
+    const reward=current.reward;
+    node.querySelector('div span').textContent=reward.integrals?'+'+IntegralNumbers.exact(reward.integrals)+' ∫':
+      reward.bits?'+'+IntegralNumbers.exact(reward.bits)+' бит информации':reward.cosmetics?.join(' · ')||'Знак отличия';
+    place();
+    if(first)window.DuoAudio?.play('achievement');
+    until=performance.now()+remaining;
+    timer=setTimeout(()=>{
+      node.remove();node=null;current=null;
+      timer=setTimeout(()=>{timer=0;showNext();},400);
+    },remaining);
+  }
+  window.addEventListener('duohonors',e=>{
+    if(enabled && Array.isArray(e.detail)){waiting.push(...e.detail);showNext();}
+  });
+  // Old receipts are migrated silently during the initial scan.
+  document.addEventListener('DOMContentLoaded',()=>{enabled=true;showNext();});
+  window.addEventListener('duonavigation',showNext);
+  window.addEventListener('duopause',()=>{suspended=true;pause();});
+  window.addEventListener('duoresume',()=>{suspended=false;showNext();});
+  document.addEventListener('visibilitychange',showNext);
+  if(window.ResizeObserver){const observer=new ResizeObserver(place);observer.observe(tabs);observer.observe(station);}
+  const section=document.getElementById('section-page');
+  if(section && window.MutationObserver){
+    const observer=new MutationObserver(changes=>{
+      if((current || waiting.length) && changes.some(change=>change.target.matches('.pg-overlay,.pg-scrim,.pg-details')))showNext();
+    });
+    observer.observe(section,{subtree:true,attributes:true,attributeFilter:['hidden']});
+  }
+  window.addEventListener('resize',place);
+  return {showNext};
+})();
+
+;
+(() => {
+  'use strict';
+  const byId = id => document.getElementById(id);
+  const home = byId('home'), stage = byId('apparatus'), button = byId('integral-button');
+  const page = byId('section-page'), layer = byId('dialog-layer'), sheetContent = byId('sheet-content');
+  const routes = ['research','resources','home','world','appearance'];
+  const header = document.querySelector('.masthead'), tabs = byId('tabs');
+  const headerButtons = header.querySelectorAll('[data-sheet]');
+  const sheetNames = {
+    profile:'Профиль', settings:'Настройки', help:'Как играть',
+    daily:'Подарок дня', challenges:'Задания', prestige:'Престиж', honors:'Достижения',
+    residents:'Жители', statistics:'Статистика'
+  };
+  const iconPaths = {
+    person:'<circle cx="12" cy="7.5" r="4" fill="currentColor" stroke="none"/><path d="M3 21c0-5.9 4-9.2 9-9.2s9 3.3 9 9.2z" fill="currentColor" stroke="none"/>',
+    help:'<circle cx="12" cy="12" r="9.5"/><path d="M9.3 8.7a2.8 2.8 0 1 1 4.7 2.1c-1.4.9-2 1.5-2 3m0 2.6v.1"/>',
+    sparkle:'<path d="m12 1.8 2.4 7.8 7.8 2.4-7.8 2.4-2.4 7.8-2.4-7.8-7.8-2.4 7.8-2.4z" fill="currentColor" stroke="none"/>',
+    atom:'<ellipse cx="12" cy="12" rx="10" ry="3.7"/><ellipse cx="12" cy="12" rx="10" ry="3.7" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.7" transform="rotate(120 12 12)"/><circle cx="12" cy="12" r=".9"/>',
+    cube:'<path d="m12 1.6 8.2 4.7-3.6 2-8.2-4.6zm-5.8 3.3 8.2 4.7-2.4 1.4-8.3-4.7zM2.7 8l8.3 4.7v9.6L2.7 17.6zm10.3 4.7L21.3 8v9.6L13 22.3z" fill="currentColor" stroke="none"/>',
+    globe:'<circle cx="12" cy="12" r="9.5"/><path d="m5.2 5.6 2.8.3 1.1 2.5-1.2 2.8-2.3.2-1.3 1.8M10 12.6l3.4-.7 2.9 2-.9 2.9-1.8 1.4-.8 2.2M14 3.2l-.1 3.1 2.4 1.5 1.9-.6 2 .9" fill="currentColor"/>',
+    medal:'<path d="M4.6 2h5.3l4 6.9-3.1 1.4zM14.2 2h5.1l-4 7-2.5-4.3z" fill="currentColor" stroke="none"/><circle cx="12" cy="15.4" r="5.8"/><circle cx="12" cy="15.4" r="3.5" fill="currentColor" stroke="none"/>',
+    palette:'<path d="M12.1 2.5a9.5 9.5 0 1 0 0 19c1.7 0 2.4-1.8 1.4-3.1-.9-1.2-.2-3.1 1.5-3.1h2c2.9 0 4.7-2.1 4.7-4.8 0-4.5-4.2-8-9.6-8Z"/><g fill="currentColor" stroke="none"><circle cx="7.1" cy="11.2" r="1.4"/><circle cx="9.6" cy="7" r="1.4"/><circle cx="14.8" cy="6.9" r="1.4"/><circle cx="18" cy="10.4" r="1.4"/></g>',
+    gift:'<path d="M3 8.8h18v4H3zm2 5.7h6v7H5zm8 0h6v7h-6z" fill="currentColor" stroke="none"/><path d="M12 8.9s-6.7.1-6.6-3.4C5.6 2 10.6 2.7 12 8.9zm0 0s6.7.1 6.6-3.4C18.4 2 13.4 2.7 12 8.9z"/>',
+    bolt:'<path d="m14 1-10 13h6.1L8.7 23 20.5 9H14z" fill="currentColor" stroke="none"/>',
+    pencil:'<path d="m4 15 11-11 4 4L8 19l-5 1zm10-10 4 4M12 20h8"/>',
+    chevron:'<path d="m8.5 4.4 7.7 7.6-7.7 7.6" stroke-width="3"/>',
+    close:'<circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/><path d="m8 8 8 8m0-8-8 8" stroke="#162b37" stroke-width="2"/>'
+  };
+  function icon(node, name) {
+    if(node.dataset.drawn===name)return;
+    node.dataset.drawn=name;
+    node.setAttribute('aria-hidden','true');
+    node.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">'+iconPaths[name]+'</svg>';
+  }
+  document.querySelectorAll('[data-icon]').forEach(node=>icon(node,node.dataset.icon));
+  const station = byId('station');
+  station.style.setProperty('--blue-image','url("'+window.duoArt('art/bgBlue.jpg')+'")');
+  station.style.setProperty('--wood-image','url("'+window.duoArt('art/panelHorizontal.png')+'")');
+  function label(node,value) { if(node.textContent!==value)node.textContent=value; }
+  let active='home', sheet='', sheetHistory=[], sheetArgs=null, returnFocus=null, clock=null, nativePaused=false;
+  let lastPrinted=NaN,lastFrame=0,frameRequest=0;
+  const score=byId('balance'), rate=byId('rate');
+  function printBalance(value) {
+    const tenth=Math.round(value*10);
+    if(tenth===lastPrinted)return;
+    lastPrinted=tenth;
+    const digits=IntegralNumbers.exact(value);
+    label(score,digits);
+    score.style.fontSize=digits.length>11 ? Math.max(.85,2.7*11/digits.length)+'rem' : '';
+  }
+  function counterTarget(){
+    if(sheet)return window.Extras?.hasLiveStats?.()?'stats':'';
+    if(active==='resources'||active==='research')return 'catalog';
+    return active==='home'?'home':'';
+  }
+  function paintCounters(target,now){
+    if(target==='home')printBalance(LiveCounters.balance(now));
+    else if(target==='catalog')window.Pages.updateBalance?.(LiveCounters.balance(now));
+    else if(target==='stats')window.Extras.updateLiveStats(now);
+  }
+  function drawCounters(now) {
+    frameRequest=0;
+    const target=counterTarget();
+    if(!target||document.hidden||nativePaused||!LiveCounters.earning())return;
+    if(now-lastFrame>=32) {
+      paintCounters(target,performance.now());
+      lastFrame=now;
+    }
+    frameRequest=requestAnimationFrame(drawCounters);
+  }
+  function runCounters(){
+    if(frameRequest||document.hidden||nativePaused||!counterTarget()||!LiveCounters.earning())return;
+    frameRequest=requestAnimationFrame(drawCounters);
+  }
+  window.addEventListener('duonavigation',runCounters);
+  window.addEventListener('duocounterview',runCounters);
+  function showHUD(s) {
+    printBalance(LiveCounters.balance());
+    label(rate,IntegralNumbers.rate(s.cps));
+    const power=IntegralNumbers.rate(s.clickPower);
+    if(button.dataset.power!==power){
+      button.dataset.power=power;button.setAttribute('aria-label','Интеграл. +'+power+' за нажатие');
+    }
+    runCounters();
+  }
+  function measure(){
+    if(home.hidden||document.hidden)return;
+    const rect=home.getBoundingClientRect(), unit=parseFloat(getComputedStyle(document.documentElement).fontSize)/16;
+    const room=stage.clientHeight;
+    if(rect.width<2||rect.height<2||room<3)return;
+    const compact=rect.height/unit<540;
+    home.classList.toggle('compact',compact);
+    let diameter;
+    if(station.hasAttribute('data-landscape')){
+      // The disk now has a dedicated column. Leave room for the outer resource rings.
+      diameter=Math.max(1,Math.min(stage.clientWidth*.82,room*.84));
+    }else{
+      const reference=Math.min(rect.width*.95,Math.max(120*unit,rect.height-(compact?236:276)*unit));
+      diameter=Math.max(1,Math.min(reference*.84,room-2,rect.width*.9));
+    }
+    if(Math.abs(parseFloat(home.style.getPropertyValue('--diameter'))-diameter)>.5 || !home.style.getPropertyValue('--diameter'))home.style.setProperty('--diameter',diameter+'px');
+  }
+  if(window.ResizeObserver){
+    const observer=new ResizeObserver(measure);observer.observe(home);observer.observe(stage);
+  }
+  window.addEventListener('resize',measure);
+  const eventButton=byId('home-challenges'), daily=byId('daily');
+  let questCount=0, questActive=false, presentedGiftDay=null;
+  function presentDailyGift(){
+    if(daily.hidden || sheet || active==='appearance' || questActive || scrolling || document.hidden || nativePaused)return;
+    if(active!=='home' && page.querySelector('[role="dialog"]')?.getClientRects().length)return;
+    const day=window.ExtraModel?.presentationDay?.();
+    if(!day || presentedGiftDay===day)return;
+    presentedGiftDay=day;
+    openSheet('daily');
+  }
+  function badge(name,text){
+    const node=byId('tabs').querySelector('[data-route="'+name+'"] .tab-badge');
+    node.hidden=!text;
+    if(text)label(node,String(text));
+  }
+  function chrome(s) {
+    avatar(s.prestigeLevel);
+    questCount=Number(window.Quests?.availableCount?.())||0;
+    questActive=Boolean(window.Quests?.active?.());
+    const dailyVisible=Boolean(window.Extras?.dailyAvailable?.());
+    if(daily.hidden===dailyVisible)daily.hidden=!dailyVisible;
+    const pending=dailyVisible&&window.ExtraModel?.load?.().receipt;
+    label(daily.lastElementChild,pending?'Ваш подарок готов':'Подарок дня · крутить колесо');
+    label(byId('event-title'),questActive?'Испытание идёт':questCount?'Есть новые задания':'Мир ждёт открытий');
+    label(byId('event-subtitle'),questActive?'Вернуться к решению':questCount?'Доступно: '+questCount+' · выбрать задание':'Помощники открывают районы и задания');
+    icon(eventButton.firstElementChild,questActive?'pencil':'bolt');
+    eventButton.classList.toggle('has-task',Boolean(questActive||questCount));
+    badge('research',s.affordableResearchCount);
+    badge('world',questCount);
+    badge('resources',s.hasUnseenResources?'!':'');
+  }
+  // Keep the model clock running during a pan, but move catalogue and HUD
+  // reconciliation off the input frames. Individual purchases still refresh immediately.
+  let scrolling=false, lastScrollTime=0, scrollTimer=0;
+  function finishScroll(flush=true){
+    if(scrollTimer)clearTimeout(scrollTimer);
+    scrollTimer=0;
+    if(!scrolling)return;
+    scrolling=false;window.dispatchEvent(new Event('duoscrollend'));
+    if(flush)sync();
+  }
+  function checkScrollEnd(){
+    const remaining=160-(performance.now()-lastScrollTime);
+    if(remaining>0){scrollTimer=setTimeout(checkScrollEnd,remaining);return;}
+    finishScroll();
+  }
+  const scrollAreas='.pg-pane:not(.pg-world) .pg-list,.pg-dialog,.hc-scroll,.hc-gallery-scroll,.hc-detail,.ap-grid,.rs-scroll,.qc-scroll,#sheet-content';
+  function noteScroll(event){
+    const target=event.target;
+    if(!target?.closest?.(scrollAreas))return;
+    lastScrollTime=performance.now();
+    if(scrolling)return;
+    scrolling=true;
+    window.dispatchEvent(new Event('duoscrollstart'));
+    scrollTimer=setTimeout(checkScrollEnd,160);
+  }
+  document.addEventListener('scroll',noteScroll,{passive:true,capture:true});
+  document.addEventListener('touchmove',noteScroll,{passive:true,capture:true});
+  function sync(periodic=false){
+    if(document.hidden||nativePaused)return;
+    const s=Economy.tick();
+    if(periodic && scrolling)return;
+    chrome(s);
+    window.Honors?.collect?.(s);
+    if(sheet)window.Extras?.refresh?.(s);
+    else if(active==='home'){showHUD(s);window.ClickFX.update(s);}
+    else window.Pages.refresh(s);
+    runCounters();
+    presentDailyGift();
+  }
+  function updateNav(){
+    window.ClickFX.visible(active==='home'&&!sheet&&!document.hidden&&!nativePaused);
+    if(active==='home'&&!sheet)measure();
+    window.dispatchEvent(new Event('duonavigation'));
+    window.HonorNotices?.showNext?.();
+  }
+  function cleanupSheet(){
+    window.Extras?.close?.();
+    sheetContent.replaceChildren();
+  }
+  function setSheetChrome(name){
+    layer.hidden=!name;
+    for(const element of [home,page,header,tabs])element.toggleAttribute('inert',Boolean(name));
+    for(const trigger of headerButtons)trigger.setAttribute('aria-expanded',String(trigger.dataset.sheet===name));
+  }
+  function route(name){
+    if(name==='honors'){openSheet('honors');return;}
+    if(!routes.includes(name))return;
+    if(name===active&&!sheet)return;
+    if(sheet){
+      cleanupSheet();sheet='';sheetArgs=null;sheetHistory=[];setSheetChrome('');
+      if(name===active){
+        if(returnFocus?.isConnected)returnFocus.focus({preventScroll:true});
+        returnFocus=null;updateNav();sync();return;
+      }
+      returnFocus=null;
+    }
+    if(active==='appearance')window.Appearance.unmount();
+    finishScroll(false);
+    active=name;
+    tabs.querySelectorAll('[data-route]').forEach(b=>{
+      if(b.dataset.route===name)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');
+    });
+    home.hidden=name!=='home';page.hidden=name==='home';
+    window.Pages.render(name,name==='home'||name==='appearance'?null:page);
+    if(name==='appearance')window.Appearance.render(page);
+    if(name==='home')page.replaceChildren();
+    updateNav();sync();
+  }
+  function mountSheet(name,args){
+    finishScroll(false);
+    sheet=name;sheetArgs=args;
+    setSheetChrome(name);label(byId('sheet-title'),sheetNames[name]||'');
+    sheetContent.scrollTop=0;
+    window.Extras.render(name,sheetContent,args);
+    byId('close-sheet').focus({preventScroll:true});
+    updateNav();
+  }
+  function openSheet(name,args,opener){
+    if(name==='appearance'){route('appearance');return;}
+    if(name==='daily')presentedGiftDay=window.ExtraModel?.presentationDay?.() || presentedGiftDay;
+    if(sheet===name || !Object.prototype.hasOwnProperty.call(sheetNames,name))return;
+    if(sheet){
+      sheetHistory.push({name:sheet,args:window.Extras.viewState?.()||sheetArgs,scroll:sheetContent.scrollTop});
+      cleanupSheet();
+    }
+    else {returnFocus=opener||document.activeElement;}
+    mountSheet(name,args);
+  }
+  function closeSheet(){
+    if(!sheet)return false;
+    cleanupSheet();
+    if(sheetHistory.length){
+      const previous=sheetHistory.pop();mountSheet(previous.name,previous.args);
+      sheetContent.scrollTop=previous.scroll;return true;
+    }
+    sheet='';sheetArgs=null;setSheetChrome('');
+    if(returnFocus?.isConnected)returnFocus.focus({preventScroll:true});
+    returnFocus=null;updateNav();sync();return true;
+  }
+  window.App={route,openSheet,closeSheet,sync,get activeRoute(){return active;},get scrolling(){return scrolling;},get sheet(){return sheet;}};
+  window.duoBack=()=>{
+    if(sheet){if(window.Extras?.back?.())return true;return closeSheet();}
+    if(active!=='home'){
+      if(active==='appearance'?window.Appearance.back():window.Pages.back())return true;
+      route('home');return true;
+    }
+    return false;
+  };
+  byId('tabs').addEventListener('click',e=>{const b=e.target.closest('[data-route]');if(b)route(b.dataset.route);});
+  document.querySelectorAll('[data-sheet]').forEach(b=>b.addEventListener('click',()=>openSheet(b.dataset.sheet,null,b)));
+  byId('close-sheet').addEventListener('click',()=>sheet==='honors'?closeSheet():window.duoBack());
+  eventButton.addEventListener('click',()=>questCount||questActive?openSheet('challenges'):route('world'));
+  document.addEventListener('keydown',e=>{
+    if(e.key==='Escape'&&window.duoBack()){e.preventDefault();return;}
+    if(e.key!=='Tab'||!sheet)return;
+    const nodes=Array.from(layer.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex="0"],a[href]')).filter(n=>n.offsetWidth&&n.offsetHeight);
+    if(!nodes.length)return;
+    if(e.shiftKey&&document.activeElement===nodes[0]){nodes[nodes.length-1].focus();e.preventDefault();}
+    else if(!e.shiftKey&&document.activeElement===nodes[nodes.length-1]){nodes[0].focus();e.preventDefault();}
+  });
+  button.addEventListener('click',e=>{
+    if(document.hidden||sheet||active!=='home')return;
+    const earned=Economy.tap();
+    if(!(earned>0))return;
+    const hud=Economy.hud?Economy.hud():Economy.snapshot();
+    showHUD(hud);
+    window.ClickFX.tap(e,earned,hud);
+    window.dispatchEvent(new CustomEvent('duotap',{detail:{earned}}));
+  });
+  function startClock(){
+    clearInterval(clock);clock=null;
+    if(document.hidden||nativePaused){cancelAnimationFrame(frameRequest);frameRequest=0;return;}
+    sync();clock=setInterval(()=>sync(true),500);
+  }
+  function avatar(level=Economy.snapshot().prestigeLevel){
+    PlayerAvatar.render(byId('profile').firstElementChild,PlayerAvatar.index,level);
+  }
+  window.addEventListener('duoavatar',()=>avatar());avatar();
+  window.ClickFX.init({scene:home,button});window.Appearance?.init?.();
+  startClock();updateNav();
+  document.addEventListener('visibilitychange',()=>{startClock();updateNav();});
+  window.addEventListener('duopause',()=>{nativePaused=true;startClock();updateNav();});
+  window.addEventListener('duoresume',()=>{nativePaused=false;startClock();updateNav();});
+})();

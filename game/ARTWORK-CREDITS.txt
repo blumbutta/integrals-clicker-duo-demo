@@ -1,0 +1,45 @@
+Integrals Clicker · Duo Max
+
+This port uses the original Integrals Clicker science-resource-00…16 portraits, science-world-stage-00…08 city paintings, and the app’s vector-rendered watch launcher. Sound for the Duo Max port: the original integrals-soundtrack and four world cues are bundled unmodified. Interaction effects are rendered from the original GameAudio.swift scores and synthesis envelopes. Laboratory Serif is a WOFF adaptation of PT Serif by ParaType; its four faces and full license are in art/fonts/. Original project credits follow for attribution and provenance. The blue background (bgBlue.jpg) and wooden trim (panelHorizontal.png) come from the original interface assets. The portrait port packages WebP adaptations of the city inhabitants and the collider, fusion and gravity animation sheets. The district highlights follow the silhouettes from the original ScienceWorldAtlas. The historical credits below also identify artwork from other versions of the game.
+
+The nine 1122 × 1402 base maps come from the approved science-world-stage PNGs. The zoom layers for the eight districts are rendered from the higher-resolution original paintings embedded in the approved November 2026 science-world-progression/revisions scenes. Each layer uses the footprint of its corresponding construction stage in the iPhone atlas.
+
+The 17 resident panoramas are cropped details of the original Integrals Clicker science-city district paintings, bundled from its iPhone artwork.
+
+Duo Max launcher icon collection: 166 alternative icons resized from the original Integrals Clicker Xcode AppIcon assets. The default launcher pairs the original blue-teal background and cream disk palette with the same vector formula and disk proportions as the other icons. Names, theme pairings and achievement requirements follow the original AppIconCatalog. The source project attribution below is retained.
+
+Original purchase artwork and interface textures retained at the user's request.
+Source: https://rmbk.me/math-clicker/img/
+Integrals adaptation: rmbk (uburuntu).
+Cookie Clicker creator: Orteil, https://orteil.dashnet.org/cookieclicker/
+These original assets are not newly authored for Integrals: Remake.
+
+Native 1.4: six partner-resource vector illustrations were created specifically for this app with scripts/Resources/render-resource-art.swift. Original rmbk resource artwork is unchanged. Kozlogon native cover and racer illustration are code-drawn for this app.
+
+Native 1.5: Kozlogon's six racers, buildings, animals, terrain props, ice pits, aircraft and weather effects are procedural SceneKit artwork created for this app in Games/Integrally/IntegrallySceneAssets.swift and Games/Integrally/IntegrallyScene.swift.
+
+Native 1.6: revised terrain-conforming ramps and pits, bear traps, window gunners, aircraft, ski tracks and finish stands are procedural SceneKit artwork. The ten prestige background/button pairs and legacy variants use shared code-drawn geometry in Shared/PrestigeArtwork.swift; iPhone uses Canvas/SpriteKit and Watch uses a reduced Canvas rendition. ArcadeActionIcon.swift draws the bomb and bear-trap controls.
+
+Native 1.6.1: Games/Boometry/BoometryCharacter.swift draws six original CubeBomber character portraits with shared antenna geometry for SceneKit. Finish fireworks are pooled procedural particles. Six robot voices and applause are synthesized in Services/Audio/GameAudio.swift; no downloaded audio is used.
+
+Native 0.7.0: Integrally (formerly Kozlogon) uses original code-drawn mathematical characters. Games/Integrally/IntegrallyBrand.swift draws the alpine vector backdrop and displays transparent studio renders of the six actual integral-animal models; Games/Integrally/IntegrallyMathDesign.swift, Games/Integrally/IntegrallySceneAssets.swift and Games/Integrally/IntegrallyScene.swift render the matching mathematical world. The bundled menu PNGs are rendered offline from IntegrallyMathDesign geometry; no downloaded or AI-generated artwork is used. Existing source attribution and original rmbk / uburuntu and Orteil assets are unchanged.
+
+Native 0.7.1: The round watchOS launcher icon is original vector artwork rendered with scripts/Watch/render-watch-icon.swift using the Georgia integral glyph, an opaque cream background and a gold rim. No external imagery added.
+
+Native 0.14.0: Rungebra's medieval human runners, bridge parapets, masonry gates and falling pillars are procedural SceneKit artwork in Games/Rungebra/. The RungebraCover image was generated specifically for this project with the built-in OpenAI image generation tool; the game title is drawn natively over it. The exact generation prompt is kept in scripts/Games/Rungebra/cover-prompt.txt. No existing rmbk / uburuntu or Orteil asset was altered.
+
+Native 0.20.0: the layered evening science-city terrain, eight building sprites, black-hole layer and science-resource-00 through science-resource-17 portraits were prepared for this app with the built-in OpenAI image-generation tool. The approved information-bit icon is the separate 01 artwork. SpriteKit adds procedural water, fountain, sky and road population; Shared/BitOrbitArtwork.swift draws cached binary rings. Earlier rmbk / uburuntu and Orteil attribution and assets are preserved.
+
+Native 0.20.1: the compact school, corner-shaped science campus and local paving patch were generated specifically for this app with the built-in OpenAI image-generation tool, matching the approved evening-city architecture. Ground-plane placement and perspective, foreground occlusion, projected integral artwork and binary road rings are native SpriteKit geometry. Existing resource portraits and original author attribution are unchanged. Generation prompts: scripts/World/world-building-fit-prompts.txt.
+
+Progressive science-city study (0.20.1): approved final city and matching forest backing generated with OpenAI ImageGen, built-in tool mode. Eight districts and their roads are revealed through native SVG masks without re-generating earlier buildings. Original raster size: 1122 × 1402; no claim of vector or restored high-resolution terrain. Sources, generation prompts and road centerlines are stored in Design/World/Progression. These are design materials for the upcoming world-map implementation.
+
+Science world 0.21.0: nine approved progressive city paintings, iterated with OpenAI image generation and composed for Integrals Clicker, October–November 2026. Frozen sources and provenance: Design/World/Progression.
+
+The schoolboy in the 0.22.1 city map uses original character artwork based on the game's schoolboy portrait. The full-body figure was created with OpenAI ImageGen and animated with a 2D skeletal rig for Integrals Clicker.
+
+The teacher in the 0.22.2 city map was illustrated with OpenAI ImageGen from the game's teacher portrait and animated for Integrals Clicker.
+
+The student on the 0.22.3 city map is based on the game's student portrait and animated for Integrals Clicker.
+
+The professor on the 0.22.4 city map is based on the game's professor portrait and animated for Integrals Clicker.
