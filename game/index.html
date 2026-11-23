@@ -79,7 +79,7 @@
 
   const saveKey = "integrals.duomax.progress.v1";
   const lessonKey = "integrals-clicker-duo-tutorial-v1";
-  const phases = new Set(("firstTap score firstFunds bit passiveIntro passiveWatch passiveResult earn upgrade testUpgrade " +
+  const phases = new Set(("firstTap score firstFunds bit passiveIntro passiveWatch passiveResult earn upgrade testUpgrade upgradeResult " +
     "school map schoolTask prepareQuiz timer quiz reward cooldown team honors honorsSeen gallery applyTheme home complete").split(" "));
   function parse(value) {
     try { return JSON.parse(value); } catch (_) { return null; }
@@ -138,8 +138,8 @@
 
   window.DuoTraining = {};
   const sheet = document.createElement("link");
-  sheet.rel = "stylesheet"; sheet.href = "../training/training-view.css?v=9c9519262eab"; document.head.append(sheet);
-  const scripts = ["../training/game.js?v=58a5065f93b5", "../training/training-view.js?v=e6aea04e5d6a", "../training/training.js?v=0652c16258af"].map(src => {
+  sheet.rel = "stylesheet"; sheet.href = "../training/training-view.css?v=b654c7021478"; document.head.append(sheet);
+  const scripts = ["../training/game.js?v=58a5065f93b5", "../training/training-view.js?v=6d01f615aea4", "../training/training.js?v=7255de3c80dd"].map(src => {
     const script = document.createElement("script");
     script.defer = true; script.src = src;
     return script;

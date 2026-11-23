@@ -8,7 +8,7 @@
   const firstStep = "firstTap";
   const steps = [
     firstStep, "score", "firstFunds", "bit", "passiveIntro", "passiveWatch",
-    "passiveResult", "earn", "upgrade", "testUpgrade", "school", "map", "schoolTask",
+    "passiveResult", "earn", "upgrade", "testUpgrade", "upgradeResult", "school", "map", "schoolTask",
     "prepareQuiz", "timer", "quiz", "reward", "cooldown", "team", "honors",
     "honorsSeen", "gallery", "applyTheme", "home", "complete", "done"
   ];
@@ -26,6 +26,7 @@
   const tab = name => '#tabs [data-route="' + name + '"]';
   const control = (name, key) => '[data-page-action="' + name + '"][data-key="' + CSS.escape(key) + '"]';
   const tapButton = "#integral-button";
+  const meter = "#home .meter";
   const schoolOnMap = '.wm-target[data-index="0"]';
   const schoolInList = '.pg-place[data-key="0"]';
   const districtTask = control("quests", "school");
@@ -79,17 +80,18 @@
     stopTime(frozen);
     window.TrainingView.show({id, target, title, text, paused: frozen, ...options});
   }
-  function explain(id, target, title, text, actionLabel, onAction) {
-    show(id, target, title, text, {lockTarget: true, actionLabel, onAction});
+  function explain(id, target, title, text, actionLabel, onAction, options = {}) {
+    show(id, target, title, text, {lockTarget: true, actionLabel, onAction, ...options});
   }
   function navigate(route, title, text) {
     if (App.activeRoute === route && !App.sheet) return false;
-    show(lesson.phase + "-nav-" + route, tab(route), title, text);
+    const funded = App.activeRoute === "home" && ["bit","upgrade","school"].includes(lesson.phase);
+    show(lesson.phase + "-nav-" + route, tab(route), title, text, {point: true, context: funded ? meter : null});
     return true;
   }
   function screenHome(title, text) { return navigate("home", title, text); }
   function highlightSchool(title, text) {
-    show(lesson.phase + "-building", schoolOnMap, title, text);
+    show(lesson.phase + "-building", schoolOnMap, title, text, {point: true});
   }
   function earnedUpgrade() {
     if (lesson.upgradeTaught || Economy.hud().balance < 100) return null;
@@ -100,6 +102,11 @@
   }
   function firstIncome() {
     return window.LiveCounters.balance() - lesson.incomeStart;
+  }
+  function recordUpgradeTap(gain) {
+    const balance = Economy.hud().balance;
+    go("upgradeResult", {tapGain: gain, tapBalance: balance, upgradeTaught: true});
+    render();
   }
 
   function render() {
@@ -115,27 +122,27 @@
         show("first-tap", tapButton, "Первый интеграл", "Добро пожаловать в лабораторию! Нажми на большой знак ∫.");
         return;
       case "score":
-        explain("score", "#balance", "Счёт пополнился", "Каждое нажатие приносит интегралы. Накопи 15 ∫, и сможешь купить первый ресурс.", "Начать копить", () => go("firstFunds"));
+        explain("score", "#balance", "Счёт пополнился", "Каждое нажатие приносит интегралы. Накопи 15 ∫, и сможешь купить первый ресурс.", "Начать копить", () => go("firstFunds"), {point: true});
         return;
       case "firstFunds":
         if (Economy.hud().balance >= 15) return go("bit");
-        show("first-funds", tapButton, "Накопи 15 ∫", "Нажимай на интеграл.", {paused: false, compact: true});
+        show("first-funds", tapButton, "Накопи 15 ∫", "Нажимай на интеграл и следи за счётом.", {paused: false, compact: true, context: meter});
         return;
       case "bit":
         if (Economy.owned("autoclick") > 0) return go("passiveIntro");
         if (navigate("resources", "Первый ресурс доступен", "Ты накопил 15 ∫. Открой «Ресурсы» внизу.")) return;
-        show("buy-bit", control("buy", "autoclick"), "Бит информации", "Нажми на цену, чтобы купить бит. Он начнёт зарабатывать интегралы сам.");
+        show("buy-bit", control("buy", "autoclick"), "Бит информации", "Нажми на цену, чтобы купить бит. Он начнёт зарабатывать интегралы сам.", {highlight: '.pg-resource[data-row="autoclick"]'});
         return;
       case "passiveIntro":
         if (screenHome("Посмотрим на доход", "Вернись к интегралу. Теперь счёт может расти без нажатий.")) return;
-        explain("income-intro", ".meter .income", "Бит уже работает", "Он приносит 0,25 ∫ в секунду, пока игра открыта. Убери палец и понаблюдай за счётом.", "Посмотреть", () => go("passiveWatch", {incomeStart: window.LiveCounters.balance()}));
+        explain("income-intro", meter, "Бит уже работает", "Он приносит 0,25 ∫ в секунду, пока игра открыта. Убери палец и понаблюдай за счётом.", "Посмотреть", () => go("passiveWatch", {incomeStart: window.LiveCounters.balance()}), {point: true, pointAt: "#rate"});
         return;
       case "passiveWatch":
         if (firstIncome() >= 1) return go("passiveResult");
-        show("income-watch", "#balance", "Счёт растёт сам", "За четыре секунды бит заработает целый интеграл.", {paused: false, compact: true, lockTarget: true});
+        show("income-watch", meter, "Счёт растёт сам", "За четыре секунды бит заработает целый интеграл.", {paused: false, compact: true, lockTarget: true, point: true, pointAt: "#balance"});
         return;
       case "passiveResult":
-        explain("income-result", "#balance", "Ещё один ∫ без нажатий", "Ресурсы зарабатывают сами. Нажимай на интеграл, чтобы быстрее накопить на следующую покупку.", "Продолжить", () => go("earn"));
+        explain("income-result", meter, "Ещё один ∫ без нажатий", "Ресурсы зарабатывают сами. Нажимай на интеграл, чтобы быстрее накопить на следующую покупку.", "Продолжить", () => go("earn"), {point: true, pointAt: "#balance"});
         return;
       case "earn": {
         const upgrade = earnedUpgrade();
@@ -147,8 +154,8 @@
         const title = lesson.questDone || pencilNext ? "Следующая цель — улучшение" : "Копим на следующую покупку";
         const text = lesson.questDone || pencilNext ? "Нажимай на ∫. Для «Острого карандаша» нужно 100 ∫ и 25 нажатий." :
           lesson.upgradeTaught ? "Нажимай на ∫ или дождись автодохода. Для школьника нужно 125 ∫." :
-          "Нажимай на ∫. Когда хватит на покупку, игра остановится.";
-        show("earn-" + Number(lesson.upgradeTaught) + "-" + Number(pencilNext), tapButton, title, text, {paused: false, compact: true});
+          "Нажимай на ∫. Когда хватит на следующую покупку, ты увидишь, что можно купить.";
+        show("earn-" + Number(lesson.upgradeTaught) + "-" + Number(pencilNext), tapButton, title, text, {paused: false, compact: true, context: meter});
         return;
       }
       case "upgrade": {
@@ -166,18 +173,30 @@
       }
       case "testUpgrade":
         if (screenHome("Проверим улучшение", "Вернись на главную и посмотри, сколько теперь приносит одно нажатие.")) return;
-        if (Economy.hud().clicks > lesson.testClicks) return go(lesson.questDone ? "team" : "earn", {upgradeTaught: true});
-        show("upgraded-tap", tapButton, "Попробуй усиленный клик", "Нажми один раз и посмотри на число над интегралом.");
+        if (Economy.hud().clicks > lesson.testClicks) return recordUpgradeTap(Economy.hud().clickPower);
+        show("upgraded-tap", tapButton, "Попробуй усиленный клик", "Нажми на ∫ один раз и посмотри, как изменится счёт.", {context: meter});
+        if (lesson.tapStart !== Economy.hud().balance) {
+          lesson.tapStart = Economy.hud().balance;
+          save();
+        }
         return;
+      case "upgradeResult": {
+        const gain = lesson.tapGain, after = lesson.tapBalance;
+        show("upgraded-result", meter, "Усиленный клик в действии",
+          "На счёте было " + number(lesson.tapStart ?? after - gain) + " ∫, а теперь " + number(after) + " ∫.",
+          {point: true, pointAt: "#balance", gainLabel: "+" + number(gain) + " ∫", lockTarget: true, actionLabel: "Продолжить",
+           onAction: () => go(lesson.questDone ? "team" : "earn")});
+        return;
+      }
       case "school":
         if (Economy.owned("abacus")) return go("map");
         if (navigate("resources", "Пора пригласить школьника", "На счёте есть 125 ∫. Открой «Ресурсы».")) return;
-        show("buy-schoolchild", control("buy", "abacus"), "Первый житель", "Пригласи школьника. С ним в научном городе откроется школа.");
+        show("buy-schoolchild", control("buy", "abacus"), "Первый житель", "Нажми на цену, чтобы пригласить школьника. С ним в научном городе откроется школа.", {highlight: '.pg-resource[data-row="abacus"]'});
         return;
       case "map":
         if (navigate("world", "В городе появилась школа", "Открой «Мир», чтобы найти своего первого жителя.")) return;
         if (el(districtTask)) return go("schoolTask");
-        highlightSchool("Найди школу", "Нажми на подсвеченное здание на карте.");
+        highlightSchool("Найди школу", "Стрелка указывает на школу. Нажми на неё, чтобы посмотреть задание.");
         return;
       case "schoolTask":
         if (App.sheet === "challenges") return go("prepareQuiz");
@@ -234,7 +253,7 @@
         return;
       case "team":
         if (navigate("research", "А как усилить всю команду?", "Открой «Улучшения» ещё раз.")) return;
-        explain("team", ".pg-research .pg-head h2", "Командные улучшения", "Когда помощников станет больше, откроются командные улучшения. Они увеличивают доход всей лаборатории.", "Дальше", () => go("honors"));
+        explain("team", ".pg-research .pg-head h2", "Командные улучшения", "Когда помощников станет больше, откроются командные улучшения. Они увеличивают доход всей лаборатории.", "Дальше", () => go("honors"), {point: true});
         return;
       case "honors":
         if (App.sheet === "honors") {
@@ -312,6 +331,9 @@
     const live = ["earn","firstFunds","passiveWatch","quiz"].includes(lesson.phase);
     stopTime(!live);
     restoreScreen();
+    window.addEventListener("duotap", event => {
+      if (lesson.phase === "testUpgrade" && event.detail?.earned > 0) recordUpgradeTap(event.detail.earned);
+    });
     for (const event of ["duotap","duonavigation","duocounterview","duotrainingquest","duoappearancechange","duoprestige","pageshow"]) {
       window.addEventListener(event, updateSoon);
     }
