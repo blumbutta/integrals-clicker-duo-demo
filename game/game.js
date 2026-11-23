@@ -24,6 +24,205 @@ window.IntegralNumbers = (() => {
 window.duoArt = path => path;
 
 ;
+// BlackHoleEmblem and BlackHoleAccretion share these textures and paths with the world scene.
+window.BlackHoleArt = (() => {
+  'use strict';
+  const center = Object.freeze({x:759/1536,y:515/1024});
+  const cosTilt=Math.cos(-.187), sinTilt=Math.sin(-.187);
+  const streams=[
+    [.224,.1,1.38,.76,.0055,true],[.376,2.1,.87,.81,.004,false],
+    [.175,4.5,1.66,.54,.005,true],[.291,5.7,1.12,.68,.005,false],
+    [.408,.8,.83,.58,.003,true],[.249,3.3,1.29,.83,.004,false]
+  ];
+  const base=new Image(),corona=new Image();
+  let loading;
+  function load(){
+    if(!loading){
+      const imageAt=(image,path)=>new Promise((resolve,reject)=>{
+        image.onload=resolve;
+        image.onerror=()=>reject(new Error('Missing artwork '+path));
+        image.src=window.duoArt('art/'+path);
+      });
+      loading=Promise.all([imageAt(base,'black-hole.png'),imageAt(corona,'black-hole-corona.png')]);
+    }
+    return loading;
+  }
+  function sample(radius,angle){
+    const depth=Math.sin(angle),x=radius*Math.cos(angle),y=radius*.115*depth;
+    const dx=x*cosTilt-y*sinTilt,dy=.033+(x*sinTilt+y*cosTilt)*1.5;
+    return {x:center.x+dx,y:center.y+dy,visible:depth>=0||(dx/.146)**2+(dy/.218)**2>=1};
+  }
+  function trail(stream,time){
+    const [radius,initial,speed,length,thickness,hot]=stream,angle=initial+(time*speed)%(2*Math.PI);
+    const path=new Path2D();
+    let connected=false,head,tail;
+    for(let j=0;j<=9;j++){
+      head=sample(radius,angle-length*(1-j/9));
+      if(j===0)tail=head;
+      if(head.visible){
+        if(connected)path.lineTo(head.x,head.y);
+        else path.moveTo(head.x,head.y);
+      }
+      connected=head.visible;
+    }
+    return {path,head,tail,thickness,hot};
+  }
+  function brush(ctx,line,rgb,alphas){
+    const g=ctx.createLinearGradient(line.tail.x,line.tail.y,line.head.x,line.head.y);
+    alphas.forEach((alpha,i)=>g.addColorStop(i/2,'rgba('+rgb+','+alpha+')'));
+    return g;
+  }
+  const mask=document.createElement('canvas');
+  function drawGas(ctx,lines,width,height){
+    if(mask.width!==width)mask.width=width;
+    if(mask.height!==height)mask.height=height;
+    const m=mask.getContext('2d');
+    m.setTransform(width,0,0,height,0,0);
+    m.clearRect(0,0,1,1);
+    m.lineCap='round';
+    for(const line of lines){
+      m.strokeStyle=brush(m,line,'255,255,255',[0,.66,.14]);
+      m.lineWidth=line.thickness*7;
+      m.stroke(line.path);
+    }
+    m.globalCompositeOperation='source-in';
+    m.drawImage(base,0,0,1,1);
+    m.globalCompositeOperation='source-over';
+    ctx.drawImage(mask,0,0,1,1);
+  }
+  function paint(ctx,width,height,seconds,options={}){
+    if(!base.complete||!base.naturalWidth||width<=0||height<=0)return;
+    const {energized=false,compact=false,world=false,reducedMotion=false}=options;
+    const t=seconds*(energized?1.24:1);
+    ctx.save();
+    ctx.scale(width,height);
+    ctx.imageSmoothingQuality='high';
+    ctx.drawImage(base,0,0,1,1);
+    if(!reducedMotion){
+      ctx.globalCompositeOperation='lighter';
+      if(corona.complete&&corona.naturalWidth){
+        const frame=Math.floor((t%4)*24),w=corona.naturalWidth/12,h=corona.naturalHeight/8;
+        ctx.drawImage(corona,(frame%12)*w,Math.floor(frame/12)*h,w,h,0,0,1,1);
+      }
+      const lines=(compact?streams.slice(0,3):streams).map(s=>trail(s,t));
+      if(!compact&&!world)drawGas(ctx,lines,Math.round(width),Math.round(height));
+      ctx.lineCap='round';
+      const transform=world?new DOMMatrix([width,0,0,height,0,0]):null;
+      if(world)ctx.scale(1/width,1/height);
+      for(const line of lines){
+        const rgb=line.hot?'255,240,189':'255,189,117';
+        if(world){
+          const projected=new Path2D();
+          projected.addPath(line.path,transform);
+          ctx.strokeStyle='rgba('+rgb+','+(line.hot?.8:.58)+')';
+          ctx.lineWidth=line.thickness*width;
+          ctx.stroke(projected);
+        }else{
+          ctx.strokeStyle=brush(ctx,line,rgb,[0,.52,.75]);
+          ctx.lineWidth=line.thickness;
+          ctx.stroke(line.path);
+          if(line.head.visible&&line.hot){
+            ctx.fillStyle='rgb('+rgb+')';
+            ctx.beginPath();ctx.arc(line.head.x,line.head.y,line.thickness*.86,0,Math.PI*2);ctx.fill();
+          }
+        }
+      }
+    }
+    ctx.restore();
+  }
+  const motion=matchMedia('(prefers-reduced-motion:reduce)'),visible=new Set();
+  let frame=0,paused=false;
+  function gravity(el,t){
+    for(const group of el.groups||[]){
+      const strength=group.strength*el.unit;
+      if(group.words){
+        group.words.forEach((word,i)=>{
+          if(motion.matches){word.style.removeProperty('transform');return;}
+          const phase=i*2.399963;
+          const x=(Math.sin(t*(8.3+i%3)+phase)*1.5+Math.sin(t*17+phase)*.45)*strength;
+          const y=Math.sin(t*(10.7+i%4*.3)+phase*1.7)*1.3*strength;
+          const a=Math.sin(t*7.1+phase)*.8*group.strength;
+          word.style.transform='translate('+x+'px,'+y+'px) rotate('+a+'deg)';
+        });
+      }else if(motion.matches)group.el.style.removeProperty('transform');
+      else{
+        const phase=t*Math.PI/3+group.phase;
+        const x=(.4*Math.sin(phase*9)+.16*Math.sin(phase*15))*strength;
+        const y=.34*Math.sin(phase*11+.8)*strength;
+        group.el.style.transform='translate('+x+'px,'+y+'px)';
+      }
+    }
+  }
+  function wake(){
+    if(!frame&&!paused&&!document.hidden&&!window.App?.scrolling&&visible.size)frame=requestAnimationFrame(draw);
+  }
+  function draw(now){
+    frame=0;
+    if(document.hidden||paused||window.App?.scrolling)return;
+    let active=false;
+    for(const el of visible){
+      if(!el.isConnected||el.closest('[inert]'))continue;
+      const w=el.canvas.width,h=el.canvas.height;
+      if(!w||!h)continue;
+      if(now>=el.next||motion.matches){
+        const step=1000/24;
+        el.next=now+step-((now-el.next)%step);
+        const ctx=el.canvas.getContext('2d');
+        ctx.clearRect(0,0,w,h);
+        paint(ctx,w,h,now/1000,{compact:el.hasAttribute('compact'),energized:el.hasAttribute('energized'),reducedMotion:motion.matches});
+      }
+      gravity(el,now/1000);
+      active=true;
+    }
+    if(active&&!motion.matches)wake();
+  }
+  const intersection=new IntersectionObserver(changes=>{
+    for(const e of changes){
+      if(e.isIntersecting)visible.add(e.target);
+      else visible.delete(e.target);
+    }
+    wake();
+  });
+  class Emblem extends HTMLElement{
+    connectedCallback(){
+      if(!this.canvas){
+        this.canvas=document.createElement('canvas');
+        this.canvas.setAttribute('aria-hidden','true');
+        this.append(this.canvas);
+      }
+      this.next=0;
+      const panel=this.closest('.ex-collapse');
+      if(panel)this.groups=Array.from(panel.querySelectorAll('[data-gravity]'),el=>({
+        el,strength:Number(el.dataset.gravity),phase:Number(el.dataset.phase||0),
+        words:el.hasAttribute('data-words')?Array.from(el.children):null
+      }));
+      this.observer=new ResizeObserver(entries=>{
+        const rect=entries[0].contentRect,scale=Math.min(devicePixelRatio||1,2,1536/Math.max(1,rect.width));
+        this.canvas.width=Math.max(1,Math.round(rect.width*scale));
+        this.canvas.height=Math.max(1,Math.round(rect.height*scale));
+        this.unit=parseFloat(getComputedStyle(document.documentElement).fontSize)/16;
+        this.next=0;wake();
+      });
+      this.observer.observe(this);
+      load().then(()=>{if(this.isConnected){this.next=0;intersection.observe(this);wake();}}).catch(()=>{});
+    }
+    disconnectedCallback(){
+      intersection.unobserve(this);
+      visible.delete(this);
+      this.observer?.disconnect();
+    }
+  }
+  customElements.define('duo-black-hole',Emblem);
+  for(const event of ['duonavigation','duoscrollend'])window.addEventListener(event,wake);
+  window.addEventListener('duopause',()=>{paused=true;cancelAnimationFrame(frame);frame=0;});
+  window.addEventListener('duoresume',()=>{paused=false;wake();});
+  document.addEventListener('visibilitychange',wake);
+  if(motion.addEventListener)motion.addEventListener('change',wake);
+  else motion.addListener(wake);
+  return Object.freeze({base,corona,load,paint,center});
+})();
+
+;
 // The original 16-second recording loops at the same level as on iPhone.
 // WAV effects use the note scores and envelopes in Services/Audio/GameAudio.swift.
 window.DuoAudio = (() => {
@@ -40,6 +239,7 @@ window.DuoAudio = (() => {
   let context=null,music=null,gain=null,started=false,foreground=true,calledResume=null,priority=null;
   let transportGeneration=0,noticeSequence=0,voiceSequence=0;
   const decoded=new Map(), voices=[];
+  let ambientRequested=false,ambient=null,holeLoop=null,worldActive=false,cue=null;
   function active(){return started && foreground && !document.hidden && prefs.sound;}
   function enabled(key){return !!prefs[key];}
   function load(name){
@@ -64,11 +264,109 @@ window.DuoAudio = (() => {
     try{node.stop()}catch(_){}
     node.disconnect();
   }
+  function musicVolume(){return worldActive ? 0 : ambientRequested ? .14 : .32;}
+  function mixMusic(fade=false){
+    if(!gain)return;
+    const volume=gain.gain,target=musicVolume(),now=context.currentTime;
+    volume.cancelScheduledValues(now);
+    if(fade && active()){
+      volume.setValueAtTime(volume.value,now);
+      volume.linearRampToValueAtTime(target,now+.9);
+    }else volume.setValueAtTime(target,now);
+  }
+  // The four-second drone in GameAudio.makeBlackHoleLoop, at its native sample rate.
+  function prestigeLoop(){
+    if(holeLoop)return holeLoop;
+    const rate=22050,duration=4,tau=2*Math.PI;
+    holeLoop=context.createBuffer(1,duration*rate,rate);
+    const samples=holeLoop.getChannelData(0);
+    for(let i=0;i<samples.length;i++){
+      const t=i/rate,cycle=tau*t/duration;
+      const bass=Math.sin(tau*64*t)*.075;
+      const halo=Math.sin(tau*96*t+.6*Math.sin(cycle))*.038;
+      const dust=Math.sin(tau*192*t)*.012+Math.sin(tau*320*t)*.006;
+      samples[i]=(bass+halo+dust)*(.7+.3*Math.cos(cycle));
+    }
+    return holeLoop;
+  }
+  function updateAmbience(){
+    if(!active() || !ambientRequested || worldActive){
+      stopNode(ambient);ambient=null;return;
+    }
+    if(ambient||!context)return;
+    const level=context.createGain();level.gain.value=.42;level.connect(context.destination);
+    const node=context.createBufferSource();node.buffer=prestigeLoop();node.loop=true;node.connect(level);
+    node.onended=()=>level.disconnect();
+    ambient=node;node.start();
+  }
+  function updatePrestigeSheet(){
+    const visible=window.App?.sheet==='prestige';
+    if(visible===ambientRequested)return;
+    ambientRequested=visible;
+    if(visible)begin();
+    mixMusic();updateAmbience();
+    if(visible && context && active()){
+      load('world-charge');load('world-birth');worldBuffer('world-launch');
+    }
+  }
+  function worldBuffer(name){
+    if(name!=='world-launch')return load(name);
+    if(decoded.has('beam-infall'))return decoded.get('beam-infall');
+    const result=Promise.all([load('world-launch'),load('world-infall')]).then(([launch,infall])=>{
+      if(!launch||!infall)throw Error('incomplete transition sound');
+      // A single source preserves launch, the quiet interval and then the pull across frames.
+      const delay=Math.round(1.38*launch.sampleRate);
+      const combined=context.createBuffer(1,Math.max(launch.length,delay+infall.length),launch.sampleRate);
+      const samples=combined.getChannelData(0),pull=infall.getChannelData(0);
+      samples.set(launch.getChannelData(0));
+      for(let i=0;i<pull.length;i++)samples[delay+i]+=pull[i];
+      return combined;
+    }).catch(()=>{decoded.delete('beam-infall');return null;});
+    decoded.set('beam-infall',result);
+    return result;
+  }
+  function stopCue(){
+    if(cue?.node){cue.node.onended=null;stopNode(cue.node);}
+    cue=null;
+  }
+  function stopWorldTransition(){
+    stopCue();
+    if(!worldActive)return;
+    worldActive=false;mixMusic(true);updateAmbience();
+  }
+  function scheduleCue(){
+    const current=cue;
+    if(!current||current.node||!active()||!context)return;
+    worldBuffer(current.name).then(buffer=>{
+      if(cue!==current||current.node||!active())return;
+      const offset=Math.max(0,context.currentTime-current.start);
+      if(!buffer||offset>=buffer.duration){
+        if(current.name==='world-birth')stopWorldTransition();else cue=null;
+        return;
+      }
+      const node=context.createBufferSource();current.node=node;
+      node.buffer=buffer;node.connect(context.destination);
+      node.onended=()=>{
+        node.disconnect();
+        if(cue!==current)return;
+        cue=null;
+        if(current.name==='world-birth')stopWorldTransition();
+      };
+      node.start(0,offset);
+    });
+  }
+  function playCue(name){
+    if(name==='world-infall'&&cue?.name==='world-launch')return;
+    stopCue();worldActive=true;updateAmbience();mixMusic();
+    cue={name,start:context.currentTime,node:null};
+    scheduleCue();
+  }
   function muteNow(){
     transportGeneration++;
     while(voices.length)stopNode(voices.pop());
     stopNode(priority);priority=null;
-    if(gain)gain.gain.value=0;
+    updateAmbience();
+    if(!prefs.sound)stopWorldTransition();
     if(context && context.state!=='suspended')context.suspend().catch(()=>{});
     // Suspending the context holds the loop's playhead; reuse its source on return.
   }
@@ -85,12 +383,12 @@ window.DuoAudio = (() => {
         if(!active())muteNow();
       });
     }
-    if(gain)gain.gain.value=.32;
+    updateAmbience();scheduleCue();
     if(!music){
       const gen=transportGeneration;
       load(musicName).then(buffer=>{
         if(!buffer||!active()||gen!==transportGeneration||music)return;
-        gain=context.createGain();gain.gain.value=.32;gain.connect(context.destination);
+        gain=context.createGain();gain.gain.value=musicVolume();gain.connect(context.destination);
         music=context.createBufferSource();music.buffer=buffer;music.loop=true;music.connect(gain);music.start();
       });
     }
@@ -121,6 +419,7 @@ window.DuoAudio = (() => {
     }
     begin();
     if(!active()||!context)return;
+    if(name.startsWith('world-')){playCue(name);return;}
     const gen=transportGeneration,notice=notices.has(name);
     const sequence=notice?++noticeSequence:++voiceSequence;
     const requested=performance.now();
@@ -142,6 +441,7 @@ window.DuoAudio = (() => {
     });
   }
   window.addEventListener('duotap',()=>play('click'));
+  window.addEventListener('duonavigation',updatePrestigeSheet);
   document.addEventListener('pointerdown',unlock,{capture:true,passive:true});
   document.addEventListener('pointerup',unlock,{capture:true,passive:true});
   document.addEventListener('click',unlock,{capture:true,passive:true});
@@ -151,7 +451,7 @@ window.DuoAudio = (() => {
   window.addEventListener('duoresume',()=>{foreground=true;transport()});
   window.addEventListener('pagehide',()=>{foreground=false;transport()});
   window.addEventListener('pageshow',()=>{foreground=true;transport()});
-  return Object.freeze({play,enabled,setEnabled});
+  return Object.freeze({play,enabled,setEnabled,stopWorldTransition});
 })();
 
 ;
@@ -894,6 +1194,21 @@ window.ExtraModel = (() => {
         const t=tables[a.kind.shuttle?1:0];start(a,t?.departure(a.route?.target??a.kind.district),false);
       }
     }
+    function actorOpacity(a) {
+      return a.phase==="arrived" ? Math.max(0,1-a.timer/.3) : Math.min(1,a.timer/.28);
+    }
+    function actorFrame(a,boarding) {
+      const count=a.kind.cols*a.kind.rows;
+      const cycle=boarding ? (a.phase==="arrived" ? 1 : a.timer/4) : a.cycle;
+      return Math.min(count-1,Math.floor(cycle*count));
+    }
+    function capture() {
+      return crowd.filter(a=>a.phase!=="inside" && actorOpacity(a)>0).map(a=>{
+        const k=a.kind, boarding=k.shuttle&&(a.phase==="boarding"||a.phase==="arrived");
+        return {x:a.x,y:a.y,face:a.face,kind:k,opacity:actorOpacity(a),
+          frame:actorFrame(a,boarding),image:sheets.get(k.sheet+(boarding?"-stop":""))};
+      }).sort((a,b)=>a.y-b.y);
+    }
     function draw(ctx,dt,time,options={}) {
       if(closed||!crowd.length)return;
       dt=Math.min(.1,Math.max(0,dt||0));elapsed+=dt;
@@ -911,9 +1226,9 @@ window.ExtraModel = (() => {
         const k=a.kind, boarding=k.shuttle&&(a.phase==="boarding"||a.phase==="arrived");
         const img=sheets.get(k.sheet+(boarding?"-stop":""));
         if(!img?.complete||!img.naturalWidth)continue;
-        const alpha=a.phase==="arrived"?Math.max(0,1-a.timer/.3):Math.min(1,a.timer/.28);
+        const alpha=actorOpacity(a);
         const s=.90+.10*alpha;
-        const n=k.cols*k.rows, frame=boarding?Math.min(n-1,Math.floor((a.phase==="arrived"?1:a.timer/4)*n)):Math.min(n-1,Math.floor(a.cycle*n));
+        const frame=actorFrame(a,boarding);
         const sw=img.naturalWidth/k.cols,sh=img.naturalHeight/k.rows;
         ctx.save();ctx.translate(a.x,a.y);ctx.scale(s,s);ctx.globalAlpha*=alpha;
         ctx.fillStyle="rgba(0,0,0,.24)";ctx.beginPath();ctx.ellipse(1,1,5.5,2,0,0,2*Math.PI);ctx.fill();
@@ -941,7 +1256,7 @@ window.ExtraModel = (() => {
       ctx.fillText(phrases[bubble.phrase],0,0,213);ctx.restore();
     }
     function close(){closed=true;for(const img of sheets.values())img.onload=null;sheets.clear();actors.clear();crowd=[];tables=[];bubble=null;}
-    return {sync,draw,close};
+    return {sync,draw,capture,close};
   }
   window.MapResidents={create};
 })();
@@ -1013,6 +1328,27 @@ window.DuoWorldMap = (() => {
     for(let j=0;j<amount;j++){g.save();g.rotate(-j*tau/amount);g.fillText((j+i)%2,0,-radius);g.restore();}
     return {c,side};
   }
+  function bitRings(bits) {
+    const extra=Math.max(0,bits-1250);
+    return colors.map((_,i)=>makeRing(Math.min(250,Math.max(0,bits-i*250))+Math.floor(extra/5)+(i<extra%5?1:0),i));
+  }
+  function drawBitRings(ctx,rings,time) {
+    for(const [i,r] of rings.entries()) {
+      if(!r)continue;
+      ctx.save();ctx.rotate(-i*Math.PI/11+(i%2?-1:1)*time*tau/150);
+      ctx.drawImage(r.c,-r.side/2,-r.side/2,r.side,r.side);ctx.restore();
+    }
+  }
+  let liveCity=null;
+  function captureCollapse(snapshot) {
+    if(liveCity)return liveCity();
+    const residents=MapResidents.create();
+    residents.sync(snapshot);
+    const people=residents.capture();
+    residents.close();
+    const bits=snapshot.resources.find(r=>r.id==="autoclick")?.owned||0;
+    return {people,rings:bitRings(bits),time:0};
+  }
   function create(root,onDistrict) {
     root.innerHTML='<div class="wm-surface"><div class="wm-ground"><img class="wm-terrain" alt="Карта научного города" draggable="false"><div class="wm-details" aria-hidden="true"></div></div><div class="wm-board"><div class="wm-halos"></div><div class="wm-hub" aria-hidden="true"><img alt="" draggable="false"></div></div><div class="wm-machines" aria-hidden="true"></div><canvas class="wm-actors" aria-hidden="true"></canvas><div class="wm-hits" role="group" aria-label="Районы города"></div></div>';
     const surface=root.firstChild, board=root.querySelector(".wm-board"), ground=root.querySelector(".wm-ground"),
@@ -1029,6 +1365,8 @@ window.DuoWorldMap = (() => {
     let raf=0,prev=0,elapsed=0,dirty=true,tween=null;
     const pointers=new Map(),images=new Map(), cleanup=[];
     const residents=window.MapResidents.create(redraw);
+    const captureCity=()=>({people:residents.capture(),rings,time:elapsed});
+    liveCity=captureCity;
     function listen(target,event,fn,opts){target.addEventListener(event,fn,opts);cleanup.push(()=>target.removeEventListener(event,fn,opts));}
     function redraw(){dirty=true;if(!closed&&!paused&&!raf&&!document.hidden)raf=requestAnimationFrame(frame);}
     function img(path){
@@ -1063,7 +1401,7 @@ window.DuoWorldMap = (() => {
       });
       // The rotating lanes and the stationary disk share the same ground projection.
       ctx.save();ctx.translate(...hub);ctx.scale(1,.5);ctx.globalAlpha=1;
-      rings.forEach((r,i)=>{if(r){ctx.save();ctx.rotate(-i*Math.PI/11+(i%2?-1:1)*elapsed*tau/150);ctx.drawImage(r.c,-r.side/2,-r.side/2,r.side,r.side);ctx.restore();}});
+      drawBitRings(ctx,rings,elapsed);
       ctx.restore();
       residents.draw(ctx,delta,elapsed,{focused:focus!==null});ctx.globalAlpha=1;
       if(!reduced.matches){ctx.font="italic 16px Georgia, serif";ctx.textAlign="center";groups.forEach(g=>{for(let i=0;i<g.tier;i++)passage(ctx,g,i,elapsed);});}
@@ -1248,8 +1586,7 @@ window.DuoWorldMap = (() => {
       }
       groups=unlocked;
       const bits=get("autoclick");if(bits!==bitCount){
-        bitCount=bits; const extra=Math.max(0,bits-1250);
-        rings=colors.map((_,i)=>makeRing(Math.min(250,Math.max(0,bits-i*250))+Math.floor(extra/5)+(i<extra%5?1:0),i));
+        bitCount=bits;rings=bitRings(bits);
       }
       syncMachines(bought);
       syncAppearance();
@@ -1289,9 +1626,848 @@ window.DuoWorldMap = (() => {
     function sleep(value){if(!!value===paused)return;paused=!!value;if(paused){cancelAnimationFrame(raf);raf=0;prev=0;}else redraw();}
     listen(document,"visibilitychange",()=>{prev=0;if(document.hidden){cancelAnimationFrame(raf);raf=0;}else redraw();});
     const obs=new ResizeObserver(resize);obs.observe(surface);if(districtPanel)obs.observe(districtPanel);resize();
-    return {sync,select,reset,sleep, close(){closed=true;cancelAnimationFrame(raf);obs.disconnect();cleanup.forEach(fn=>fn());residents.close();images.clear();}};
+    return {sync,select,reset,sleep, close(){closed=true;if(liveCity===captureCity)liveCity=null;cancelAnimationFrame(raf);obs.disconnect();cleanup.forEach(fn=>fn());residents.close();images.clear();}};
   }
-  return {create,districts,size:[W,H]};
+  return {create,districts,size:[W,H],captureCollapse,drawBitRings};
+})();
+
+;
+// City characters keep the walking pose they had when the beam started charging.
+window.RebirthPeople = (() => {
+  'use strict';
+  const hub = {x:552, y:520};
+  const focus = {x:1122*.775, y:-1402*.17};
+  const hubBounds = {x:hub.x-205, y:hub.y-115, width:410, height:230};
+
+  function ready(image) {
+    if (!image) return Promise.resolve();
+    if (image.decode) return image.decode().catch(() => {});
+    if (image.complete) return Promise.resolve();
+    return new Promise(resolve => {
+      image.addEventListener('load',resolve,{once:true});
+      image.addEventListener('error',resolve,{once:true});
+    });
+  }
+
+  function canvas(width,height) {
+    const surface=document.createElement('canvas');
+    surface.width=width;surface.height=height;
+    return surface;
+  }
+
+  function medallion(glyph) {
+    const disk=canvas(560,560), artwork=document.createElement('canvas');
+    // Appearance measures its target in CSS pixels, as it does for the game button.
+    artwork.style.cssText='position:fixed;top:-600px;left:-600px;width:560px;height:560px;visibility:hidden;pointer-events:none';
+    document.body.append(artwork);
+    let skin;
+    try { skin=Appearance.paintDisk(artwork); } finally { artwork.remove(); }
+    const ctx=disk.getContext('2d');
+    ctx.beginPath();ctx.arc(280,280,280,0,2*Math.PI);ctx.clip();
+    ctx.fillStyle=skin.color;ctx.fillRect(0,0,560,560);ctx.drawImage(artwork,0,0,560,560);
+    if (glyph?.naturalWidth) {
+      const ink=canvas(560,560), g=ink.getContext('2d');
+      g.drawImage(glyph,0,0,560,560);
+      if (skin.dark) {
+        g.globalCompositeOperation='source-in';g.fillStyle='#faf2de';g.fillRect(0,0,560,560);
+      }
+      ctx.drawImage(ink,0,0);
+    }
+    return disk;
+  }
+
+  function flight(actor) {
+    const dx=actor.x-focus.x, dy=actor.y-focus.y;
+    const portion=Math.min(1,Math.hypot(dx,dy)/1402), delay=portion*.16;
+    const angle=Math.atan2(-dy,-dx)+Math.PI/2;
+    const facing=Math.abs(hub.x-actor.x)>.1*Math.abs(hub.y-actor.y) ? Math.sign(hub.x-actor.x) : actor.face;
+    const {image,kind,frame}=actor, sw=image.naturalWidth/kind.cols, sh=image.naturalHeight/kind.rows;
+    return {...actor,dx,dy,delay,duration:1.65+portion*2.4-delay,
+      lean:angle-Math.round(angle/Math.PI)*Math.PI, facing,
+      sx:(frame%kind.cols)*sw,sy:Math.floor(frame/kind.cols)*sh,sw,sh};
+  }
+
+  async function prepare(snapshot) {
+    const {people,rings,time}=DuoWorldMap.captureCollapse(snapshot);
+    const glyph=document.getElementById('integral-button').querySelector('img');
+    await Promise.all([...new Set([glyph,...people.map(p=>p.image)])].map(ready));
+    const actors=people.filter(a=>a.image?.naturalWidth).map(flight);
+    const disk=medallion(glyph);
+    function drawHub(ctx,seconds,reduced) {
+      ctx.save();ctx.translate(hub.x,hub.y);ctx.scale(1,.5);
+      ctx.save();ctx.globalAlpha*=.85;ctx.drawImage(disk,-140,-140,280,280);ctx.restore();
+      DuoWorldMap.drawBitRings(ctx,rings,time+(reduced?0:seconds));
+      ctx.restore();
+    }
+    // Keep a snapshot of the intact plaza to deform with the ground after ignition.
+    const hubTexture=canvas(hubBounds.width*2,hubBounds.height*2), h=hubTexture.getContext('2d');
+    h.scale(2,2);h.translate(-hubBounds.x,-hubBounds.y);drawHub(h,0,true);
+
+    function draw(ctx,seconds,reduced) {
+      for (const a of actors) {
+        const age=Math.max(0,seconds-3.63-a.delay);
+        if (age>=a.duration || (reduced && age>=.45)) continue;
+        const t=reduced ? 0 : age/a.duration;
+        const inward=t*(.22+.78*t), radius=1-inward;
+        const taper=1-inward*inward, stretch=1+.48*inward;
+        const size=.90+.10*a.opacity, k=a.kind;
+        ctx.save();ctx.translate(focus.x+a.dx*radius,focus.y+a.dy*radius);
+        ctx.rotate(a.lean*inward);ctx.scale(size*taper/stretch,size*taper*stretch);
+        ctx.globalAlpha*=a.opacity*(reduced?1-age/.45:Math.min(1,radius*5));
+        const shadowAlpha=reduced ? 1 : Math.max(0,1-age/.16);
+        if (shadowAlpha>0) {
+          ctx.fillStyle='rgba(0,0,0,'+(.24*shadowAlpha)+')';
+          ctx.beginPath();ctx.ellipse(1,1,5.5,2,0,0,Math.PI*2);ctx.fill();
+        }
+        ctx.scale(a.facing,1);
+        ctx.drawImage(a.image,a.sx,a.sy,a.sw,a.sh,-k.ax*k.w,-(1-k.ay)*k.h,k.w,k.h);
+        ctx.restore();
+      }
+    }
+    return {draw,drawHub,hubTexture,hubBounds};
+  }
+  return Object.freeze({prepare});
+})();
+
+;
+// WorldRebirthLight from the iOS game. All measurements are in world-atlas points.
+window.WorldCollapseLight = (() => {
+  'use strict';
+  const launch = 2.25, ignition = launch + .08, beamDuration = .98;
+  const hubX = 552, hubY = 520, focusX = 1122 * .775, focusY = -1402 * .17;
+  const dx = focusX - hubX, dy = focusY - hubY, length = Math.hypot(dx, dy);
+  const amber = '#ffc259', cream = '#fff7cf', teal = '#63e3c4';
+  const clamp = n => Math.max(0, Math.min(1, n));
+  function smooth(lo, hi, value) {
+    const u = clamp((value - lo) / (hi - lo));
+    return u * u * (3 - 2 * u);
+  }
+
+  // Original Times New Roman outlines from IntegralRuneGlyphs.formula(radius: 140),
+  // expressed in top-origin atlas coordinates before compressing the ground plane.
+  const formula = new Path2D(
+    'M-61.983 -3.283 L-60.322 -56.901 Q-59.583 -71.113 -55.707 -80.433 Q-53.216 -86.616 -48.878 -89.616 ' +
+    'Q-44.541 -92.615 -40.296 -92.615 Q-35.682 -92.615 -32.221 -89.523 Q-28.76 -86.432 -28.76 -82.74 Q-28.76 -78.403 -31.206 -75.773 ' +
+    'Q-33.651 -73.143 -37.25 -73.143 Q-40.48 -73.143 -44.264 -76.465 Q-46.387 -78.311 -47.955 -78.311 Q-49.524 -78.311 -50.586 -76.973 ' +
+    'Q-51.647 -75.635 -51.647 -72.405 Q-51.647 -68.621 -50.816 -59.023 Q-47.402 -21.094 -47.402 2.162 Q-47.402 8.622 -48.878 56.61 ' +
+    'Q-49.617 83.834 -57.184 93.432 Q-62.167 99.615 -69.55 99.615 Q-74.349 99.615 -77.394 96.477 Q-80.44 93.34 -80.44 88.448 ' +
+    'Q-80.44 84.296 -78.087 81.804 Q-75.733 79.312 -72.134 79.312 Q-68.443 79.312 -65.767 82.265 Q-63.09 85.219 -61.245 85.219 ' +
+    'Q-59.676 85.219 -58.661 83.927 Q-57.645 82.635 -57.645 79.589 Q-57.645 75.713 -58.476 68.515 Q-60.045 55.318 -60.875 37.323 ' +
+    'Q-61.983 14.344 -61.983 -3.283 Z M-11.899 -11.493 L-12.428 -9.553 ' +
+    'L-16.72 -9.553 L-19.953 3.292 Q-22.099 11.787 -24.274 16.432 Q-27.36 22.987 -30.917 25.485 ' +
+    'Q-33.622 27.396 -36.326 27.396 Q-38.09 27.396 -39.324 26.337 Q-40.235 25.603 -40.235 24.427 Q-40.235 23.486 -39.486 22.795 ' +
+    'Q-38.736 22.105 -37.649 22.105 Q-36.855 22.105 -36.311 22.604 Q-35.767 23.104 -35.767 23.751 Q-35.767 24.397 -36.385 24.956 ' +
+    'Q-36.855 25.367 -36.855 25.573 Q-36.855 25.838 -36.649 25.985 Q-36.385 26.191 -35.826 26.191 Q-34.562 26.191 -33.166 25.397 ' +
+    'Q-31.77 24.603 -30.682 23.031 Q-29.594 21.458 -28.624 18.489 Q-28.213 17.255 -26.42 10.347 L-21.305 -9.553 ' +
+    'L-26.42 -9.553 L-26.008 -11.493 Q-23.569 -11.493 -22.599 -11.831 Q-21.629 -12.169 -20.82 -13.125 ' +
+    'Q-20.012 -14.08 -18.719 -16.696 Q-16.984 -20.223 -15.397 -22.163 Q-13.222 -24.78 -10.826 -26.088 Q-8.43 -27.396 -6.314 -27.396 ' +
+    'Q-4.08 -27.396 -2.728 -26.264 Q-1.376 -25.132 -1.376 -23.81 Q-1.376 -22.781 -2.052 -22.075 Q-2.728 -21.37 -3.786 -21.37 ' +
+    'Q-4.697 -21.37 -5.271 -21.899 Q-5.844 -22.428 -5.844 -23.163 Q-5.844 -23.633 -5.462 -24.324 Q-5.079 -25.015 -5.079 -25.25 ' +
+    'Q-5.079 -25.661 -5.344 -25.867 Q-5.726 -26.161 -6.461 -26.161 Q-8.313 -26.161 -9.783 -24.985 Q-11.752 -23.427 -13.31 -20.106 ' +
+    'Q-14.104 -18.372 -16.22 -11.493 Z M-1.699 26.808 L-2.698 27.278 ' +
+    'Q-6.196 20.606 -7.725 15.491 Q-8.901 11.493 -8.901 7.437 Q-8.901 -2.028 -4.521 -9.524 Q0.858 -18.695 12.91 -27.396 ' +
+    'L13.615 -26.367 Q8.177 -22.34 4.738 -17.343 Q0.447 -11.111 -2.287 -2.293 Q-5.021 6.526 -5.021 13.757 ' +
+    'Q-5.021 19.283 -1.699 26.808 Z M17.466 -12.199 Q18.906 -10.67 19.641 -9.142 ' +
+    'Q20.17 -8.083 21.376 -3.586 L23.962 -7.466 Q24.991 -8.877 26.461 -10.156 Q27.931 -11.434 29.048 -11.905 ' +
+    'Q29.753 -12.199 30.606 -12.199 Q31.869 -12.199 32.619 -11.523 Q33.369 -10.847 33.369 -9.877 Q33.369 -8.76 32.928 -8.348 ' +
+    'Q32.105 -7.613 31.046 -7.613 Q30.429 -7.613 29.724 -7.878 Q28.342 -8.348 27.872 -8.348 Q27.166 -8.348 26.196 -7.525 ' +
+    'Q24.374 -5.996 21.846 -1.617 L24.256 8.495 Q24.815 10.817 25.197 11.273 Q25.579 11.728 25.961 11.728 ' +
+    'Q26.578 11.728 27.402 11.052 Q29.018 9.7 30.165 7.525 L31.193 8.054 Q29.342 11.523 26.49 13.815 ' +
+    'Q24.874 15.109 23.757 15.109 Q22.11 15.109 21.14 13.257 Q20.523 12.111 18.583 3.38 Q13.998 11.346 11.235 13.639 ' +
+    'Q9.441 15.109 7.766 15.109 Q6.59 15.109 5.62 14.256 Q4.915 13.61 4.915 12.522 Q4.915 11.552 5.561 10.905 ' +
+    'Q6.208 10.259 7.149 10.259 Q8.089 10.259 9.148 11.199 Q9.912 11.875 10.323 11.875 Q10.676 11.875 11.235 11.405 ' +
+    'Q12.616 10.288 14.997 6.584 Q17.378 2.881 18.113 1.235 Q16.29 -5.908 16.143 -6.32 Q15.467 -8.23 14.38 -9.024 ' +
+    'Q13.292 -9.818 11.176 -9.818 Q10.5 -9.818 9.618 -9.759 L9.618 -10.817 Z ' +
+    'M42.51 -26.837 L43.51 -27.396 Q47.008 -20.753 48.507 -15.638 Q49.712 -11.64 49.712 -7.584 ' +
+    'Q49.712 1.911 45.332 9.377 Q39.924 18.577 27.901 27.278 L27.196 26.367 Q32.634 22.31 36.073 17.343 ' +
+    'Q40.365 11.111 43.098 2.278 Q45.832 -6.555 45.832 -13.786 Q45.832 -19.312 42.51 -26.837 Z ' +
+    'M86.367 -27.396 L76.255 7.29 Q75.432 10.112 75.432 10.994 Q75.432 11.287 75.682 11.552 ' +
+    'Q75.932 11.817 76.196 11.817 Q76.579 11.817 77.108 11.434 Q78.107 10.729 80.459 7.907 L81.458 8.524 ' +
+    'Q79.342 11.464 77.181 13.286 Q75.021 15.109 73.139 15.109 Q72.14 15.109 71.493 14.403 Q70.847 13.698 70.847 12.404 ' +
+    'Q70.847 10.729 71.728 7.907 L72.875 4.262 Q68.613 10.847 65.115 13.375 Q62.704 15.109 60.5 15.109 ' +
+    'Q58.266 15.109 56.605 13.125 Q54.944 11.141 54.944 7.731 Q54.944 3.351 57.737 -1.617 Q60.529 -6.584 65.115 -9.7 ' +
+    'Q68.73 -12.199 71.758 -12.199 Q73.345 -12.199 74.492 -11.552 Q75.638 -10.905 76.755 -9.406 L79.636 -19.636 ' +
+    'Q79.959 -20.723 80.165 -21.37 Q80.517 -22.546 80.517 -23.31 Q80.517 -23.927 80.077 -24.339 Q79.459 -24.838 78.489 -24.838 ' +
+    'Q77.813 -24.838 76.255 -24.633 L76.255 -25.72 Z M75.462 -6.526 ' +
+    'Q75.462 -8.407 74.374 -9.553 Q73.286 -10.7 71.611 -10.7 Q67.907 -10.7 63.895 -4.586 Q59.882 1.529 59.882 7.113 ' +
+    'Q59.882 9.318 60.852 10.479 Q61.823 11.64 63.175 11.64 Q66.232 11.64 70.847 5.026 Q75.462 -1.587 75.462 -6.526 ' +
+    'Z M94.333 -12.199 Q95.773 -10.67 96.508 -9.142 Q97.037 -8.083 98.242 -3.586 ' +
+    'L100.829 -7.466 Q101.858 -8.877 103.328 -10.156 Q104.797 -11.434 105.914 -11.905 Q106.62 -12.199 107.472 -12.199 ' +
+    'Q108.736 -12.199 109.486 -11.523 Q110.235 -10.847 110.235 -9.877 Q110.235 -8.76 109.794 -8.348 Q108.971 -7.613 107.913 -7.613 ' +
+    'Q107.296 -7.613 106.59 -7.878 Q105.209 -8.348 104.739 -8.348 Q104.033 -8.348 103.063 -7.525 Q101.241 -5.996 98.713 -1.617 ' +
+    'L101.123 8.495 Q101.681 10.817 102.064 11.273 Q102.446 11.728 102.828 11.728 Q103.445 11.728 104.268 11.052 ' +
+    'Q105.885 9.7 107.031 7.525 L108.06 8.054 Q106.208 11.523 103.357 13.815 Q101.74 15.109 100.623 15.109 ' +
+    'Q98.977 15.109 98.007 13.257 Q97.39 12.111 95.45 3.38 Q90.864 11.346 88.101 13.639 Q86.308 15.109 84.633 15.109 ' +
+    'Q83.457 15.109 82.487 14.256 Q81.781 13.61 81.781 12.522 Q81.781 11.552 82.428 10.905 Q83.075 10.259 84.015 10.259 ' +
+    'Q84.956 10.259 86.014 11.199 Q86.778 11.875 87.19 11.875 Q87.543 11.875 88.101 11.405 Q89.483 10.288 91.864 6.584 ' +
+    'Q94.245 2.881 94.98 1.235 Q93.157 -5.908 93.01 -6.32 Q92.334 -8.23 91.246 -9.024 Q90.159 -9.818 88.042 -9.818 ' +
+    'Q87.366 -9.818 86.485 -9.759 L86.485 -10.817 Z '
+  );
+
+  const glows = new Map();
+  function lightTexture(color) {
+    if (glows.has(color)) return glows.get(color);
+    const image = document.createElement('canvas');
+    image.width = image.height = 96;
+    const c = image.getContext('2d'), gradient = c.createRadialGradient(48,48,0,48,48,48);
+    for (const [position,opacity] of [[0,1],[.055,.78],[.21,.22],[.55,.045],[1,0]]) {
+      gradient.addColorStop(position, color + Math.round(255 * opacity).toString(16).padStart(2,'0'));
+    }
+    c.fillStyle = gradient;
+    c.fillRect(0,0,96,96);
+    glows.set(color,image);
+    return image;
+  }
+
+  function glow(c,x,y,width,height,color,alpha,blend='lighter') {
+    if (alpha <= 0) return;
+    c.save();
+    c.globalAlpha *= alpha;
+    c.globalCompositeOperation = blend;
+    c.drawImage(lightTexture(color),x-width/2,y-height/2,width,height);
+    c.restore();
+  }
+
+  function stroke(c,path,color,width,blur,alpha) {
+    c.save();
+    c.globalAlpha *= alpha;
+    c.strokeStyle = color;
+    c.lineWidth = width;
+    c.shadowColor = color;
+    if (blur) {
+      const matrix = c.getTransform();
+      c.shadowBlur = blur * Math.hypot(matrix.a,matrix.b);
+    }
+    c.stroke(path);
+    c.restore();
+  }
+
+  function ellipse(rx,ry) {
+    const path = new Path2D();
+    path.ellipse(0,0,rx,ry,0,0,Math.PI*2);
+    return path;
+  }
+  const plaza = ellipse(140,140);
+  const afterglow = ellipse(143,71);
+  function charge(c,time,reduced) {
+    const progress = clamp(time / launch);
+    const strength = progress * progress * (3 - 2 * progress);
+    c.save();
+    c.scale(1,.5);
+    c.globalAlpha *= 1 - clamp((time-launch)/.35);
+    c.fillStyle = 'rgba(10,20,38,' + strength*.5 + ')';
+    c.fill(plaza);
+    const diameter = 440 * (.7 + strength*.3);
+    glow(c,0,0,diameter,diameter,amber,.1 + strength*.9);
+    c.save();
+    c.globalAlpha *= Math.min(1,strength*1.25);
+    c.fillStyle = '#fffadb';
+    c.fill(formula);
+    stroke(c,formula,amber,3,reduced ? 0 : 6,1);
+    c.restore();
+    stroke(c,plaza,amber,3.5,3,strength*.85);
+    if (!reduced) {
+      c.globalCompositeOperation = 'lighter';
+      for (let i=0;i<3;i++) {
+        const phase = (progress*1.6 + i/3) % 1, scale = .98 - phase*.65;
+        c.save();
+        c.scale(scale,scale);
+        stroke(c,plaza,i===1 ? teal : amber,2.5,1.3,Math.sin(Math.PI*phase)*(.15 + .75*strength));
+        c.restore();
+      }
+    }
+    c.restore();
+  }
+
+  // Evaluate the SpriteKit fragment shader on a narrow strip. The soft radiance is
+  // sampled at 2.5 atlas points per texel, while filaments stay vector-sharp at any zoom.
+  const stripWidth = 128, stripHeight = Math.ceil((length+136)/2.5);
+  let shaft;
+  function createShaft() {
+    const image = document.createElement('canvas');
+    image.width = stripWidth;
+    image.height = stripHeight;
+    const c = image.getContext('2d'), pixels = c.createImageData(stripWidth,stripHeight);
+    const columns = Array.from({length:stripWidth}, (_,i) => {
+      const x = (i+.5) / stripWidth * 320 - 160;
+      return {squared:x*x, waveSin:Math.sin(x*.071), waveCos:Math.cos(x*.071),
+              strandSin:Math.sin(x*.47), strandCos:Math.cos(x*.47)};
+    });
+    const rows = Array.from({length:stripHeight}, (_,i) => {
+      const y = (i+.5) / stripHeight * (length+136) - 72;
+      const altitude = Math.max(0,y), shoulder = Math.exp(-altitude/100);
+      return {y,altitude,shoulder,
+              mistFactor:2.2 / (60+shoulder*60)**2,
+              ends:smooth(-72,-4,y)*(1-smooth(length-6,length+55,y))};
+    });
+    const exponent = Float32Array.from({length:8193}, (_,i)=>Math.exp(-i/512));
+    return {image,c,pixels,rows,columns,exponent,lastTime:NaN,lastReduced:false};
+  }
+
+  function shaftImage(elapsed,reduced) {
+    if (!shaft) shaft = createShaft();
+    const {image,c,pixels,rows,columns,exponent} = shaft;
+    if (shaft.lastTime === elapsed && shaft.lastReduced === reduced) return image;
+    shaft.lastTime = elapsed;
+    shaft.lastReduced = reduced;
+    const flow = reduced ? 0 : elapsed, head = length * clamp(elapsed/.08), rgba = pixels.data;
+    for (let j=0;j<stripHeight;j++) {
+      const {y,altitude,shoulder,mistFactor,ends} = rows[j];
+      const edge = ends * (1-smooth(head-8,head+40,y));
+      let offset = j*stripWidth*4;
+      if (!edge) {
+        rgba.fill(0,offset,offset+stripWidth*4);
+        continue;
+      }
+      const billow = Math.sin(altitude*.037-flow*18 + Math.sin(altitude*.014-flow*5));
+      const coreWidth = 14.5+shoulder*23+billow*1.1;
+      const coreFactor = 1.7/coreWidth**2, goldFactor = 1.35/(coreWidth*2.8)**2;
+      const wave = altitude*.023+flow*3, strandPhase = Math.sin(altitude*.044-flow*14)*1.5;
+      const waveSin = Math.sin(wave), waveCos = Math.cos(wave);
+      const strandSin = Math.sin(strandPhase), strandCos = Math.cos(strandPhase);
+      const radiance = 255 * (.92+.08*Math.sin(altitude*.049-flow*17));
+      for (const x of columns) {
+        const core = exponent[Math.min(8192,Math.round(x.squared*coreFactor*512))];
+        const gold = exponent[Math.min(8192,Math.round(x.squared*goldFactor*512))];
+        const turbulence = billow*(x.waveSin*waveCos+x.waveCos*waveSin);
+        const mist = exponent[Math.min(8192,Math.round(x.squared*mistFactor*512))]*(.80+.20*turbulence);
+        const strand = (.5+.5*(x.strandSin*strandCos+x.strandCos*strandSin))**8;
+        const warm = clamp(gold*.85+strand*.12);
+        rgba[offset++] = radiance*((.96+.04*warm)*(1-core)+core);
+        rgba[offset++] = radiance*((.39+.34*warm)*(1-core)+.98*core);
+        rgba[offset++] = radiance*((.045+.175*warm)*(1-core)+.87*core);
+        rgba[offset++] = 255*clamp(mist*.27+gold*.91+core*.36)*edge;
+      }
+    }
+    c.putImageData(pixels,0,0);
+    return image;
+  }
+
+  function threads(c,elapsed,extension,intensity) {
+    c.lineCap = 'round';
+    for (let i=0;i<5;i++) {
+      const path = new Path2D(), lane = i-2, wide = i<2;
+      const phase = wide ? i*Math.PI : i*1.2;
+      for (let j=0;j<=48;j++) {
+        const fraction = j/48, altitude = fraction*length*extension;
+        const fan = lane*(3+12*Math.exp(-altitude/110));
+        const ripple = Math.sin(altitude*.018-elapsed*13+phase);
+        const taper = Math.max(0,Math.sin(Math.PI*fraction))**.40;
+        const x = fan+ripple*taper*(wide ? 29 : 8+i*2);
+        if (j===0) path.moveTo(x,altitude);
+        else path.lineTo(x,altitude);
+      }
+      const color = ['#ffde6b','#ffa624',cream,cream,'rgba(99,227,196,.46)'][i];
+      stroke(c,path,color,wide ? 3.8 : 1.8,wide ? 3.5 : 1.5,intensity*(wide ? .87 : i===4 ? .30 : .43));
+    }
+  }
+
+  function beam(c,elapsed,reduced) {
+    const extension = clamp(elapsed/.08);
+    const intensity = clamp(elapsed/.025)*(1-smooth(.66,.98,elapsed))*(reduced ? .66 : 1);
+    if (intensity<=0) return;
+    c.save();
+    // SpriteKit's column has local +Y along the ray and local +X toward its right.
+    c.transform(-dy/length,dx/length,dx/length,dy/length,0,0);
+    c.save();
+    c.globalCompositeOperation = 'source-over';
+    c.globalAlpha *= intensity;
+    c.drawImage(shaftImage(elapsed,reduced),-160,-72,320,length+136);
+    c.restore();
+    if (!reduced) {
+      threads(c,elapsed,extension,intensity);
+      for (let i=0;i<14;i++) {
+        const phase = (i*.618034)%1, speed = 1.8+(i%4)*.24;
+        const progress = (elapsed*speed+phase)%1;
+        if (progress>extension) continue;
+        const sweep = Math.sin(elapsed*12+i*1.7)*5, taper = Math.sin(Math.PI*progress);
+        const x = (i%2===0 ? -1 : 1)*(18+(i%4)*6+sweep)*taper;
+        glow(c,x,progress*length,5+(i%3)*1.5,27+(i%4)*10,'#ffd14d',intensity*Math.min(1,taper*2.4),'source-over');
+      }
+    }
+    glow(c,0,42,185,185*1.55,amber,intensity*.74);
+    glow(c,0,13,105,105,cream,intensity*.96);
+    c.restore();
+    glow(c,0,0,620,620*.49,amber,intensity*(.63+.37*Math.exp(-elapsed*5)));
+    glow(c,0,0,300,300*.49,cream,intensity*(.54+.46*Math.exp(-elapsed*6)));
+    c.globalCompositeOperation = 'lighter';
+    stroke(c,afterglow,amber,3,reduced ? 0 : 4,intensity*.68);
+  }
+
+  function draw(ctx,t,reduced=false) {
+    if (t<0 || t>=launch+beamDuration) return;
+    ctx.save();
+    ctx.translate(hubX,hubY);
+    if (t<launch+.35) charge(ctx,t,reduced);
+    if (t>=launch) beam(ctx,t-launch,reduced);
+    ctx.restore();
+  }
+
+  // Draw at the ignition point behind the terrain, using absolute scene time.
+  function impact(ctx,t,reduced=false) {
+    const age = t-ignition;
+    if (age<0 || age>=.69) return;
+    const progress = clamp(age/.14), scale = .38+.62*progress;
+    const alpha = ((reduced ? .55 : 1)+(reduced ? -.10 : -.14)*progress)*(1-clamp((age-.14)/.55));
+    const halo = scale*(reduced ? 125 : 250), core = scale*(reduced ? 62 : 115);
+    glow(ctx,focusX,focusY,halo,halo,amber,alpha);
+    glow(ctx,focusX,focusY,core,core,cream,alpha);
+  }
+
+  return Object.freeze({draw,impact});
+})();
+
+;
+// City-collapse projection from WorldMap and WorldTidalTerrain in the iPhone game.
+window.WorldCollapse = (() => {
+  'use strict';
+  const W=1122,H=1402,fx=.775*W,fy=-.17*H;
+  const ignition=2.33,infall=3.63,blackout=11.35;
+  const clamp=(v,lo=0,hi=1)=>Math.max(lo,Math.min(hi,v));
+  const west=[[0,35],[6,24],[16,45],[21,34],[29,54],[43,51],[50,40],[56,57],[70,53],[76,49],[81,54],[89,42],[95,46],[111,33],[116,28],[126,51],[132,45],[143,64],[157,61],[173,73],[182,71],[193,75],[207,87],[218,89],[229,87],[240,93],[252,90],[261,101],[271,107],[279,104],[287,110],[295,108],[308,116],[321,117],[333,124],[344,120],[356,125],[360,121],[374,127],[390,129],[406,132],[427,132],[435,135],[450,132],[468,139],[485,140],[496,144],[501,128],[508,141],[516,130],[521,138],[530,112],[536,132],[542,124],[549,107],[557,134],[561,125],[570,144],[577,127],[584,144],[591,132],[597,115],[605,119],[614,130],[620,122],[635,113],[647,118],[658,121],[667,126],[678,124],[692,111],[699,113],[705,121],[715,120],[726,131],[736,129],[743,124],[751,130],[758,132],[772,129],[785,122],[795,119],[804,124],[816,122],[830,113],[840,119],[848,116],[858,123],[866,122],[878,133],[888,130],[896,139],[906,139]];
+  const armillary=[[911,136],[918,128],[924,125],[939,122],[948,117],[951,126],[959,134],[963,140]];
+  const trees=[[915,141],[926,140],[934,146],[945,138],[953,141],[963,137]];
+  const east=[[974,134],[989,122],[1000,130],[1012,128],[1020,132],[1034,133],[1051,130],[1056,124],[1062,120],[1066,126],[1073,111],[1082,101],[1084,117],[1091,109],[1095,120],[1103,117],[1105,127],[1115,108],[1122,116]];
+  function bitmap(w,h){
+    const element=document.createElement('canvas');element.width=w;element.height=h;return element;
+  }
+  async function image(path){
+    const img=new Image();
+    await new Promise((ok,fail)=>{img.onload=ok;img.onerror=()=>fail(new Error('Не удалось загрузить '+path));img.src=window.duoArt(path);});
+    return img;
+  }
+  // The original mountain silhouette includes the peaks of the academy's armillary.
+  function cutTerrain(terrain,stage,tint){
+    const land=bitmap(W,H),ctx=land.getContext('2d'),mask=bitmap(W,H),m=mask.getContext('2d');
+    ctx.drawImage(terrain,0,0,W,H);
+    if(tint){ctx.fillStyle=tint;ctx.globalAlpha=.08;ctx.fillRect(0,0,W,H);ctx.globalAlpha=1;}
+    m.beginPath();m.moveTo(0,H);m.lineTo(W,H);
+    for(const p of [...west,...(stage>=3?armillary:trees),...east].reverse())m.lineTo(...p);
+    m.closePath();m.fillStyle='#fff';m.fill();
+    ctx.globalCompositeOperation='destination-in';
+    if('filter' in ctx)ctx.filter='blur(1.15px)';
+    ctx.drawImage(mask,0,0);ctx.globalCompositeOperation='source-over';ctx.filter='none';
+    return land;
+  }
+  function prepareSky(image,tint){
+    const artwork=bitmap(image.naturalWidth,image.naturalHeight),ctx=artwork.getContext('2d'),w=artwork.width,h=artwork.height;
+    const width=W*1.06,height=width*h/w;
+    ctx.drawImage(image,0,0);
+    if(tint){ctx.globalAlpha=.08;ctx.fillStyle=tint;ctx.fillRect(0,0,w,h);ctx.globalAlpha=1;}
+    const side=bitmap(1,256),s=side.getContext('2d');s.drawImage(artwork,0,0,1,256);
+    const rgb=y=>'rgb('+Array.from(s.getImageData(0,y,1,1).data).slice(0,3).join(',')+')';
+    const above=rgb(0),below=rgb(255);
+    const panorama=bitmap(w,h);panorama.getContext('2d').drawImage(artwork,0,0);
+    ctx.globalCompositeOperation='destination-in';
+    for(const [vertical,inset] of [[false,28/width],[true,34/height]]){
+      const fade=ctx.createLinearGradient(0,0,vertical?0:w,vertical?h:0);
+      for(const [p,v] of [[0,0],[.25,.15625],[.5,.5],[.75,.84375],[1,1]])fade.addColorStop(p*inset,'rgba(0,0,0,'+v+')');
+      for(const [p,v] of [[0,1],[.25,.84375],[.5,.5],[.75,.15625],[1,0]])fade.addColorStop(1-inset+p*inset,'rgba(0,0,0,'+v+')');
+      ctx.fillStyle=fade;ctx.fillRect(0,0,w,h);
+    }
+    return {artwork,panorama,side,above,below,width,height,top:160-height*.73};
+  }
+  function camera(width,height){
+    const worldHeight=Math.max(H*1.3,height*W/width),scale=height/worldHeight;
+    const left=(W-width/scale)/2,top=H-worldHeight;
+    const distance=Math.hypot(Math.abs(fx-W/2)+width/(scale*2),Math.abs(fy-(top+worldHeight/2))+worldHeight/2);
+    return {left,top,scale,width,height,distance};
+  }
+  function worldTransform(ctx,view){
+    ctx.setTransform(view.scale,0,0,view.scale,-view.left*view.scale,-view.top*view.scale);
+  }
+  function paintSky(ctx,view,sky){
+    const width=view.width/view.scale,height=view.height/view.scale,top=sky.top,bottom=top+sky.height;
+    ctx.fillStyle=sky.above;ctx.fillRect(view.left,view.top,width,height);
+    if(bottom<H){ctx.fillStyle=sky.below;ctx.fillRect(view.left,bottom,width,H-bottom);}
+    ctx.drawImage(sky.side,view.left,top,width,sky.height);
+    if(view.width>view.height){
+      const left=(W-sky.width)/2,right=left+sky.width;
+      // Outside the phone camera, carry the actual clouds and stars into the
+      // side sky. The original illustration still occupies its native bounds.
+      for(const [edge,sign] of [[left,1],[right,-1]]){
+        ctx.save();ctx.translate(edge,0);ctx.scale(-sign,1);
+        const strip=.48*sky.panorama.width,src=sign===1?0:sky.panorama.width-strip;
+        if(sign<0){ctx.translate(width/2,0);ctx.scale(-1,1);}
+        ctx.drawImage(sky.panorama,src,0,strip,sky.panorama.height,0,top,width/2,sky.height);
+        ctx.restore();
+      }
+    }
+    ctx.drawImage(view.width>view.height?sky.panorama:sky.artwork,(W-sky.width)/2,top,sky.width,sky.height);
+  }
+  // The phone viewport ends at the city's banks. A wide Duo shows the
+  // outskirts too: extend only each nearest bank, softly, from this frame of
+  // the terrain. During infall these strips dissolve with their source.
+  function makeWings(){
+    const sw=104,sh=320,depth=182;
+    const strip=bitmap(sw*2,sh),s=strip.getContext('2d');
+    const softer=[[64,156],[32,64],[18,30],[10,16],[6,10],[4,6]].map(([w,h])=>bitmap(w,h));
+    const levels=[strip,...softer];
+    let gradient=null,gradientWidth=0,gradientHeight=0;
+    function draw(ctx,view,image,x,y,width,height){
+      if(view.width<=view.height)return;
+      const margin=-view.left;
+      if(margin<1)return;
+      const units=image.width/width,region=depth*units;
+      s.clearRect(0,0,sw*2,sh);
+      s.drawImage(image,-x*units,0,region,image.height,0,0,sw,sh);
+      s.drawImage(image,(W-depth-x)*units,0,region,image.height,sw,0,sw,sh);
+      for(let j=1;j<levels.length;j++){
+        const level=levels[j],low=level.getContext('2d');low.clearRect(0,0,level.width,level.height);
+        low.drawImage(levels[j-1],0,0,level.width,level.height);
+      }
+      const pieces=7;
+      for(const sign of [-1,1]){
+        ctx.save();ctx.translate(sign<0?0:W,0);ctx.scale(sign,1);
+        let dest=0,src=0;
+        for(let i=1;i<=pieces;i++){
+          const end=margin*(i/pieces)**1.55;
+          const next=sw*(1-Math.exp(-end/depth));
+          const level=levels[i-1],mip=level.width/(sw*2);
+          ctx.save();
+          if(sign>0){ctx.translate(end+dest,0);ctx.scale(-1,1);}
+          ctx.drawImage(level,(sign<0?src:sw*2-next)*mip,0,(next-src)*mip,level.height,dest,y,end-dest+.5/view.scale,height);
+          ctx.restore();dest=end;src=next;
+        }
+        ctx.restore();
+      }
+    }
+    function shade(ctx,view){
+      if(view.width<=view.height||view.left>=0)return;
+      const width=view.width,bank=-view.left*view.scale/width;
+      if(!gradient||gradientWidth!==width||gradientHeight!==view.height){
+        gradient=ctx.createLinearGradient(0,0,width,0);gradientWidth=width;gradientHeight=view.height;
+        for(const [stop,alpha] of [[0,.95],[bank*.53,.84],[bank*.85,.46],[bank,0],[1-bank,0],[1-bank*.85,.46],[1-bank*.53,.84],[1,.95]]){
+          gradient.addColorStop(stop,'rgba(0,0,0,'+alpha+')');
+        }
+      }
+      ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle=gradient;ctx.fillRect(0,0,width,view.height);ctx.restore();
+    }
+    return {draw,shade};
+  }
+  function holeScale(time,view,reduced){
+    const t=clamp((time-ignition)/(blackout-ignition));
+    if(reduced)return .015+t*1.85;
+    return .015+(view.distance*1.04/8-.015)*Math.expm1(6.5*t)/Math.expm1(6.5);
+  }
+  function paintHole(ctx,time,scale,reduced){
+    const {x,y}=BlackHoleArt.center;
+    ctx.save();ctx.translate(fx,fy);ctx.scale(scale,scale);
+    ctx.fillStyle='#000';ctx.beginPath();ctx.arc(0,0,45,0,Math.PI*2);ctx.fill();
+    ctx.translate(-x*345,-y*230);
+    BlackHoleArt.paint(ctx,345,230,time-ignition,{world:true,reducedMotion:reduced});
+    ctx.restore();
+  }
+  const vertexSource=`
+    attribute vec2 uv;
+    uniform vec4 bounds;
+    uniform vec4 camera;
+    uniform float power;
+    varying highp vec2 coord;
+    void main() {
+      coord=uv;
+      vec2 point=bounds.xy+bounds.zw*uv, focus=vec2(869.55,-238.34);
+      vec2 ray=point-focus;
+      float fraction=clamp(max(max(-ray.x/focus.x,ray.x/(1122.-focus.x)),ray.y/(1402.-focus.y)),0.,1.);
+      float stretch=.001+.999*pow(max(.000001,fraction),power);
+      if(point.x<=0. || point.x>=1122. || point.y>=1402.)stretch=1.;
+      vec2 screen=(focus+ray*stretch-camera.xy)*camera.zw;
+      gl_Position=vec4(screen.x*2.-1.,1.-screen.y*2.,0.,1.);
+    }`;
+  const fragmentSource=`
+    precision highp float;
+    varying highp vec2 coord;
+    uniform sampler2D art;
+    uniform vec4 bounds;
+    uniform float power,horizon;
+    void main(){
+      vec2 source=bounds.xy+coord*bounds.zw,focus=vec2(869.55,-238.34),ray=source-focus;
+      float fraction=clamp(max(max(-ray.x/focus.x,ray.x/(1122.-focus.x)),ray.y/(1402.-focus.y)),0.,1.);
+      float stretch=.001+.999*pow(max(.000001,fraction),power);
+      if(source.x<=0. || source.x>=1122. || source.y>=1402.)stretch=1.;
+      float angle=atan(-ray.y,ray.x);
+      float rim=horizon*(.983+.003*sin(angle*11.)+.002*sin(angle*27.+.65));
+      float feather=max(.8,horizon*.007);
+      float remaining=smoothstep(rim-feather,rim+feather,length(ray)*stretch);
+      gl_FragColor=texture2D(art,coord)*remaining;
+    }`;
+  function makeMesh(gl,columns,rows,bounds,image){
+    const vertices=[],indices=[];
+    for(let y=0;y<=rows;y++)for(let x=0;x<=columns;x++)vertices.push(x/columns,y/rows);
+    for(let y=0;y<rows;y++)for(let x=0;x<columns;x++){
+      const i=y*(columns+1)+x;
+      indices.push(i,i+1,i+columns+1,i+1,i+columns+2,i+columns+1);
+    }
+    const uv=gl.createBuffer(),ix=gl.createBuffer(),texture=gl.createTexture();
+    gl.bindBuffer(gl.ARRAY_BUFFER,uv);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(vertices),gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ix);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(indices),gl.STATIC_DRAW);
+    gl.bindTexture(gl.TEXTURE_2D,texture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,true);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,image);
+    for(const p of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,p,gl.CLAMP_TO_EDGE);
+    for(const p of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,p,gl.LINEAR);
+    return {uv,ix,texture,bounds,count:indices.length};
+  }
+  function makeGpu(land,people,wings){
+    const surface=bitmap(1,1),gl=surface.getContext('webgl',{alpha:true,premultipliedAlpha:true,antialias:false,depth:false,stencil:false});
+    if(!gl)return null;
+    let program;
+    const meshes=[];
+    function release(){
+      for(const m of meshes){gl.deleteBuffer(m.uv);gl.deleteBuffer(m.ix);gl.deleteTexture(m.texture);}
+      if(program)gl.deleteProgram(program);
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+    }
+    try{
+      program=gl.createProgram();
+      for(const [type,source] of [[gl.VERTEX_SHADER,vertexSource],[gl.FRAGMENT_SHADER,fragmentSource]]){
+        const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);
+        if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(shader));
+        gl.attachShader(program,shader);gl.deleteShader(shader);
+      }
+      gl.linkProgram(program);
+      if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));
+      gl.useProgram(program);gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
+      const position=gl.getAttribLocation(program,'uv'),uniform=name=>gl.getUniformLocation(program,name);
+      const camera=uniform('camera'),bounds=uniform('bounds'),horizon=uniform('horizon'),power=uniform('power');
+      gl.enableVertexAttribArray(position);
+      meshes.push(makeMesh(gl,56,70,[0,0,W,H],land));
+      const b=people.hubBounds;
+      meshes.push(makeMesh(gl,24,16,[b.x,b.y,b.width,b.height],people.hubTexture));
+      function draw(ctx,view,p,radius){
+        if(gl.isContextLost())return false;
+        if(surface.width!==view.width)surface.width=view.width;
+        if(surface.height!==view.height)surface.height=view.height;
+        gl.viewport(0,0,view.width,view.height);gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.uniform4f(camera,view.left,view.top,view.scale/view.width,view.scale/view.height);
+        gl.uniform1f(power,p);gl.uniform1f(horizon,radius);
+        for(const m of meshes){
+          gl.uniform4fv(bounds,m.bounds);gl.bindTexture(gl.TEXTURE_2D,m.texture);
+          gl.bindBuffer(gl.ARRAY_BUFFER,m.uv);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,m.ix);gl.drawElements(gl.TRIANGLES,m.count,gl.UNSIGNED_SHORT,0);
+        }
+        wings.draw(ctx,view,surface,view.left,view.top,view.width/view.scale,view.height/view.scale);
+        ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(surface,0,0);ctx.restore();
+        return true;
+      }
+      return {draw,release};
+    }catch(err){release();return null;}
+  }
+  // Invert the pinned ray mapping on software WebViews. Looking up the
+  // continuous curve keeps the painted city in one piece even in the fallback.
+  function makeSoftware(land,people,wings,width=640){
+    const image=bitmap(W,H),g=image.getContext('2d'),b=people.hubBounds;
+    g.drawImage(land,0,0);g.drawImage(people.hubTexture,b.x,b.y,b.width,b.height);
+    const source=new Uint32Array(g.getImageData(0,0,W,H).data.buffer);
+    const height=Math.round(width*(H-fy)/W),scale=W/width;
+    const surface=bitmap(width,height),context=surface.getContext('2d'),frame=context.createImageData(width,height);
+    const count=width*height,tableSize=16384,rayIndex=new Uint16Array(count),distance=new Float32Array(count);
+    const dx=new Float32Array(width),dy=new Float32Array(height),inverse=new Float32Array(tableSize+1);
+    for(let x=0;x<width;x++)dx[x]=(x+.5)*scale-fx;
+    for(let y=0;y<height;y++)dy[y]=(y+.5)*(H-fy)/height;
+    for(let y=0,i=0;y<height;y++)for(let x=0;x<width;x++,i++){
+      const xx=dx[x],yy=dy[y],theta=Math.atan2(-yy,xx);
+      rayIndex[i]=Math.round(tableSize*clamp(Math.max(-xx/fx,xx/(W-fx),yy/(H-fy))));
+      distance[i]=Math.hypot(xx,yy)/(.983+.003*Math.sin(11*theta)+.002*Math.sin(27*theta+.65));
+    }
+    function draw(ctx,view,p,radius){
+      // For input s, the observed radial coordinate is s*(.001+.999*s^p).
+      let at=0;
+      for(let j=1;j<=tableSize;j++){
+        const s=j/tableSize,end=j*(.001+.999*Math.pow(s,p));
+        while(at<=end && at<=tableSize){inverse[at]=at?j/at:1;at++;}
+      }
+      const pixels=new Uint32Array(frame.data.buffer),feather=Math.max(.8,radius*.007);
+      for(let y=0,i=0;y<height;y++)for(let x=0;x<width;x++,i++){
+        const d=distance[i],factor=inverse[rayIndex[i]],sx=fx+dx[x]*factor,sy=fy+dy[y]*factor;
+        if(d<radius-feather || sx<0 || sx>=W || sy<0 || sy>=H){pixels[i]=0;continue;}
+        pixels[i]=source[(sy|0)*W+(sx|0)];
+        if(d<radius+feather){const u=clamp((d-radius+feather)/(2*feather));frame.data[4*i+3]*=u*u*(3-2*u);}
+      }
+      context.putImageData(frame,0,0);wings.draw(ctx,view,surface,0,fy,W,H-fy);
+      ctx.drawImage(surface,0,fy,W,H-fy);
+    }
+    return {draw};
+  }
+  async function prepare(host,snapshot){
+    let stage=0;
+    for(const [i,place] of window.DuoWorldMap.districts.entries()){
+      if(snapshot.pairs.some(p=>p.id===place.id&&p.unlocked))stage=i+1;
+    }
+    const [terrain,stars,people]=await Promise.all([
+      image('art/world-'+String(stage).padStart(2,'0')+'.webp'),
+      image('art/map/rebirth-sky.jpg'),RebirthPeople.prepare(snapshot),BlackHoleArt.load()
+    ]);
+    const selection=window.Appearance?.selection?.();
+    const tint=selection&&selection.themes!=='classic'?Appearance.visual('themes',selection.themes).color:null;
+    const sky=prepareSky(stars,tint),land=cutTerrain(terrain,stage,tint);
+    const canvas=bitmap(1,1),ctx=canvas.getContext('2d',{alpha:false});
+    const backdrop=bitmap(1,1),backdropContext=backdrop.getContext('2d',{alpha:false});
+    if(!ctx)throw Error('Нет Canvas 2D');
+    canvas.setAttribute('aria-hidden','true');
+    Object.assign(canvas.style,{position:'absolute',inset:'0',width:'100%',height:'100%',pointerEvents:'none'});
+    const wings=makeWings();
+    let gpu=makeGpu(land,people,wings),software=gpu?null:makeSoftware(land,people,wings),slowFrames=0,closed=false;
+    const motion=window.matchMedia('(prefers-reduced-motion: reduce)');
+    host.prepend(canvas);
+    function render(t){
+      if(closed)return;
+      // Rotations change just the camera. Its field of view is independent of rendering resolution.
+      const w=Math.max(1,host.clientWidth),h=Math.max(1,host.clientHeight);
+      const d=Math.min(window.devicePixelRatio||1,2,Math.sqrt(1800000/(w*h)));
+      const bw=Math.max(1,Math.round(w*d)),bh=Math.max(1,Math.round(h*d));
+      if(canvas.width!==bw)canvas.width=bw;
+      if(canvas.height!==bh)canvas.height=bh;
+      if(t>=blackout){
+        ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#000';ctx.fillRect(0,0,bw,bh);return;
+      }
+      const reduced=motion.matches,view=camera(bw,bh),scale=holeScale(t,view,reduced);
+      // The sky is stationary in camera space. Scaling the feathered atlas and
+      // its horizon gutters only on rotation avoids resampling them every frame.
+      if(backdrop.width!==bw||backdrop.height!==bh){
+        backdrop.width=bw;backdrop.height=bh;
+        worldTransform(backdropContext,view);paintSky(backdropContext,view,sky);
+      }
+      ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(backdrop,0,0);
+      worldTransform(ctx,view);
+      if(t>=ignition){paintHole(ctx,t,scale,reduced);WorldCollapseLight.impact(ctx,t,reduced);}
+      if(t<infall){
+        wings.draw(ctx,view,land,0,0,W,H);
+        ctx.drawImage(land,0,0);people.drawHub(ctx,t,reduced);
+      }else{
+        const slide=clamp((t-infall)/(blackout-infall)/.91);
+        if(reduced){
+          ctx.save();ctx.globalAlpha=1-slide;
+          wings.draw(ctx,view,land,0,0,W,H);
+          ctx.drawImage(land,0,0);
+          const b=people.hubBounds;ctx.drawImage(people.hubTexture,b.x,b.y,b.width,b.height);ctx.restore();
+        }else{
+          const step=Math.round(slide*240)/240,p=12*step*step*(3-2*step);
+          if(!gpu?.draw(ctx,view,p,8*scale)){
+            if(gpu){gpu.release();gpu=null;}
+            if(!software)software=makeSoftware(land,people,wings);
+            const start=performance.now();
+            software.draw(ctx,view,p,8*scale);
+            if(slowFrames>=0 && performance.now()-start>40 && ++slowFrames>=2){
+              software=makeSoftware(land,people,wings,360);slowFrames=-1;
+            }
+          }
+        }
+      }
+      ctx.save();people.draw(ctx,t,reduced);ctx.restore();
+      ctx.save();WorldCollapseLight.draw(ctx,t,reduced);ctx.restore();
+      wings.shade(ctx,view);
+      if(reduced){
+        const alpha=clamp(((t-ignition)/(blackout-ignition)-.66)/.34);
+        if(alpha){ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='rgba(0,0,0,'+alpha+')';ctx.fillRect(0,0,bw,bh);}
+      }
+    }
+    function destroy(){
+      if(closed)return;
+      closed=true;gpu?.release();gpu=null;software=null;people.destroy?.();canvas.remove();canvas.width=canvas.height=1;
+      backdrop.width=backdrop.height=1;
+    }
+    return {render,destroy};
+  }
+  return Object.freeze({prepare});
+})();
+
+;
+// Foreground time follows the iPhone scene, including the commit behind the blackout.
+window.WorldRebirth=(()=>{
+  'use strict';
+  const launch=2.25, infall=3.63, birth=11.95, end=14.6, reveal=.7;
+  const epochs=['','I','II','III','IV','V','VI','VII','VIII','IX','X'];
+  let run=null,paused=false,away=false;
+  const hidden=()=>document.hidden||paused||away;
+
+  function finish(){
+    const {host,scene,frame}=run;
+    cancelAnimationFrame(frame);scene?.destroy();host.remove();run=null;
+    const station=document.getElementById('station');
+    station.removeAttribute('inert');delete station.dataset.rebirth;
+    window.dispatchEvent(new Event('duonavigation'));App.sync();
+    document.querySelector('#tabs [aria-current="page"]')?.focus({preventScroll:true});
+  }
+  function commit(r){
+    // Seal the result before any synchronous award or navigation callback.
+    r.result='failed';
+    if(ExtraModel.collapse())r.result=r.cosmic?'universe':'epoch';
+    const current=Economy.snapshot().prestigeLevel;
+    r.title.textContent={epoch:'Создан новый мир',universe:'Родилась новая вселенная',failed:'Переход не сохранён'}[r.result];
+    r.detail.textContent=r.result==='epoch'?'ЭПОХА '+epochs[current]:
+      r.result==='universe'?'КОСМИЧЕСКАЯ НАГРАДА ПОЛУЧЕНА':'Ваш прежний мир сохранён';
+    if(r.result==='failed')DuoAudio.stopWorldTransition();else DuoAudio.play('world-birth');
+  }
+  function revealWorld(r){
+    r.revealing=true;r.scene.destroy();r.scene=null;r.caption.hidden=true;
+    document.getElementById('station').dataset.rebirth='reveal';
+    if(r.result!=='failed')window.dispatchEvent(new Event('duoprestige'));
+    window.dispatchEvent(new Event('duonavigation'));App.sync();
+  }
+  function draw(now){
+    const r=run;
+    if(!r||hidden())return;
+    r.frame=0;
+    if(r.last!==null)r.time+=Math.max(0,now-r.last)/1000;
+    r.last=now;
+    const t=r.time;
+    if(!r.started){r.started=true;DuoAudio.play('world-charge');}
+    if(t>=launch && !r.launched){r.launched=true;DuoAudio.play('world-launch');}
+    if(t>=infall && !r.infall){r.infall=true;DuoAudio.play('world-infall');}
+    if(t>=birth && !r.result)commit(r);
+    if(t<end){
+      if(t-r.painted>=1/30 || r.resized){
+        r.scene.render(t);r.painted=t;r.resized=false;
+      }
+      const age=t-birth;
+      r.caption.style.opacity=String(Math.max(0,Math.min(1,age/.58,(2.59-age)/.46)));
+    }else{
+      if(!r.revealing)revealWorld(r);
+      r.host.style.opacity=String(1-Math.min(1,(t-end)/reveal));
+      if(t>=end+reveal){finish();return;}
+    }
+    r.frame=requestAnimationFrame(draw);
+  }
+  function wake(){
+    if(!run)return;
+    cancelAnimationFrame(run.frame);run.frame=0;run.last=null;
+    if(!hidden() && (run.scene||run.revealing))run.frame=requestAnimationFrame(draw);
+  }
+  async function start(){
+    if(run||App.sheet!=='prestige')return;
+    const snapshot=Economy.snapshot();
+    if(!snapshot.canPrestige)return;
+    const station=document.getElementById('station'),host=document.createElement('section');
+    host.id='world-rebirth';host.tabIndex=-1;host.setAttribute('role','dialog');
+    host.setAttribute('aria-modal','true');host.setAttribute('aria-label','Рождение нового мира');
+    const stage=document.createElement('div'),caption=document.createElement('div');
+    stage.className='rebirth-stage';caption.className='rebirth-caption';
+    caption.setAttribute('role','status');caption.setAttribute('aria-atomic','true');
+    const title=document.createElement('h2'),detail=document.createElement('p');
+    title.id='rebirth-title';detail.id='rebirth-detail';caption.append(title,detail);host.append(stage,caption);
+    const r=run={host,caption,title,detail,scene:null,frame:0,last:null,painted:-1,time:0,result:'',cosmic:snapshot.prestigeLevel===10};
+    station.dataset.rebirth='scene';App.route('world');station.setAttribute('inert','');
+    document.body.append(host);host.focus({preventScroll:true});
+    try{
+      r.scene=await WorldCollapse.prepare(stage,snapshot);
+      r.scene.render(0);
+    }catch(e){
+      console.warn('World transition could not start',e);
+      finish();App.openSheet('prestige');
+      const msg=document.createElement('p');msg.setAttribute('role','alert');
+      msg.textContent='Не удалось показать переход. Ваш мир сохранён. Попробуйте ещё раз.';
+      document.querySelector('#sheet-content article')?.prepend(msg);return;
+    }
+    wake();
+  }
+  document.addEventListener('visibilitychange',wake);
+  window.addEventListener('duopause',()=>{paused=true;wake();});
+  window.addEventListener('duoresume',()=>{paused=false;wake();});
+  window.addEventListener('pagehide',()=>{away=true;wake();});
+  window.addEventListener('pageshow',()=>{away=false;wake();});
+  window.addEventListener('resize',()=>{if(run)run.resized=true;});
+  return Object.freeze({start,get active(){return !!run;},get covering(){return !!run&&!run.revealing;}});
 })();
 
 ;
@@ -1452,8 +2628,18 @@ window.DuoResidents = (() => {
         '<span class="pg-resource-facts"><span>'+fmt(r.owned)+' в работе</span><b>'+ (r.owned>=r.maximumCount?"MAX":'×'+fmt(b.nominal))+'</b></span>'+
         '<em class="pg-resource-price">'+(r.owned>=r.maximumCount?"Лимит достигнут":catalog(b.cost)+' ∫')+'</em></button></article>';
   }
-  function prestigeRow(s){
-    return '<button class="pg-resource pg-blackhole '+(s.canPrestige?'pg-ready':'')+'" data-page-action="prestige"><span class="pg-unknown">'+(s.prestigeDiscovered?'◉':'?')+'</span><span><strong>'+(s.prestigeDiscovered?'Чёрная дыра':'???')+'</strong><small>'+(s.prestigeDiscovered?'Цена перехода':'Сначала откройте предыдущий ресурс')+'</small><em>'+IntegralNumbers.prestigePrice+' ∫</em><small>Подробнее ›</small></span></button>';
+  function blackHoleRequirement(last){
+    return last.owned ? 'Неизвестный ресурс' : last.discovered ? 'Сначала получите: '+last.name : 'Сначала откройте предыдущий ресурс';
+  }
+  function prestigeRow(s,last){
+    const known=s.prestigeDiscovered,affordable=s.hasPrestigeResource&&s.balance>=s.prestigePrice;
+    const ranks=['0','I','II','III','IV','V','VI','VII','VIII','IX','X'];
+    const symbol=known?'<duo-black-hole compact aria-hidden="true"></duo-black-hole>':'<span class="bh-unknown" aria-hidden="true">?</span>';
+    const hint=known?'<b class="bh-ranks">'+ranks[s.prestigeLevel]+' → '+ranks[(s.prestigeLevel+1)%11]+'</b>':'<small>'+esc(blackHoleRequirement(last))+'</small>';
+    return '<button type="button" class="pg-resource pg-blackhole '+(affordable?'pg-ready':'')+'" data-page-action="prestige">'+
+      '<span class="bh-heading"><span class="bh-icon">'+symbol+'</span><span><strong>'+(known?'Чёрная дыра':'???')+'</strong>'+hint+'</span></span>'+
+      '<span class="bh-price"><small>'+(known?'Цена перехода':'Цена')+'</small><em>'+IntegralNumbers.prestigePrice+' ∫</em></span>'+
+      '<span class="bh-more"><small>'+(known?'Подробнее о переходе':'Подробнее')+'</small><b aria-hidden="true">›</b></span></button>';
   }
   // The shop is a stable list: purchases change numbers, thresholds change
   // button state, and a discovery replaces just one hidden portrait.
@@ -1465,15 +2651,17 @@ window.DuoResidents = (() => {
       discovered:r.discovered, staticKey:null, dynamicKey:null, badge:r.unseen};
   }
   function updateResources(s){
+    const resources=s.resources,last=resources[resources.length-1];
+    const prestigeState=s.prestigeDiscovered?s.prestigeLevel:blackHoleRequirement(last);
     let watch=false;
     if(!resourceEntries.length) {
-      list.innerHTML=s.resources.map((r,i)=>resourceRow(s,r,i)).join("")+prestigeRow(s);
-      resourceEntries=s.resources.map((r,i)=>cacheEntry(list.children[i],r));
-      prestigeEntry={node:list.lastElementChild,shown:s.prestigeDiscovered};
+      list.innerHTML=resources.map((r,i)=>resourceRow(s,r,i)).join("")+prestigeRow(s,last);
+      resourceEntries=resources.map((r,i)=>cacheEntry(list.children[i],r));
+      prestigeEntry={node:list.lastElementChild,shown:prestigeState};
       watch=true;
     }
-    s.resources.forEach((r,i)=>{
-      const ent=resourceEntries[i], b=buyInfo(r,s), previous=s.resources[i-1];
+    resources.forEach((r,i)=>{
+      const ent=resourceEntries[i], b=buyInfo(r,s), previous=resources[i-1];
       const fixed=[r.discovered,r.unlocked,!!previous?.discovered].join("|");
       const dynamic=[r.owned,b.allowed,b.nominal,b.cost,r.unseen].join("|");
       if(ent.staticKey!==fixed){
@@ -1505,12 +2693,12 @@ window.DuoResidents = (() => {
         ent.badge=r.unseen;watch=true;
       }
     });
-    if(prestigeEntry.shown!==s.prestigeDiscovered) {
-      const tpl=document.createElement("template");tpl.innerHTML=prestigeRow(s);
+    if(prestigeEntry.shown!==prestigeState) {
+      const tpl=document.createElement("template");tpl.innerHTML=prestigeRow(s,last);
       prestigeEntry.node.replaceChildren(...Array.from(tpl.content.firstElementChild.childNodes));
-      prestigeEntry.shown=s.prestigeDiscovered;
+      prestigeEntry.shown=prestigeState;
     }
-    prestigeEntry.node.classList.toggle("pg-ready",s.canPrestige);
+    prestigeEntry.node.classList.toggle("pg-ready",s.hasPrestigeResource&&s.balance>=s.prestigePrice);
     if(watch)observeNew(s);
 
   }
@@ -1633,7 +2821,7 @@ window.DuoResidents = (() => {
     }
     pauseWorld();
   }
-  function pauseWorld(){map?.sleep(mapNativePaused || !!window.App?.sheet || selected?.type==="residents");}
+  function pauseWorld(){map?.sleep(window.WorldRebirth?.covering || mapNativePaused || !!window.App?.sheet || selected?.type==="residents");}
   window.addEventListener("duonavigation",pauseWorld);
   window.addEventListener("duonavigation",updateDistrictButtons);
   document.addEventListener("visibilitychange",updateDistrictButtons);
@@ -1704,7 +2892,7 @@ window.DuoResidents = (() => {
     }else if(type==="residents"){
       return DuoResidents.render(s,residentsTab,resourceImage);
     }else if(type==="mystery"){
-      title="Неизвестный ресурс";body='<p>Сначала откройте предыдущий ресурс.</p>';
+      title="Неизвестный ресурс";body='<p>'+esc(s.hasPrestigeResource?"Название откроется, когда вы накопите нужное количество интегралов.":blackHoleRequirement(s.resources.at(-1)))+'</p><div class="pg-detail-facts bh-price"><small>Цена</small><strong>'+IntegralNumbers.prestigePrice+' ∫</strong></div>';
     }else{
       title="Задания";
       body=quests.length?quests.map(q=>{
@@ -4414,7 +5602,7 @@ function watchPreview(c){
 }
 function draw(){
   if(timer){clearTimeout(timer);timer=0;}
-  if(document.hidden||nativePaused||window.App?.scrolling)return;
+  if(document.hidden||nativePaused||window.WorldRebirth?.covering||window.App?.scrolling)return;
   const t=motion.matches?0:performance.now()/1000;
   const overlay=document.getElementById('dialog-layer');
   const showPage=!overlay||overlay.hidden;
@@ -5778,10 +6966,36 @@ window.Extras = (() => {
   }
   function prestige(){
     const s=Economy.snapshot(),max=s.prestigeLevel===10;
-    const enabled=s.resources.at(-1).owned>0&&s.balance>=ExtraModel.price&&!window.Quests?.active?.();
-    panel.innerHTML='<article class="ex-wrap ex-collapse"><div class="ex-hole" aria-hidden="true"></div><h2>'+(confirm?'Вы точно уверены?':max?'За гранью бесконечности':'Начало новой эпохи')+'</h2><p>'+(max?'Интегралы, ресурсы, улучшения и номер престижа обнулятся. Вы получите космическую награду; достижения и оформление сохранятся.':'Интегралы, ресурсы и улучшения начнутся с нуля. Каждый престиж добавляет 10% к базовому производству и открывает особое оформление. Достижения и награды сохранятся.')+'</p>'+(confirm?'<button class="ex-button nav-control" data-cancel>Остаться в этом мире</button>':'<p>Цена перехода<br><strong>8 888 888 888 888 888 888 888 888 ∫</strong></p>')+'<button class="ex-button" data-next '+(enabled?'':'disabled')+'>'+(confirm?'Да, создать новую вселенную':'Да, перейти в новую эпоху')+'</button></article>';
-    const cancel=panel.querySelector('[data-cancel]');if(cancel)cancel.onclick=()=>{confirm=false;prestige()};
-    panel.querySelector('[data-next]').onclick=()=>{if(!confirm){confirm=true;prestige()}else if(ExtraModel.collapse()){window.DuoAudio?.play('world-birth');App.closeSheet();App.route('home');window.dispatchEvent(new Event('duoprestige'))}};
+    const title=confirm?'Вы точно уверены?':max?'За гранью бесконечности':'Начало новой эпохи';
+    const description=confirm ? (max?'Интегралы, ресурсы, улучшения и номер престижа обнулятся. Вы получите космическую награду; достижения и оформление сохранятся.':'Интегралы, ресурсы и улучшения обнулятся. Престиж вырастет на одну ступень. Достижения и оформление сохранятся.') :
+      (max?'Новый переход обнулит интегралы, ресурсы, улучшения и номер престижа. Профиль получит космическую карту, тему и кнопку. Достижения сохранятся.':'Интегралы, ресурсы и улучшения начнутся с нуля, престиж вырастет на одну ступень. Каждый престиж добавляет 10% к базовому производству и открывает особое оформление. Достижения и награды сохранятся.');
+    const disabled=s.canPrestige?'':' disabled';
+    const words=(text,strength)=>'<span class="bh-words" data-words data-gravity="'+strength+'">'+text.split(' ').map(w=>'<span>'+w+'</span>').join(' ')+'</span>';
+    let copy,actions;
+    if(confirm){
+      copy='<h2>'+words(title,1.5)+'</h2><p>'+words(description,1.1)+'</p>';
+      actions='<div class="bh-decisions"><button class="ex-button" data-cancel>'+words('Остаться в этом мире',.6)+'</button>'+
+        '<button class="ex-button bh-subdued" data-next'+disabled+'><span data-gravity="3" data-phase="3.1" aria-hidden="true">✦</span> '+words('Да, создать новую вселенную',.95)+'</button></div>';
+    }else{
+      copy='<h2 data-gravity="1">'+title+'</h2><p data-gravity="1" data-phase="1.2">'+description+'</p>'+
+        '<div class="bh-price"><small>Цена перехода</small><strong>'+IntegralNumbers.prestigePrice+' ∫</strong></div>';
+      if(window.Quests?.active?.())copy+='<p class="bh-warning">Сначала завершите текущее испытание.</p>';
+      if(!s.hasPrestigeResource)copy+='<p class="bh-warning">Сначала получите последний ресурс в списке.</p>';
+      actions='<button class="ex-button" data-next'+disabled+'>Да, перейти в новую эпоху</button>';
+    }
+    const art='<duo-black-hole aria-hidden="true" data-phase=".7" data-gravity="'+(confirm?'3.5':'0.3')+'"'+(confirm?' energized':'')+'></duo-black-hole>';
+    panel.innerHTML='<article class="ex-wrap ex-collapse">'+art+'<div class="bh-content">'+copy+actions+'</div></article>';
+    const decisions=panel.firstElementChild;
+    const cancel=decisions.querySelector('[data-cancel]');
+    if(cancel)cancel.onclick=()=>{
+      if(!decisions.isConnected)return;
+      confirm=false;prestige();
+    };
+    decisions.querySelector('[data-next]').onclick=()=>{
+      if(!decisions.isConnected || WorldRebirth.active || App.sheet!=='prestige')return;
+      if(confirm)WorldRebirth.start();
+      else {confirm=true;prestige();}
+    };
   }
   function prizeText(p,s){return p.resourceID?(s.resources.find(r=>r.id===p.resourceID)?.name||'Ресурс')+' ×'+format(p.count):'+'+format(p.integrals)+' ∫'}
   function wheel(){
@@ -5972,7 +7186,7 @@ window.HonorNotices=(()=>{
   }
   function showNext(){
     const app=window.App;
-    if(!enabled || suspended || document.hidden || !app || app.sheet || app.activeRoute==='appearance' ||
+    if(window.WorldRebirth?.active || !enabled || suspended || document.hidden || !app || app.sheet || app.activeRoute==='appearance' ||
         station.querySelector('.pg-overlay:not([hidden]),.pg-scrim:not([hidden]),.pg-details:not([hidden])')){
       pause();return;
     }
@@ -6027,7 +7241,7 @@ window.HonorNotices=(()=>{
   const headerButtons = header.querySelectorAll('[data-sheet]');
   const sheetNames = {
     profile:'Профиль', settings:'Настройки', help:'Как играть',
-    daily:'Подарок дня', challenges:'Задания', prestige:'Престиж', honors:'Достижения',
+    daily:'Подарок дня', challenges:'Задания', prestige:'Чёрная дыра', honors:'Достижения',
     residents:'Жители', statistics:'Статистика'
   };
   const iconPaths = {
@@ -6126,7 +7340,7 @@ window.HonorNotices=(()=>{
   const eventButton=byId('home-challenges'), daily=byId('daily');
   let questCount=0, questActive=false, presentedGiftDay=null;
   function presentDailyGift(){
-    if(daily.hidden || sheet || active==='appearance' || questActive || scrolling || document.hidden || nativePaused)return;
+    if(window.WorldRebirth.active || daily.hidden || sheet || active==='appearance' || questActive || scrolling || document.hidden || nativePaused)return;
     if(active!=='home' && page.querySelector('[role="dialog"]')?.getClientRects().length)return;
     const day=window.ExtraModel?.presentationDay?.();
     if(!day || presentedGiftDay===day)return;
@@ -6184,7 +7398,7 @@ window.HonorNotices=(()=>{
   function sync(periodic=false){
     if(document.hidden||nativePaused)return;
     const s=Economy.tick();
-    if(periodic && scrolling)return;
+    if(window.WorldRebirth.covering || (periodic && scrolling))return;
     chrome(s);
     window.Honors?.collect?.(s);
     if(sheet)window.Extras?.refresh?.(s);
@@ -6209,6 +7423,7 @@ window.HonorNotices=(()=>{
     for(const trigger of headerButtons)trigger.setAttribute('aria-expanded',String(trigger.dataset.sheet===name));
   }
   function route(name){
+    if(window.WorldRebirth.active && name!=='world')return;
     if(name==='honors'){openSheet('honors');return;}
     if(!routes.includes(name))return;
     if(name===active&&!sheet)return;
@@ -6242,6 +7457,7 @@ window.HonorNotices=(()=>{
     updateNav();
   }
   function openSheet(name,args,opener){
+    if(window.WorldRebirth.active)return;
     if(name==='appearance'){route('appearance');return;}
     if(name==='daily')presentedGiftDay=window.ExtraModel?.presentationDay?.() || presentedGiftDay;
     if(sheet===name || !Object.prototype.hasOwnProperty.call(sheetNames,name))return;
@@ -6265,6 +7481,7 @@ window.HonorNotices=(()=>{
   }
   window.App={route,openSheet,closeSheet,sync,get activeRoute(){return active;},get scrolling(){return scrolling;},get sheet(){return sheet;}};
   window.duoBack=()=>{
+    if(window.WorldRebirth.active)return true;
     if(sheet){if(window.Extras?.back?.())return true;return closeSheet();}
     if(active!=='home'){
       if(active==='appearance'?window.Appearance.back():window.Pages.back())return true;
