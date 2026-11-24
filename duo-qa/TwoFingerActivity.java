@@ -187,10 +187,37 @@ public final class TwoFingerActivity extends Activity {
                 handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},p),75);
                 handler.postDelayed(()->web.evaluateJavascript("!!document.querySelector('.pg-pane[data-detail=district] [data-page-action=quests][data-key=school]')",opened->{
                     if(failed)return;
-                    if("true".equals(opened))Log.i("DuoTouchQA","PASS two OS fingers bought exactly 1 of each; drag only scrolled; home viewport stayed fixed; map zoomed "+ratio+"x and next tap opened school");
+                    if("true".equals(opened)){Log.i("DuoTouchQA","Two OS fingers bought exactly one of each, viewport stayed fixed, map zoomed "+ratio+"x and next tap opened school");web.evaluateJavascript("App.route('home')", v -> handler.postDelayed(()->menuEdge(0),200));}
                     else fail(new Exception("School did not respond to a single tap after pinch"));
                 }),460);
             }catch(Exception e){fail(e);}
+        });
+    }
+    private void menuEdge(int test){
+        // Sample the whole visible bar independently of the element hit rectangles.
+        String[] tabs={"research","resources","home","world","appearance"};
+        String[] actions={"honors","profile","help"};
+        if(test==13){Log.i("DuoTouchQA","PASS landscape menu edges, two concurrent purchases, scroll cancellation and map pinch");return;}
+        boolean header=test>=10;
+        String name=header?actions[test-10]:tabs[test%5];
+        String expr=header
+            ?"var b=document.querySelector('.head-actions [data-sheet="+name+"]'),r=b.getBoundingClientRect();var x=r.right-5,y=r.top+5;"
+            :"var r=document.getElementById('tabs').getBoundingClientRect(),w=r.width/5;var x=r.left+w*"+(test%5)+(test<5?"+5":"+w-5")+",y="+(test<5?"r.top+5":"r.bottom-5")+";";
+        web.evaluateJavascript("(function(){"+expr+"return [innerWidth,innerHeight,x,y]})()", v->{
+            try{
+                JSONArray a=new JSONArray(v);
+                if(a.getInt(0)<=a.getInt(1))throw new Exception("Expected landscape viewport "+v);
+                float f=web.getWidth()/(float)a.getDouble(0);
+                float[][] p={{(float)a.getDouble(2)*f,(float)a.getDouble(3)*f}};
+                down=SystemClock.uptimeMillis();
+                motion(MotionEvent.ACTION_DOWN,new int[]{0},p);
+                handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},p),68);
+                handler.postDelayed(()->web.evaluateJavascript(header?"App.sheet":"App.activeRoute",hit->{
+                    if(!hit.equals("\""+name+"\"")){fail(new Exception("Menu edge "+test+" expected "+name+" actual "+hit+" at "+v));return;}
+                    if(header)web.evaluateJavascript("App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),150));
+                    else menuEdge(test+1);
+                }),310);
+            }catch(Exception ex){fail(ex);}
         });
     }
     private void motion(int action,int[] ids,float[][] points) {
