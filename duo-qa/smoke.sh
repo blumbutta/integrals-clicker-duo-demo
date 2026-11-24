@@ -156,4 +156,5 @@ test "$(skin "$first_views")" = "$(skin "$relaunched")"
 verify_click "$relaunched" 1
 echo "PASS: one real hosted lab; upgraded balance, background and disk artwork, stable binding across rotation and process relaunch."
 bash duo-qa/extra.sh "$new"
+bash duo-qa/artwork.sh
 echo "PASS: final package $final_hash"

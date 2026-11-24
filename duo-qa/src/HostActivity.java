@@ -52,7 +52,7 @@ public final class HostActivity extends Activity {
                 }
             }
             require(count == 1 && provider != null, "Expected only the lab, saw " + count + " providers");
-            require("Лаборатория".equals(provider.loadLabel(getPackageManager())), "Unexpected picker label " + provider.loadLabel(getPackageManager()));
+            require("Баланс интегралов".equals(provider.loadLabel(getPackageManager())), "Unexpected picker label " + provider.loadLabel(getPackageManager()));
             require(provider.minWidth > provider.minHeight, "Provider is not wide");
             require(provider.loadPreviewImage(this, getResources().getDisplayMetrics().densityDpi) != null, "Missing picker preview");
             SharedPreferences saved = getSharedPreferences("qa-host", MODE_PRIVATE);
@@ -127,7 +127,7 @@ public final class HostActivity extends Activity {
             Bitmap bg = bitmap("widget_background"), art = bitmap("widget_art");
             String text = value == null ? "" : value.getText().toString().trim();
             boolean ready = target != null && target.hasOnClickListeners() && target.getWidth() > 0 && text.endsWith("∫")
-                    && bg != null && art != null && bg.getWidth() > bg.getHeight() && art.getWidth() == art.getHeight();
+                    && bg != null && art != null && bg.getWidth() == 640 && bg.getHeight() == 240 && art.getWidth() == 160 && art.getHeight() == 160;
             if (!ready) {
                 if (++attempts >= 120) throw new IllegalStateException("No complete snapshot: balance=" + text
                         + " bg=" + (bg == null ? "null" : bg.getWidth()+"x"+bg.getHeight())
