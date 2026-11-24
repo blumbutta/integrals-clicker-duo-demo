@@ -8049,6 +8049,26 @@ window.Leaderboard=(()=>{
     if(!Array.isArray(data.entries)||data.entries.length>50||!data.entries.every(rowOK)||(data.me!==null&&!ownOK(data.me)))throw new RequestError(0);
     return data;
   }
+  // null means this opening of the standings has not needed a compatibility check.
+  let rankingRouteMissing=null;
+  const routeNotFound=e=>e.status===404 && e.data?.error==='not_found';
+  async function rankingFailure(error,valid){
+    if(!valid())return;
+    if(routeNotFound(error))rankingRouteMissing=true;
+    if(error.status===0 && rankingRouteMissing===null && visible() && online() && !window.DuoRank){
+      // Older services reject OPTIONS for /v2. A simple GET exposes the route's
+      // status to the browser without sending the player's session or score.
+      let missing=false;
+      try{await request(paths.list,apiOrigin);}
+      catch(probeError){missing=routeNotFound(probeError);}
+      if(!valid())return;
+      rankingRouteMissing=missing;
+    }
+    if(!valid())return;
+    if(rankingRouteMissing && (routeNotFound(error)||error.status===0)){
+      message='Для рейтинга по заработанным интегралам нужно обновить сервер игры. Яндекс ID подключён, прогресс сохраняется в игре.';
+    }else fail(error);
+  }
   let prestigePending=false;
   function timer(){
     clearTimeout(refreshTimer);
@@ -8100,12 +8120,13 @@ window.Leaderboard=(()=>{
       if(visible()){
         const data=await table(saved);
         if(!valid())return;
+        if(rankingRouteMissing)rankingRouteMissing=false;
         entries=data.entries;me=data.me;
         if(me && me.revision!==session.revision)observeRemote(me,progress);
         else if(me && me.name!==displayName(session))persist({...session,name:me.name});
       }
     }catch(e){
-      if(valid())fail(e);
+      await rankingFailure(e,valid);
     }finally{
       if(id===generation){
         busy=false;
@@ -8206,7 +8227,7 @@ window.Leaderboard=(()=>{
     if(session)refresh();else if(consented)begin();
   }
   function close(){
-    restart();setNativeVisible(false);host=null;stopFlow();entries=null;me=null;message='';options=false;removeConfirm=false;consented=false;
+    restart();setNativeVisible(false);host=null;stopFlow();entries=null;me=null;message='';options=false;removeConfirm=false;consented=false;rankingRouteMissing=null;
     setNativeVisible(canSync());timer();
   }
   function suspend(){
@@ -9140,8 +9161,11 @@ window.HonorNotices=(()=>{
     Economy.tick();
     if(!Economy.save()){byId('exit-error').hidden=false;return;}
     if(window.DuoStartup?.exitGame){window.DuoStartup.exitGame();return;}
-    // Re-open the browser document on its title screen with the game stopped.
-    location.replace('#duo-exited');
+    // Commit the exit marker before reloading the iframe. A separate fragment
+    // navigation can lose the race with reload in WebKit.
+    const exitURL=new URL(location.href);
+    exitURL.hash='duo-exited';
+    history.replaceState(history.state,'',exitURL.href);
     location.reload();
   });
   // Older WebViews can deliver a clean down/up but omit click when rendering stalls.
