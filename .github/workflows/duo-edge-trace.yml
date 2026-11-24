@@ -1,0 +1,57 @@
+name: Duo API 30 cold menu trace
+on:
+  push:
+    branches: [qa/duo-widget-0316]
+    paths: [.github/workflows/duo-edge-trace.yml]
+permissions:
+  contents: read
+jobs:
+  widget-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      ANDROID_SERIAL: emulator-5556
+      QA_BRANCH: qa/duo-widget-0316
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Start Android 11 virtual tablet
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          sdkmanager 'system-images;android-30;google_apis;x86_64' 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools' 'emulator' >/tmp/duo-sdk.log
+          export ANDROID_USER_HOME="$RUNNER_TEMP/duo-android-user"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd -n DuoApi30 --device pixel_2 -p "$ANDROID_AVD_HOME/DuoApi30.avd" -k 'system-images;android-30;google_apis;x86_64' --force
+          test -s "$ANDROID_AVD_HOME/DuoApi30.avd/config.ini"
+          printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-30\n' "$ANDROID_AVD_HOME/DuoApi30.avd" > "$ANDROID_AVD_HOME/DuoApi30.ini"
+          emulator -list-avds | grep -Fx DuoApi30
+          emulator -avd DuoApi30 -port 5556 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -accel on -cores 2 -memory 2456 > /tmp/duo-emulator.log 2>&1 </dev/null &
+          emulator_pid=$!
+          sleep 4
+          kill -0 "$emulator_pid" || { cat /tmp/duo-emulator.log; exit 1; }
+          timeout 180 adb -s "$ANDROID_SERIAL" wait-for-device
+          timeout 240 bash -c 'until adb -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d "\r" | grep -qx 1; do sleep 2; done'
+          adb -s "$ANDROID_SERIAL" shell input keyevent 82
+          adb -s "$ANDROID_SERIAL" shell wm size 1200x1920
+          adb -s "$ANDROID_SERIAL" shell wm density 160
+          adb -s "$ANDROID_SERIAL" shell getprop ro.build.version.sdk
+      - name: Install exact production build and trace each single cold tap
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp duo-qa/final.sha256 duo-qa/resealed.sha256
+          echo "$(cat duo-qa/final.sha256)  duo-qa/final.apk" | sha256sum -c -
+          adb -s "$ANDROID_SERIAL" install duo-qa/final.apk
+          bash duo-qa/extra.sh edge
+      - name: Device diagnostics on failure
+        if: failure()
+        run: |
+          tail -25 /tmp/duo-emulator.log || true
+          timeout 8 "$ANDROID_HOME/platform-tools/adb" -s "$ANDROID_SERIAL" logcat -d -s 'DuoWidgetQA:I' 'AndroidRuntime:E' '*:S' | tail -100 || true

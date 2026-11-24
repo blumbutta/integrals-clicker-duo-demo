@@ -241,6 +241,7 @@ public final class TwoFingerActivity extends Activity {
             try {
                 JSONArray result=new JSONArray(raw);
                 if(name.equals(result.optString(0))) {
+                    Log.i("DuoTouchQA","Single edge "+test+" "+name+" observed "+(SystemClock.uptimeMillis()-down)+"ms after DOWN; dispatch "+result.optJSONArray(1));
                     if(header)web.evaluateJavascript("App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),150));
                     else menuEdge(test+1);
                     return;
