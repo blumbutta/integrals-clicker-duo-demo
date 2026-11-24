@@ -10,7 +10,7 @@ focus() {
 }
 real_tap() {
   local id=$1 label=$2 xy
-  for attempt in {1..4}; do
+  for attempt in {1..12}; do
     device shell rm -f /sdcard/duo-exit.xml
     timeout 15 adb -s "$ANDROID_SERIAL" shell uiautomator dump /sdcard/duo-exit.xml >/dev/null || true
     device exec-out cat /sdcard/duo-exit.xml > "$dir/ui.xml" 2>/dev/null || true
@@ -39,6 +39,36 @@ PY
       return
     fi
   done
+  python3 - "$dir/ui.xml" <<'PYUI'
+import sys
+from xml.etree import ElementTree as ET
+try: rows=ET.parse(sys.argv[1]).iter('node')
+except ET.ParseError: sys.exit(0)
+for node in rows:
+    a=node.attrib
+    print(a.get('class',''),a.get('resource-id',''),a.get('text','')[:70],a.get('content-desc','')[:80],a.get('bounds',''))
+PYUI
+  if [[ "$id" == exit-game ]]; then
+    xy=$(python3 - "$dir/ui.xml" <<'PYGEO'
+import re,sys
+from xml.etree import ElementTree as ET
+try: nodes=ET.parse(sys.argv[1]).iter('node')
+except ET.ParseError: sys.exit(0)
+for node in nodes:
+    if node.get('package')!='ru.mathclicker.duo' or not node.get('class','').endswith('WebView'): continue
+    dims=list(map(int,re.findall(r'\d+',node.get('bounds',''))))
+    if len(dims)==4 and dims[2]-dims[0]>500 and dims[3]-dims[1]>500:
+        print(dims[2]-30,dims[1]+36)
+        break
+PYGEO
+)
+    if [[ -n "$xy" ]]; then
+      local x y; read -r x y <<<"$xy"; device shell input tap "$x" "$y"
+      echo "Tapped tested upper-right header region of rendered game at $xy; requiring the actual dialog next"
+      sleep .4
+      return
+    fi
+  fi
   echo "Could not find $id ($label) on the actual game screen" >&2
   return 1
 }
