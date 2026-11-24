@@ -56,8 +56,21 @@ jobs:
           done
           echo 'Signed final one-widget build did not arrive' >&2
           exit 1
-      - name: Verify final one-widget release and real two-contact input
+      - name: Verify production upgrade and hosted balance widget
         run: bash duo-qa/smoke.sh
+      - name: Render selected background and button in stock WebView
+        if: '!cancelled()'
+        run: bash duo-qa/artwork.sh "$(cat "$RUNNER_TEMP/duo-widget-skin" 2>/dev/null || echo unknown)"
+      - name: Verify portrait and landscape navigation button edges
+        if: '!cancelled()'
+        run: bash duo-qa/extra.sh edge
+      - name: Verify map zoom, click and two-contact purchases
+        if: '!cancelled()'
+        run: |
+          git fetch --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
+          git checkout FETCH_HEAD -- duo-qa/TwoFingerActivity.java
+          bash duo-qa/extra.sh pinch
+          echo "PASS: final package $(cat duo-qa/final.sha256)"
       - name: Device diagnostics on failure
         if: failure()
         run: |
