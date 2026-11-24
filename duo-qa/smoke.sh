@@ -97,6 +97,14 @@ else
 fi
 device shell input keyevent KEYCODE_HOME
 sleep 1
+# Bind on the previous release first. This verifies Android preserves the existing
+# home-screen instance on package upgrade, independently of process and OS restart.
+device install "$dir/host.apk"
+device shell appwidget grantbind --package "$fixture" --user 0
+before_upgrade=$(host_screen before_upgrade)
+echo "$before_upgrade"
+grep -F 'balance=1 ∫' <<<"$before_upgrade"
+device shell input keyevent KEYCODE_HOME
 version_before=$(device shell dumpsys package "$game" | sed -n 's/.*versionName=//p' | head -1 | tr -d '\r')
 test "$version_before" = 0.3.19
 first=$(device shell dumpsys package "$game" | sed -n 's/.*firstInstallTime=//p' | head -1)
@@ -126,14 +134,15 @@ PYUI
     device logcat -d -s 'chromium:I' 'AndroidRuntime:E' '*:S' | tail -40 || true
   fi
 fi
-device install "$dir/host.apk"
-device shell appwidget grantbind --package "$fixture" --user 0
 device shell settings put system accelerometer_rotation 0
 device shell settings put system user_rotation 0
 first_views=$(host_screen portrait)
 echo "$first_views"
 ids() { sed -E 's/.* ids=([^ ]+).*/\1/' <<< "$1"; }
 skin() { sed -E 's/.* skin=([^ ]+).*/\1/' <<< "$1"; }
+test "$(ids "$before_upgrade")" = "$(ids "$first_views")"
+test "$(skin "$before_upgrade")" = "$(skin "$first_views")"
+echo 'PASS: same pre-existing widget ID and selected artwork survived the APK update.'
 grep -F 'balance=1 ∫' <<< "$first_views"
 echo "First click from 0.3.19 retained: the only widget text is the genuine 1 ∫ balance."
 verify_click "$first_views" 1
