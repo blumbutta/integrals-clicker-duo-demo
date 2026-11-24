@@ -1,7 +1,7 @@
-name: Duo API 30 widget smoke
+name: Duo Max 0.3.18 on Android 11
 on:
   push:
-    branches: [qa/duo-widget-0316]
+    branches: [qa/duo-release-0318]
     paths: [.github/workflows/duo-api30-smoke.yml]
 permissions:
   contents: read
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 50
     env:
       ANDROID_SERIAL: emulator-5556
-      QA_BRANCH: qa/duo-widget-0316
+      QA_BRANCH: qa/duo-release-0318
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -48,9 +48,9 @@ jobs:
           set -euo pipefail
           for attempt in $(seq 1 110); do
             git fetch --no-tags --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
-            if git cat-file -e FETCH_HEAD:duo-qa/release-0317.sha256 2>/dev/null; then
+            if git cat-file -e FETCH_HEAD:duo-qa/release-0318.sha256 2>/dev/null; then
               git checkout FETCH_HEAD -- duo-qa
-              cmp duo-qa/release-0317.sha256 duo-qa/final.sha256
+              cmp duo-qa/release-0318.sha256 duo-qa/final.sha256
               echo "$(tr -d '\r\n' < duo-qa/final.sha256)  duo-qa/final.apk" | sha256sum -c -
               exit 0
             fi
@@ -73,6 +73,11 @@ jobs:
           git checkout FETCH_HEAD -- duo-qa/TwoFingerActivity.java
           bash duo-qa/extra.sh pinch
           echo "PASS: final package $(cat duo-qa/final.sha256)"
+      - name: Reboot tablet and verify the pinned balance widget
+        run: bash duo-qa/widget-reboot.sh
+      - name: Exercise launcher icon changes and return to home
+        if: '!cancelled()'
+        run: bash duo-qa/launcher-reentry.sh
       - name: Device diagnostics on failure
         if: failure()
         run: |

@@ -66,8 +66,8 @@ verify_click() {
 trap 'device logcat -d -s "DuoWidgetQA:I" "AndroidRuntime:E" "chromium:E" "*:S" | tail -80 || true' ERR
 echo "API=$(device shell getprop ro.build.version.sdk) ABI=$(device shell getprop ro.product.cpu.abi)"
 device shell dumpsys webviewupdate | head -20
-unzip -p downloads/Integrals-Clicker-Duo-Max-0.3.15.zip Integrals-Clicker-Duo-Max.apk > "$dir/old.apk"
-echo "52259a72d8a5b1741de44b7ddf39dd1ba074f55f0f08c6a29ad24b692d43e171  $dir/old.apk" | sha256sum -c -
+curl --fail --silent --show-error --location --retry 3 --max-time 180 "https://blumbutta.github.io/integrals-clicker-duo-demo/downloads/Integrals-Clicker-Duo-Max-0.3.17.apk" -o "$dir/old.apk"
+echo "f006c22d2fe2b16185b9df2347ca6723c37f99e17a10aefea42777e3d451f66e  $dir/old.apk" | sha256sum -c -
 new=duo-qa/final.apk
 final_hash=$(tr -d '\r\n' < duo-qa/final.sha256)
 echo "$final_hash  $new" | sha256sum -c -
@@ -91,36 +91,28 @@ capture_ui
 seeded=false
 if grep -q 'Счёт пополнился' "$dir/view.xml"; then
   seeded=true
-  echo "Seeded a real first tap on released 0.3.15 through Android input at $xy."
+  echo "Seeded a real first tap on released 0.3.17 through Android input at $xy."
 else
-  echo "Accessibility did not confirm a first tap on 0.3.15; relying on package upgrade identity."
+  echo "Accessibility did not confirm a first tap on 0.3.17; relying on package upgrade identity."
 fi
 device shell input keyevent KEYCODE_HOME
 sleep 1
 version_before=$(device shell dumpsys package "$game" | sed -n 's/.*versionName=//p' | head -1 | tr -d '\r')
-test "$version_before" = 0.3.15
+test "$version_before" = 0.3.17
 first=$(device shell dumpsys package "$game" | sed -n 's/.*firstInstallTime=//p' | head -1)
 test -n "$first"
-prev=duo-qa/released-0316.apk
-echo "ec6287c69dd18cdf039d6dd34009c1995d398e2d5ca6351902159f8c8af28132  $prev" | sha256sum -c -
-test "$(cert "$prev")" = "$old_cert"
-device install -r "$prev"
-device shell am start -W -n "$game/.ClickerActivity"
-resumed "$game"
-sleep 4
-device shell input keyevent KEYCODE_HOME
 device install -r "$new"
 after=$(device shell dumpsys package "$game" | sed -n 's/.*firstInstallTime=//p' | head -1)
 test "$first" = "$after"
-device shell dumpsys package "$game" | grep -E 'firstInstallTime=|versionCode=21 |versionName=0.3.17'
-device shell dumpsys package "$game" | grep 'versionCode=21 ' >/dev/null
+device shell dumpsys package "$game" | grep -E 'firstInstallTime=|versionCode=22 |versionName=0.3.18'
+device shell dumpsys package "$game" | grep 'versionCode=22 ' >/dev/null
 device shell am start -W -n "$game/.ClickerActivity"
 resumed "$game"
 sleep 8
 if [[ $seeded == true ]]; then
   capture_ui
   if grep -q 'Счёт пополнился' "$dir/view.xml"; then
-    echo "Same saved tutorial milestone visible after 0.3.15 -> 0.3.16 -> 0.3.17 upgrade."
+    echo "Same saved tutorial milestone visible after 0.3.17 -> 0.3.18 upgrade."
   else
     echo "Checking the saved balance via its widget instead of tutorial text. Current UI:"
     python3 - "$dir/view.xml" <<'PYUI'
@@ -143,7 +135,7 @@ echo "$first_views"
 ids() { sed -E 's/.* ids=([^ ]+).*/\1/' <<< "$1"; }
 skin() { sed -E 's/.* skin=([^ ]+).*/\1/' <<< "$1"; }
 grep -F 'balance=1 ∫' <<< "$first_views"
-echo "First click from 0.3.15 retained: the only widget text is the genuine 1 ∫ balance."
+echo "First click from 0.3.17 retained: the only widget text is the genuine 1 ∫ balance."
 verify_click "$first_views" 1
 capture_ui
 coach_xy=$(python3 - "$dir/view.xml" <<'PYCOACH'
@@ -196,6 +188,7 @@ test "$(ids "$first_views")" = "$(ids "$relaunched")"
 test "$(skin "$first_views")" = "$(skin "$relaunched")"
 verify_click "$relaunched" 1
 echo "PASS: one real hosted lab; upgraded balance, background and disk artwork, stable binding across rotation and process relaunch."
+echo "$relaunched" > "$RUNNER_TEMP/duo-widget-before-reboot"
 skin "$relaunched" > "$RUNNER_TEMP/duo-widget-skin"
 echo "PASS: hosted final package $final_hash"
 bash duo-qa/artwork.sh "$(skin "$relaunched")" gallery

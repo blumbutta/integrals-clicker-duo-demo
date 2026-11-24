@@ -39,7 +39,8 @@ public final class ArtworkActivity extends Activity {
             assets = gameResources.getAssets();
             android.content.pm.PackageInfo app = getPackageManager().getPackageInfo("ru.mathclicker.duo",android.content.pm.PackageManager.GET_ACTIVITIES | android.content.pm.PackageManager.GET_DISABLED_COMPONENTS);
             for(android.content.pm.ActivityInfo activity:app.activities) {
-                if(!"ru.mathclicker.duo.ClickerHostActivity".equals(activity.targetActivity) || activity.icon==0) continue;
+                if (activity.icon == 0 || !("ru.mathclicker.duo.LauncherEntryActivity".equals(activity.targetActivity)
+                        || "ru.mathclicker.duo.ClickerHostActivity".equals(activity.targetActivity))) continue;
                 String id;
                 if("ru.mathclicker.duo.ClickerActivity".equals(activity.name)) id="default";
                 else if(activity.name.startsWith("ru.mathclicker.duo.launcher.Icon_")) id=activity.name.substring("ru.mathclicker.duo.launcher.Icon_".length());

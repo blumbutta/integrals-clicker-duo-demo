@@ -6,7 +6,9 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.ActionMode;
 import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.webkit.ConsoleMessage;
 import android.webkit.WebChromeClient;
@@ -27,6 +29,14 @@ public final class TwoFingerActivity extends Activity {
     private int polls;
     private boolean portrait;
     private boolean failed;
+    private int selectionToolbars;
+
+    @Override public void onActionModeStarted(ActionMode mode) {
+        super.onActionModeStarted(mode);
+        if (mode.getMenu().findItem(android.R.id.copy) != null || mode.getMenu().findItem(android.R.id.selectAll) != null) {
+            selectionToolbars++;
+        }
+    }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -293,9 +303,44 @@ public final class TwoFingerActivity extends Activity {
             handler.postDelayed(()->web.evaluateJavascript("[App.activeRoute,window.qaNav]",result->{
                 try {JSONArray a=new JSONArray(result);if(!"resources".equals(a.getString(0))||a.getJSONArray(1).length()!=1)throw new Exception("Keyboard Enter should activate once: "+result);
                     Log.i("DuoTouchQA","PASS keyboard Enter once");
-                    Log.i("DuoTouchQA",portrait?"PASS portrait menu edges":"PASS landscape menu edges");
+                    checkTextSelection();
                 }catch(Exception e){fail(e);}
             }),800);
+        });
+    }
+
+    private void checkTextSelection() {
+        String probe="(function(){var text=document.querySelector('.brand-title').firstChild,r=document.createRange();r.selectNodeContents(text);var b=r.getBoundingClientRect();return [innerWidth,b.x+b.width*.4,b.y+b.height*.52,b.width,b.height]})()";
+        web.evaluateJavascript(probe, raw->{
+            try {
+                JSONArray g=new JSONArray(raw);
+                if(g.getDouble(3)<12 || g.getDouble(4)<8)throw new Exception("Missing visible brand word: "+raw);
+                float f=web.getWidth()/(float)g.getDouble(0);
+                float[][] pos={{(float)g.getDouble(1)*f,(float)g.getDouble(2)*f}};
+                final int startToolbars=selectionToolbars;
+                down=SystemClock.uptimeMillis();
+                motion(MotionEvent.ACTION_DOWN,new int[]{0},pos);
+                handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},pos),1000);
+                handler.postDelayed(()->assertNoSelection(startToolbars,()->{
+                    long t=SystemClock.uptimeMillis();
+                    web.dispatchKeyEvent(new KeyEvent(t,t,KeyEvent.ACTION_DOWN,KeyEvent.KEYCODE_A,0,KeyEvent.META_CTRL_ON));
+                    web.dispatchKeyEvent(new KeyEvent(t,SystemClock.uptimeMillis(),KeyEvent.ACTION_UP,KeyEvent.KEYCODE_A,0,KeyEvent.META_CTRL_ON));
+                    handler.postDelayed(()->assertNoSelection(startToolbars,()->{
+                        Log.i("DuoTouchQA","PASS held brand word for one second and Ctrl+A: no selection or action mode");
+                        Log.i("DuoTouchQA",portrait?"PASS portrait menu edges":"PASS landscape menu edges");
+                    }),400);
+                }),1300);
+            }catch(Exception e){fail(e);}
+        });
+    }
+
+    private void assertNoSelection(int originalToolbars,Runnable next) {
+        web.evaluateJavascript("window.getSelection().toString().length",selected->{
+            if(!"0".equals(selected) || selectionToolbars!=originalToolbars){
+                fail(new Exception("Unexpected text selection length="+selected+" toolbars="+selectionToolbars));
+                return;
+            }
+            next.run();
         });
     }
 
