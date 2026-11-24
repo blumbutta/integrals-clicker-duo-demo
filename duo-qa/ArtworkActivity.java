@@ -28,12 +28,24 @@ public final class ArtworkActivity extends Activity {
     private final Handler handler = new Handler();
     private WebView web;
     private AssetManager assets;
+    private android.content.res.Resources gameResources;
+    private final java.util.Map<String,Integer> launcherImages = new java.util.HashMap<>();
     private int scenario;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         try {
-            assets = getPackageManager().getResourcesForApplication("ru.mathclicker.duo").getAssets();
+            gameResources = getPackageManager().getResourcesForApplication("ru.mathclicker.duo");
+            assets = gameResources.getAssets();
+            android.content.pm.PackageInfo app = getPackageManager().getPackageInfo("ru.mathclicker.duo",android.content.pm.PackageManager.GET_ACTIVITIES | android.content.pm.PackageManager.GET_DISABLED_COMPONENTS);
+            for(android.content.pm.ActivityInfo activity:app.activities) {
+                if(!"ru.mathclicker.duo.ClickerHostActivity".equals(activity.targetActivity) || activity.icon==0) continue;
+                String id;
+                if("ru.mathclicker.duo.ClickerActivity".equals(activity.name)) id="default";
+                else if(activity.name.startsWith("ru.mathclicker.duo.launcher.Icon_")) id=activity.name.substring("ru.mathclicker.duo.launcher.Icon_".length());
+                else continue;
+                launcherImages.put(id.toLowerCase(java.util.Locale.ROOT)+".webp",activity.icon);
+            }
         } catch (Exception e) { Log.e(TAG, "FAIL app assets", e); return; }
         web = new WebView(this);
         setContentView(web);
@@ -53,6 +65,10 @@ public final class ArtworkActivity extends Activity {
                                 + "localStorage.setItem('mathclicker.duo.appearance.v1',JSON.stringify({themes:'" + THEMES[i] + "',skins:'" + SKINS[i] + "'}));"
                                 + "location.replace('/assets/index.html?qa=" + i + "')</script>";
                             return new WebResourceResponse("text/html", "UTF-8", new ByteArrayInputStream(page.getBytes(StandardCharsets.UTF_8)));
+                        }
+                        if (path.startsWith("/assets/art/launcher/")) {
+                            Integer image=launcherImages.get(path.substring("/assets/art/launcher/".length()));
+                            if(image!=null)return new WebResourceResponse("image/webp",null,gameResources.openRawResource(image));
                         }
                         if (path.startsWith("/assets/")) {
                             String suffix = path.substring(path.lastIndexOf('.')+1);
@@ -122,13 +138,27 @@ public final class ArtworkActivity extends Activity {
                 if(j.length()!=6||!id.equals(j.getString(0))||j.getDouble(2)<30||j.getDouble(3)<30||!j.getString(1).equals(icon?"icons":"themes")||(!icon&&j.getBoolean(4))||(icon&&j.getInt(5)<1))throw new Exception("Invalid selected preview "+ret+" expected "+id);
                 Log.i(TAG,"Selected preview "+ret);
                 if(icon){String orientation=getResources().getConfiguration().orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE?"landscape":"portrait";Log.i(TAG,"PASS gallery "+orientation+" selectable theme and icon previews");return;}
-                web.evaluateJavascript("(function(){var b=document.querySelector('.ap-tabs > button:nth-child(3)'),r=b.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2,innerWidth]})()",coords->{
-                    try {org.json.JSONArray a=new org.json.JSONArray(coords);float scale=web.getWidth()/(float)a.getDouble(2);
-                        touch((float)a.getDouble(0)*scale,(float)a.getDouble(1)*scale);
-                        handler.postDelayed(()->pickTile(true),500);
-                    }catch(Exception e){Log.e(TAG,"FAIL category "+e.getMessage(),e);}
+                String close = "(function(){var b=document.querySelector('.ap-detail:not([hidden]) .ap-detail-close');if(!b||b.hidden||innerWidth>innerHeight)return null;var r=b.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2,innerWidth]})()";
+                web.evaluateJavascript(close, coords->{
+                    try {
+                        if(!"null".equals(coords)){org.json.JSONArray a=new org.json.JSONArray(coords);float scale=web.getWidth()/(float)a.getDouble(2);touch((float)a.getDouble(0)*scale,(float)a.getDouble(1)*scale);}
+                        handler.postDelayed(this::switchToIcons,260);
+                    }catch(Exception e){Log.e(TAG,"FAIL close "+e.getMessage(),e);}
                 });
             }catch(Exception e){Log.e(TAG,"FAIL "+e.getMessage(),e);}
+        });
+    }
+
+    private void switchToIcons() {
+        String code="(function(){var b=document.querySelector('.ap-tabs > button:nth-child(3)'),r=b.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2,e=document.elementFromPoint(x,y);return [x,y,innerWidth,e&&e.closest('button')===b]})()";
+        web.evaluateJavascript(code,coords->{
+            try {
+                org.json.JSONArray a=new org.json.JSONArray(coords);
+                if(!a.getBoolean(3))throw new Exception("Icon tab is covered "+coords);
+                float scale=web.getWidth()/(float)a.getDouble(2);
+                touch((float)a.getDouble(0)*scale,(float)a.getDouble(1)*scale);
+                handler.postDelayed(()->pickTile(true),600);
+            }catch(Exception e){Log.e(TAG,"FAIL category "+e.getMessage(),e);}
         });
     }
 
