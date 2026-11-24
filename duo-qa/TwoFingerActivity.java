@@ -212,15 +212,15 @@ public final class TwoFingerActivity extends Activity {
         // Sample the whole visible bar independently of the element hit rectangles.
         String[] tabs={"research","resources","home","world","appearance"};
         String[] actions={"honors","profile","help"};
-        if(test==13){Log.i("DuoTouchQA",portrait?"PASS portrait menu edges":"PASS landscape menu edges, two concurrent purchases, scroll cancellation and map pinch");return;}
+        if(test==13){dragAcrossTabs();return;}
         boolean header=test>=10;
         String name=header?actions[test-10]:tabs[test%5];
         String expr=header
             ?"var b=document.querySelector('.head-actions [data-sheet="+name+"]'),r=b.getBoundingClientRect();var x=r.right-5,y=r.top+5;"
             :"var r=document.getElementById('tabs').getBoundingClientRect(),w=r.width/5;var x=r.left+w*"+(test%5)+(test<5?"+5":"+w-5")+",y="+(test<5?"r.top+5":"r.bottom-5")+";";
-        String trace="window.qaEdge=[];if(!window.qaEdgeWatch){window.qaEdgeWatch=true;['pointerdown','pointerup','click'].forEach(function(type){document.addEventListener(type,function(e){"
+        String trace="window.qaEdge=[];window.qaNav=[];if(!window.qaEdgeWatch){window.qaEdgeWatch=true;window.addEventListener('duonavigation',function(){window.qaNav.push([App.activeRoute,App.sheet,Math.round(performance.now())]);});['pointerdown','pointerup','click'].forEach(function(type){document.addEventListener(type,function(e){"
             +"var el=e.target.closest('[data-route],[data-sheet]'),at=document.elementFromPoint(e.clientX,e.clientY),atB=at&&at.closest('[data-route],[data-sheet]');"
-            +"window.qaEdge.push([e.type,el&&(el.dataset.route||el.dataset.sheet),atB&&(atB.dataset.route||atB.dataset.sheet),Math.round(e.clientX),Math.round(e.clientY),Math.round(performance.now())]);},true);});}";
+            +"window.qaEdge.push([e.type,el&&(el.dataset.route||el.dataset.sheet),atB&&(atB.dataset.route||atB.dataset.sheet),Math.round(e.clientX),Math.round(e.clientY),Math.round(performance.now()),Math.round(e.timeStamp)]);},true);});}";
         web.evaluateJavascript("(function(){"+trace+expr+"var t=document.elementFromPoint(x,y),b0=t&&t.closest('[data-route],[data-sheet]');return [innerWidth,innerHeight,x,y,b0&&(b0.dataset.route||b0.dataset.sheet),t&&t.className]})()", v->{
             try{
                 JSONArray a=new JSONArray(v);
@@ -230,20 +230,27 @@ public final class TwoFingerActivity extends Activity {
                 float[][] p={{(float)a.getDouble(2)*f,(float)a.getDouble(3)*f}};
                 down=SystemClock.uptimeMillis();
                 motion(MotionEvent.ACTION_DOWN,new int[]{0},p);
-                handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},p),68);
-                handler.postDelayed(()->confirmEdge(test,header,name,v,SystemClock.uptimeMillis()+1050),205);
+                long hold=(test==1||test==11)?980:68;
+                handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},p),hold);
+                handler.postDelayed(()->confirmEdge(test,header,name,v,SystemClock.uptimeMillis()+1090),hold+180);
             }catch(Exception ex){fail(ex);}
         });
     }
     private void confirmEdge(int test,boolean header,String name,String before,long deadline) {
         String state=header?"App.sheet":"App.activeRoute";
-        web.evaluateJavascript("["+state+",window.qaEdge]", raw->{
+        web.evaluateJavascript("["+state+",window.qaEdge,window.qaNav]", raw->{
             try {
                 JSONArray result=new JSONArray(raw);
                 if(name.equals(result.optString(0))) {
-                    Log.i("DuoTouchQA","Single edge "+test+" "+name+" observed "+(SystemClock.uptimeMillis()-down)+"ms after DOWN; dispatch "+result.optJSONArray(1));
-                    if(header)web.evaluateJavascript("App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),150));
-                    else menuEdge(test+1);
+                    Log.i("DuoTouchQA","Single edge "+test+" "+name+" observed "+(SystemClock.uptimeMillis()-down)+"ms after DOWN; dispatch "+result.optJSONArray(1)+" nav="+result.optJSONArray(2));
+                    handler.postDelayed(()->web.evaluateJavascript("window.qaNav", events->{
+                        try {
+                            JSONArray nav=new JSONArray(events);
+                            if(nav.length()!=1)throw new Exception("Expected one transition from one touch of "+name+" got "+events);
+                            if(header)web.evaluateJavascript("App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),120));
+                            else menuEdge(test+1);
+                        }catch(Exception e){fail(e);}
+                    }),200);
                     return;
                 }
                 if(SystemClock.uptimeMillis()<deadline) {
@@ -252,6 +259,43 @@ public final class TwoFingerActivity extends Activity {
                 }
                 fail(new Exception("Single menu touch expected "+name+" at "+before+" observed "+raw));
             }catch(Exception e){fail(e);}
+        });
+    }
+
+    private void dragAcrossTabs() {
+        String before="(function(){window.qaNav=[];var a=document.querySelector('#tabs [data-route=resources]').getBoundingClientRect(),b=document.querySelector('#tabs [data-route=world]').getBoundingClientRect();return [innerWidth,a.left+a.width/2,a.top+a.height/2,b.left+b.width/2,b.top+b.height/2,App.activeRoute]})()";
+        web.evaluateJavascript(before, fallback->{
+            try {
+                JSONArray g=new JSONArray(fallback);float f=web.getWidth()/(float)g.getDouble(0);
+                float[][] start={{(float)g.getDouble(1)*f,(float)g.getDouble(2)*f}};
+                float[][] end={{(float)g.getDouble(3)*f,(float)g.getDouble(4)*f}};
+                down=SystemClock.uptimeMillis();motion(MotionEvent.ACTION_DOWN,new int[]{0},start);
+                handler.postDelayed(()->motion(MotionEvent.ACTION_MOVE,new int[]{0},end),90);
+                handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},end),180);
+                handler.postDelayed(()->web.evaluateJavascript("[App.activeRoute,window.qaNav]",result->{
+                    try {
+                        JSONArray after=new JSONArray(result);
+                        if(!g.getString(5).equals(after.getString(0)) || after.getJSONArray(1).length()!=0)throw new Exception("Cross-tab drag navigated "+result);
+                        Log.i("DuoTouchQA","PASS cross-tab drag canceled");
+                        checkKeyboard();
+                    }catch(Exception e){fail(e);}
+                }),700);
+            }catch(Exception e){fail(e);}
+        });
+    }
+
+    private void checkKeyboard() {
+        web.evaluateJavascript("(function(){window.qaNav=[];var b=document.querySelector('#tabs [data-route=resources]');b.focus();return document.activeElement===b})()",focus->{
+            if(!"true".equals(focus)){fail(new Exception("Keyboard focus was not on resources"));return;}
+            long t=SystemClock.uptimeMillis();
+            web.dispatchKeyEvent(new android.view.KeyEvent(t,t,android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_ENTER,0));
+            handler.postDelayed(()->web.dispatchKeyEvent(new android.view.KeyEvent(t,SystemClock.uptimeMillis(),android.view.KeyEvent.ACTION_UP,android.view.KeyEvent.KEYCODE_ENTER,0)),60);
+            handler.postDelayed(()->web.evaluateJavascript("[App.activeRoute,window.qaNav]",result->{
+                try {JSONArray a=new JSONArray(result);if(!"resources".equals(a.getString(0))||a.getJSONArray(1).length()!=1)throw new Exception("Keyboard Enter should activate once: "+result);
+                    Log.i("DuoTouchQA","PASS keyboard Enter once");
+                    Log.i("DuoTouchQA",portrait?"PASS portrait menu edges":"PASS landscape menu edges");
+                }catch(Exception e){fail(e);}
+            }),800);
         });
     }
 
