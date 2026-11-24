@@ -77,3 +77,5 @@ echo "PASS: the permanent game shortcut returns to the existing host task after 
 device shell input keyevent KEYCODE_BACK
 assert_left
 echo 'PASS: Back during a saved tutorial exits to the underlying Android activity'
+
+bash duo-qa/exit-dialog.sh

@@ -221,17 +221,18 @@ public final class TwoFingerActivity extends Activity {
     private void menuEdge(int test){
         // Sample the whole visible bar independently of the element hit rectangles.
         String[] tabs={"research","resources","home","world","appearance"};
-        String[] actions={"honors","profile","help"};
-        if(test==13){dragAcrossTabs();return;}
+        String[] actions={"leaderboard","honors","profile","help","exit-game"};
+        if(test==15){dragAcrossTabs();return;}
         boolean header=test>=10;
         String name=header?actions[test-10]:tabs[test%5];
+        String headerSelector=name.equals("exit-game")?"#exit-game":".head-actions [data-sheet="+name+"]";
         String expr=header
-            ?"var b=document.querySelector('.head-actions [data-sheet="+name+"]'),r=b.getBoundingClientRect();var x=r.right-5,y=r.top+5;"
+            ?"var b=document.querySelector('"+headerSelector+"'),r=b.getBoundingClientRect();var x=r.right-5,y=r.top+5;"
             :"var r=document.getElementById('tabs').getBoundingClientRect(),w=r.width/5;var x=r.left+w*"+(test%5)+(test<5?"+5":"+w-5")+",y="+(test<5?"r.top+5":"r.bottom-5")+";";
         String trace="window.qaEdge=[];window.qaNav=[];if(!window.qaEdgeWatch){window.qaEdgeWatch=true;window.addEventListener('duonavigation',function(){window.qaNav.push([App.activeRoute,App.sheet,Math.round(performance.now())]);});['pointerdown','pointerup','click'].forEach(function(type){document.addEventListener(type,function(e){"
-            +"var el=e.target.closest('[data-route],[data-sheet]'),at=document.elementFromPoint(e.clientX,e.clientY),atB=at&&at.closest('[data-route],[data-sheet]');"
-            +"window.qaEdge.push([e.type,el&&(el.dataset.route||el.dataset.sheet),atB&&(atB.dataset.route||atB.dataset.sheet),Math.round(e.clientX),Math.round(e.clientY),Math.round(performance.now()),Math.round(e.timeStamp)]);},true);});}";
-        web.evaluateJavascript("(function(){"+trace+expr+"var t=document.elementFromPoint(x,y),b0=t&&t.closest('[data-route],[data-sheet]');return [innerWidth,innerHeight,x,y,b0&&(b0.dataset.route||b0.dataset.sheet),t&&t.className]})()", v->{
+            +"var el=e.target.closest('[data-route],[data-sheet],#exit-game'),at=document.elementFromPoint(e.clientX,e.clientY),atB=at&&at.closest('[data-route],[data-sheet],#exit-game');"
+            +"window.qaEdge.push([e.type,el&&(el.dataset.route||el.dataset.sheet||el.id),atB&&(atB.dataset.route||atB.dataset.sheet||atB.id),Math.round(e.clientX),Math.round(e.clientY),Math.round(performance.now()),Math.round(e.timeStamp)]);},true);});}";
+        web.evaluateJavascript("(function(){"+trace+expr+"var t=document.elementFromPoint(x,y),b0=t&&t.closest('[data-route],[data-sheet],#exit-game');return [innerWidth,innerHeight,x,y,b0&&(b0.dataset.route||b0.dataset.sheet||b0.id),t&&t.className]})()", v->{
             try{
                 JSONArray a=new JSONArray(v);
                 if((a.getInt(0)<a.getInt(1))!=portrait)throw new Exception("Unexpected viewport "+v);
@@ -247,7 +248,8 @@ public final class TwoFingerActivity extends Activity {
         });
     }
     private void confirmEdge(int test,boolean header,String name,String before,long deadline) {
-        String state=header?"App.sheet":"App.activeRoute";
+        boolean exit=name.equals("exit-game");
+        String state=exit?"(document.querySelector('#exit-dialog').open?'exit-game':null)":header?"App.sheet":"App.activeRoute";
         web.evaluateJavascript("["+state+",window.qaEdge,window.qaNav]", raw->{
             try {
                 JSONArray result=new JSONArray(raw);
@@ -256,8 +258,11 @@ public final class TwoFingerActivity extends Activity {
                     handler.postDelayed(()->web.evaluateJavascript("window.qaNav", events->{
                         try {
                             JSONArray nav=new JSONArray(events);
-                            if(nav.length()!=1)throw new Exception("Expected one transition from one touch of "+name+" got "+events);
-                            if(header)web.evaluateJavascript("App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),120));
+                            if(nav.length()!=(exit?0:1))throw new Exception("Expected one transition from one touch of "+name+" got "+events);
+                            if(name.equals("help")) {
+                                guideFooter(true,()->guideFooter(false,()->web.evaluateJavascript(
+                                    "App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),120))));
+                            } else if(header)web.evaluateJavascript(exit?"document.querySelector('#exit-stay').click()":"App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),120));
                             else menuEdge(test+1);
                         }catch(Exception e){fail(e);}
                     }),200);
@@ -268,6 +273,29 @@ public final class TwoFingerActivity extends Activity {
                     return;
                 }
                 fail(new Exception("Single menu touch expected "+name+" at "+before+" observed "+raw));
+            }catch(Exception e){fail(e);}
+        });
+    }
+
+    private void guideFooter(boolean forward, Runnable next) {
+        String selector=forward?".gd-next":".gd-prev";
+        String probe="(function(){var b=document.querySelector('#dialog-layer.gd-open "+selector+"');if(!b||b.disabled)return null;var r=b.getBoundingClientRect();return [innerWidth,r.left+r.width/2,r.top+r.height/2]})();";
+        web.evaluateJavascript(probe,raw->{
+            try {
+                JSONArray g=new JSONArray(raw);
+                float scale=web.getWidth()/(float)g.getDouble(0);
+                float[][] point={{(float)g.getDouble(1)*scale,(float)g.getDouble(2)*scale}};
+                down=SystemClock.uptimeMillis();
+                motion(MotionEvent.ACTION_DOWN,new int[]{0},point);
+                handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},point),70);
+                handler.postDelayed(()->web.evaluateJavascript(
+                    "parseInt(document.querySelector('.gd-position').textContent,10)",position->{
+                    if(!(forward?"2":"1").equals(position)) {
+                        fail(new Exception("Guide button "+selector+" returned "+position));
+                        return;
+                    }
+                    next.run();
+                }),470);
             }catch(Exception e){fail(e);}
         });
     }
