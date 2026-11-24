@@ -1,4 +1,4 @@
-name: Diagnose warm re-entry on Android 11
+name: Compare Home and Back warm re-entry on Android 11
 on:
   push:
     branches: [qa/duo-anr-0320]
