@@ -58,7 +58,7 @@ jobs:
           done
           echo 'Signed final one-widget build did not arrive' >&2
           exit 1
-      - name: Verify production upgrade and hosted balance widget
+      - name: Verify production update, balance widget and both gallery orientations
         run: bash duo-qa/smoke.sh
       - name: Render selected background and button in stock WebView
         if: '!cancelled()'
