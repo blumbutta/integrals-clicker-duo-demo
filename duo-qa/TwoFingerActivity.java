@@ -218,23 +218,42 @@ public final class TwoFingerActivity extends Activity {
         String expr=header
             ?"var b=document.querySelector('.head-actions [data-sheet="+name+"]'),r=b.getBoundingClientRect();var x=r.right-5,y=r.top+5;"
             :"var r=document.getElementById('tabs').getBoundingClientRect(),w=r.width/5;var x=r.left+w*"+(test%5)+(test<5?"+5":"+w-5")+",y="+(test<5?"r.top+5":"r.bottom-5")+";";
-        web.evaluateJavascript("(function(){"+expr+"return [innerWidth,innerHeight,x,y]})()", v->{
+        String trace="window.qaEdge=[];if(!window.qaEdgeWatch){window.qaEdgeWatch=true;['pointerdown','pointerup','click'].forEach(function(type){document.addEventListener(type,function(e){"
+            +"var el=e.target.closest('[data-route],[data-sheet]'),at=document.elementFromPoint(e.clientX,e.clientY),atB=at&&at.closest('[data-route],[data-sheet]');"
+            +"window.qaEdge.push([e.type,el&&(el.dataset.route||el.dataset.sheet),atB&&(atB.dataset.route||atB.dataset.sheet),Math.round(e.clientX),Math.round(e.clientY),Math.round(performance.now())]);},true);});}";
+        web.evaluateJavascript("(function(){"+trace+expr+"var t=document.elementFromPoint(x,y),b0=t&&t.closest('[data-route],[data-sheet]');return [innerWidth,innerHeight,x,y,b0&&(b0.dataset.route||b0.dataset.sheet),t&&t.className]})()", v->{
             try{
                 JSONArray a=new JSONArray(v);
                 if((a.getInt(0)<a.getInt(1))!=portrait)throw new Exception("Unexpected viewport "+v);
+                if(!name.equals(a.optString(4)))throw new Exception("Menu geometry edge "+test+" expected "+name+" actual " +v);
                 float f=web.getWidth()/(float)a.getDouble(0);
                 float[][] p={{(float)a.getDouble(2)*f,(float)a.getDouble(3)*f}};
                 down=SystemClock.uptimeMillis();
                 motion(MotionEvent.ACTION_DOWN,new int[]{0},p);
                 handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},p),68);
-                handler.postDelayed(()->web.evaluateJavascript(header?"App.sheet":"App.activeRoute",hit->{
-                    if(!hit.equals("\""+name+"\"")){fail(new Exception("Menu edge "+test+" expected "+name+" actual "+hit+" at "+v));return;}
-                    if(header)web.evaluateJavascript("App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),150));
-                    else menuEdge(test+1);
-                }),310);
+                handler.postDelayed(()->confirmEdge(test,header,name,v,SystemClock.uptimeMillis()+1050),205);
             }catch(Exception ex){fail(ex);}
         });
     }
+    private void confirmEdge(int test,boolean header,String name,String before,long deadline) {
+        String state=header?"App.sheet":"App.activeRoute";
+        web.evaluateJavascript("["+state+",window.qaEdge]", raw->{
+            try {
+                JSONArray result=new JSONArray(raw);
+                if(name.equals(result.optString(0))) {
+                    if(header)web.evaluateJavascript("App.closeSheet()",out->handler.postDelayed(()->menuEdge(test+1),150));
+                    else menuEdge(test+1);
+                    return;
+                }
+                if(SystemClock.uptimeMillis()<deadline) {
+                    handler.postDelayed(()->confirmEdge(test,header,name,before,deadline),85);
+                    return;
+                }
+                fail(new Exception("Single menu touch expected "+name+" at "+before+" observed "+raw));
+            }catch(Exception e){fail(e);}
+        });
+    }
+
     private void motion(int action,int[] ids,float[][] points) {
         MotionEvent.PointerProperties[] prop=new MotionEvent.PointerProperties[ids.length];
         MotionEvent.PointerCoords[] coords=new MotionEvent.PointerCoords[ids.length];
