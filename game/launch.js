@@ -72,6 +72,21 @@
     if(remaining<=0){enter();return;}
     since=now;timer=setTimeout(track,remaining);
   }
+  if(!bridge?.exitGame && location.hash==='#duo-exited'){
+    document.documentElement.classList.remove('duo-warm');
+    card.removeAttribute('role');
+    card.removeAttribute('aria-label');
+    layout();listen(window,'resize',layout);
+    const resume=document.createElement('button');
+    resume.type='button';resume.className='ls-resume';resume.textContent='Продолжить игру';
+    card.append(resume);
+    resume.onclick=()=>{
+      try{history.replaceState(history.state,'',location.href.split('#')[0]);}
+      catch(_){location.hash='';}
+      resume.disabled=true;enter(true);
+    };
+    resume.focus({preventScroll:true});return;
+  }
   if(bridge?.isComplete?.()){enter(true);return;}
   layout();requestAnimationFrame(()=>bridge?.titleReady?.());listen(window,'resize',layout);
   listen(window,'duopause',()=>{background=true;track();});

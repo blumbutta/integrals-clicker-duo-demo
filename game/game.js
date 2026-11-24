@@ -1,3 +1,119 @@
+// A committed reset is replayable even if the WebView closes during cleanup.
+window.ProgressReset=(()=>{
+  'use strict';
+  const saveKey='integrals.duomax.progress.v1', journal='integrals.duomax.reset-generation.v1';
+  const ownedKeys=new Set([saveKey,'integrals-clicker-duo-tutorial-v1','mathclicker.duo.appearance.v1',
+    'mathclicker.duo.appearance.v1.seen','duo.avatar','integrals.duo.sound','integrals.duo.haptics',
+    'integrals.duomax.launcher-preview.v1','integrals.duomax.resource-quantity.v1','integrals.duomax.leaderboard.v1']);
+  let store,generation=null,frozen=false,stage=0,dialog,title,description,cancel,action,error,trigger;
+  try{store=window.localStorage;generation=store.getItem(journal);}catch(_){}
+  function stale(){
+    if(frozen)return true;
+    try{return !!store && store.getItem(journal)!==generation;}catch(_){return false;}
+  }
+  function cleanFallback(){
+    let tab;
+    try{tab=window.sessionStorage;}catch(_){return;}
+    if(!tab)return;
+    const key=saveKey+'.tab-fallback',raw=tab.getItem(key);
+    if(!raw)return;
+    let entries;
+    try{entries=JSON.parse(raw);}catch(_){tab.removeItem(key);return;}
+    if(!Array.isArray(entries)){tab.removeItem(key);return;}
+    const rest=entries.filter(entry=>!Array.isArray(entry)||!ownedKeys.has(entry[0]));
+    if(rest.length)tab.setItem(key,JSON.stringify(rest));else tab.removeItem(key);
+  }
+  function finish(pending){
+    frozen=true;
+    window.Leaderboard?.resetLocalSession();
+    for(const key of ownedKeys){
+      store.removeItem(key);
+      if(store.getItem(key)!==null)throw Error('Unable to remove game key');
+    }
+    cleanFallback();
+    if(window.DuoLauncher?.select && window.DuoLauncher.current?.()!=='default' && !window.DuoLauncher.select('default'))throw Error('Launcher reset failed');
+    if(window.DuoWidgets?.resetSnapshot)window.DuoWidgets.resetSnapshot();
+    else window.DuoWidgets?.publishBalance?.('0');
+    const done='done:'+pending.slice(8);
+    store.setItem(journal,done);
+    if(store.getItem(journal)!==done)throw Error('Unable to complete reset');
+    location.reload();
+  }
+  function commit(){
+    if(action.disabled)return;
+    action.disabled=true;
+    try{
+      if(!store||store!==window.localStorage||store.duoReadOnlyFallback)throw Error('Persistent storage unavailable');
+      let pending=store.getItem(journal);
+      if(!pending?.startsWith('pending:')){
+        if(pending!==generation){frozen=true;location.reload();return;}
+        const nonce=Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');
+        pending='pending:'+nonce;
+        store.setItem(journal,pending);
+        if(store.getItem(journal)!==pending)throw Error('Unable to start reset');
+      }
+      finish(pending);
+    }catch(_){
+      error.hidden=false;
+      error.textContent=frozen?'Сброс прервался. Нажми «Повторить», чтобы завершить его.':'Не удалось записать сброс в хранилище устройства. Попробуй ещё раз.';
+      action.disabled=false;
+      if(frozen){cancel.hidden=true;action.textContent='Повторить';action.focus();}
+    }
+  }
+  function close(){
+    if(!dialog?.open)return false;
+    if(frozen)return true;
+    dialog.close();stage=0;
+    if(history.state?.duoProgressReset){try{history.back();}catch(_){}}
+    if(trigger?.isConnected)trigger.focus({preventScroll:true});
+    return true;
+  }
+  function show(next){
+    stage=next;
+    dialog.dataset.stage=String(next);error.hidden=true;action.disabled=false;cancel.hidden=false;
+    title.textContent=next===1?'Начать новую партию?':'Сбросить весь прогресс?';
+    description.textContent=next===1?'На этом устройстве обнулятся интегралы и престиж. Исчезнут ресурсы, жители, задания и достижения.':'Партия и настройки будут удалены без возможности восстановления. Игра начнётся с нуля и снова покажет обучение.';
+    cancel.textContent=next===1?'Оставить партию':'Отмена';
+    action.textContent=next===1?'Продолжить':'Сбросить навсегда';
+    if(!dialog.open)dialog.showModal();
+    cancel.focus({preventScroll:true});
+  }
+  function prepareDialog(){
+    if(dialog)return;
+    dialog=document.createElement('dialog');dialog.className='progress-reset-dialog';dialog.setAttribute('aria-labelledby','reset-title');dialog.setAttribute('aria-describedby','reset-description reset-board');
+    dialog.innerHTML='<h2 id="reset-title"></h2><p id="reset-description"></p><p id="reset-board">На этом устройстве произойдёт выход из рейтинга. Публичный рекорд сохранится. Удалить его отдельно можно в разделе «Рейтинг».</p><p class="reset-error" role="alert" hidden></p><div class="exit-actions"><button type="button" data-reset="cancel"></button><button type="button" data-reset="confirm"></button></div>';
+    document.body.append(dialog);
+    title=dialog.querySelector('h2');description=dialog.querySelector('#reset-description');error=dialog.querySelector('.reset-error');
+    cancel=dialog.querySelector('[data-reset=cancel]');action=dialog.querySelector('[data-reset=confirm]');
+    cancel.onclick=close;
+    action.onclick=e=>{if(stage===1)show(2);else if(stage===2 && e.detail<2)commit();};
+    dialog.addEventListener('cancel',e=>{e.preventDefault();close();});
+  }
+  function open(button){
+    prepareDialog();trigger=button;
+    if(!window.DuoLauncher && !history.state?.duoProgressReset){
+      try{history.pushState({...history.state,duoProgressReset:true},'');}catch(_){}
+    }
+    show(1);
+  }
+  window.addEventListener('popstate',()=>{if(dialog?.open&&!history.state?.duoProgressReset)close();});
+  window.addEventListener('storage',event=>{
+    if(event.key===journal && event.newValue?.startsWith('done:') && event.newValue!==generation){frozen=true;location.reload();}
+  });
+  if(generation?.startsWith('pending:')){
+    frozen=true;
+    try{finish(generation);}catch(_){
+      setTimeout(()=>{prepareDialog();show(2);cancel.hidden=true;action.textContent='Повторить';error.hidden=false;error.textContent='Прерванный сброс нужно завершить.';},0);
+    }
+  }
+  function addSettings(inner){
+    const button=document.createElement('button');button.type='button';button.className='reset-progress';button.textContent='Сбросить весь прогресс';
+    button.onclick=()=>open(button);inner.append(button);
+  }
+  return Object.freeze({addSettings,back:close,stale});
+})();
+
+;
 /* Decimal figures match IntegralNumbers in the original phone UI. */
 window.IntegralNumbers = (() => {
   "use strict";
@@ -678,6 +794,7 @@ window.DuoAudio = (() => {
   let trainingPaused = Boolean(window.DuoTraining);
   let dirty = false, productionCache = null;
   function save() {
+    if(window.ProgressReset?.stale())return false;
     try {
       state.discoveries = [...discovered];
       state.upgrades = [...studied];
@@ -949,7 +1066,8 @@ window.DuoAudio = (() => {
   window.addEventListener("pagehide", pause);
   window.addEventListener("pageshow", () => { if (!document.hidden) resume(); });
   function hud() { const prod=production(); return {balance:state.balance,cps:prod.cps,clickPower:prod.clickPower,clicks:state.clicks}; }
-  window.Economy = {snapshot, hud, commitHonors, productionGain, lifetimeText, progress, updateProgress, award, resetRun, markSeen, owned,
+  function lifetimeWhole(){return String((lifetime>lifetimeCap?lifetimeCap:lifetime)>>fractionBits);}
+  window.Economy = {snapshot, hud, commitHonors, productionGain, lifetimeWhole, lifetimeText, progress, updateProgress, award, resetRun, markSeen, owned,
     purchased:id => state.purchases[id] || 0, grantValue:(id,count) => catalogue.has(id) ? theoreticalPrice(catalogue.get(id),owned(id),count) : 0,
      tap, buy, study, quantity, price, save, pause, resume, setTrainingPaused, tick() { settle(); collectHonors(); return snapshot(); }};
 })();
@@ -2911,8 +3029,34 @@ window.DuoResidents = (() => {
   function art(type, i) { return window.duoArt("art/" + type + "-" + String(i).padStart(2, "0") + ".webp"); }
   function esc(s) { return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
   let resourceEntries=[], prestigeEntry=null;
-  let section, pane, list, details, balance, quantity = 1, selected = null, expanded = new Set(), signature, detailSignature;
+  const purchaseModes=[1,10,25,0], quantityKey="integrals.duomax.resource-quantity.v1";
+  function resourceQuantity(value) {
+    if(value==null||value==="")return 1;
+    const stored=String(value).trim().replace(/^[×xх]/i,"");
+    if(stored.toUpperCase()==="MAX")return 0;
+    const count=Number(stored);
+    if(count===50)return 10;
+    if(count===100)return 25;
+    return stored!==""&&purchaseModes.includes(count)?count:1;
+  }
+  let quantity=1;
+  try {
+    const stored=localStorage.getItem(quantityKey);
+    quantity=resourceQuantity(stored);
+    if(stored!=null&&stored!==String(quantity))localStorage.setItem(quantityKey,String(quantity));
+  } catch(_) {}
+  let section, pane, list, details, balance, selected = null, expanded = new Set(), signature, detailSignature;
   const idAttr = (action,id) => 'data-page-action="'+action+'" data-key="'+esc(id)+'"';
+  function setResourceQuantity(value) {
+    const next=resourceQuantity(value);
+    if(quantity===next)return;
+    quantity=next;
+    try {localStorage.setItem(quantityKey,String(quantity));} catch(_) {}
+    if(section!=="resources"||!pane)return;
+    pane.querySelectorAll("[data-page-action=quantity]").forEach(button=>
+      button.setAttribute("aria-pressed",String(Number(button.dataset.key)===quantity)));
+    refresh();
+  }
   function copyChanged(el, value) { if(el && el.textContent !== value) el.textContent=value; }
   function updateBalance(value){
     if(!balance || value==null)return;
@@ -2926,11 +3070,16 @@ window.DuoResidents = (() => {
     const i=s.resources.findIndex(v=>v.id===r.id);
     return expose && i>=0 ? '<img class="pg-portrait" alt="" src="'+art("resource",i)+'">' : '<span class="pg-unknown" aria-hidden="true">?</span>';
   }
+  function orderSize(r) {return Math.min(quantity,r.maximumCount-r.owned);}
   function buyInfo(r,s) {
-    const limit=r.maximumCount-r.owned, qty=Economy.quantity(r.id,quantity===0 ? 0 : Math.min(limit,quantity));
-    const nominal=quantity===0 ? Math.max(1,qty) : Math.min(limit,quantity);
-    const cost=nominal>0 ? Economy.price(r.id,nominal) : Infinity;
-    return {cost,nominal,allowed:limit>0 && r.unlocked && s.balance>=cost && qty>0};
+    const limit=r.maximumCount-r.owned;
+    const nominal=quantity===0 ? Economy.quantity(r.id,0) : orderSize(r);
+    const cost=limit>0 ? Economy.price(r.id,Math.max(1,nominal)) : Infinity;
+    return {cost,nominal,allowed:r.unlocked && s.balance>=cost && nominal>0};
+  }
+  function resourcePrice(r,b) {
+    if(r.owned===r.maximumCount)return "Лимит достигнут";
+    return (b.nominal===0?"от ":"")+catalog(b.cost)+" ∫";
   }
   function resourceRow(s,r,index) {
       const b=buyInfo(r,s), name=r.discovered?r.name:"Неизвестный ресурс", previous=s.resources[index-1];
@@ -2945,7 +3094,7 @@ window.DuoResidents = (() => {
         '<span class="pg-art-box">'+resourceImage(s,r,r.discovered)+(r.unseen?'<b class="pg-new">!</b>':'')+'</span>'+
         '<span class="pg-resource-copy"><small>'+esc(description)+'</small></span>'+
         '<span class="pg-resource-facts" id="resource-facts-'+r.id+'"><span>'+fmt(r.owned)+' в работе</span><b>'+ (r.owned>=r.maximumCount?"MAX":'×'+fmt(b.nominal))+'</b></span>'+
-        '<em class="pg-resource-price" id="resource-price-'+r.id+'">'+(r.owned>=r.maximumCount?"Лимит достигнут":catalog(b.cost)+' ∫')+'</em></div></article>';
+        '<em class="pg-resource-price" id="resource-price-'+r.id+'">'+resourcePrice(r,b)+'</em></div></article>';
   }
   function blackHoleRequirement(last){
     return last.owned ? 'Неизвестный ресурс' : last.discovered ? 'Сначала получите: '+last.name : 'Сначала откройте предыдущий ресурс';
@@ -3005,7 +3154,7 @@ window.DuoResidents = (() => {
       ent.button.disabled=!b.allowed;ent.row.classList.toggle("pg-ready",b.allowed);
       copyChanged(ent.owned,fmt(r.owned)+" в работе");
       copyChanged(ent.qty,r.owned>=r.maximumCount?"MAX":"×"+fmt(b.nominal));
-      copyChanged(ent.cost,r.owned>=r.maximumCount?"Лимит достигнут":catalog(b.cost)+" ∫");
+      copyChanged(ent.cost,resourcePrice(r,b));
       if(ent.badge!==r.unseen){
         if(r.unseen){const n=document.createElement("b");n.className="pg-new";n.textContent="!";ent.art.append(n);}
         else ent.art.querySelector(".pg-new")?.remove();
@@ -3198,13 +3347,16 @@ window.DuoResidents = (() => {
       const r=s.resources.find(a=>a.id===key);
       if(!r)return "";
       const b=buyInfo(r,s);
+      const priceText=resourcePrice(r,b);
+      let purchaseLabel=priceText;
+      if(r.owned<r.maximumCount)purchaseLabel=(b.nominal?"Купить ×"+fmt(b.nominal):"Недоступно")+" · "+priceText;
       title=r.discovered?r.name:"Неизвестный ресурс";
       const req=!r.unlocked?s.resources[s.resources.indexOf(r)-1]:null;
       const hint=req?(req.discovered?"Сначала получите: "+req.name:"Сначала откройте предыдущий ресурс"):"Название откроется, когда вы накопите "+catalog(r.basePrice)+" ∫.";
       const studied=s.research.filter(i=>i.studied&&i.target===r.id);
       body='<div class="pg-intro"><div class="pg-detail-portrait">'+resourceImage(s,r,r.discovered)+'</div><p>'+esc(r.discovered?r.description:hint)+'</p></div>'+
-        (r.discovered?'<div class="pg-detail-facts">'+dw("В работе",fmt(r.owned))+dw("Базовое производство",catalog(r.baseCps)+" ∫/с")+dw("Суммарно с улучшениями и парами",rate(r.production)+" ∫/с")+dw("Лимит ресурса",fmt(r.maximumCount))+(r.owned<r.maximumCount?dw("Следующая покупка",catalog(r.price)+" ∫"):'')+'</div><p>После 100 экземпляров цена растёт медленнее.</p><h4>Изученные улучшения</h4>'+(studied.length?studied.map(i=>'<p>✓ '+esc(i.name)+'</p>').join(""):'<p>Для этого ресурса пока нет изученных улучшений.</p>'):'')+
-        '<button class="pg-cta" '+idAttr("buy-one",r.id)+(r.canBuy?'':' disabled')+'>'+ (r.owned>=r.maximumCount?"Лимит достигнут":"Купить · "+catalog(r.price)+" ∫")+'</button>';
+        (r.discovered?'<div class="pg-detail-facts">'+dw("В работе",fmt(r.owned))+dw("Базовое производство",catalog(r.baseCps)+" ∫/с")+dw("Суммарно с улучшениями и парами",rate(r.production)+" ∫/с")+dw("Лимит ресурса",fmt(r.maximumCount))+(r.owned<r.maximumCount?dw(b.nominal?"Покупка ×"+fmt(b.nominal):"Цена за один",catalog(b.cost)+" ∫"):'')+'</div><p>После 100 экземпляров цена растёт медленнее.</p><h4>Изученные улучшения</h4>'+(studied.length?studied.map(i=>'<p>✓ '+esc(i.name)+'</p>').join(""):'<p>Для этого ресурса пока нет изученных улучшений.</p>'):'')+
+        '<button class="pg-cta" '+idAttr("buy",r.id)+(b.allowed?'':' disabled')+'>'+purchaseLabel+'</button>';
     }else if(type==="research"){
       const item=s.research.find(a=>a.id===key);
       return item?researchDetail(s,item):"";
@@ -3297,7 +3449,10 @@ window.DuoResidents = (() => {
       let relevant="",quests;
       if(selected.type==="resource"){
         const r=s.resources.find(x=>x.id===selected.key);
-        if(r)relevant=[r.discovered,r.unlocked,r.owned,r.canBuy,r.price,r.production,s.researchCount,s.totalHelpers];
+        if(r){
+          const b=buyInfo(r,s);
+          relevant=[r.discovered,r.unlocked,r.owned,b.nominal,b.allowed,b.cost,r.production,s.researchCount,s.totalHelpers];
+        }
       } else if(selected.type==="research"){
         const item=s.research.find(x=>x.id===selected.key);
         if(item)relevant=[item.unlocked,item.studied,item.canBuy];
@@ -3465,13 +3620,12 @@ window.DuoResidents = (() => {
       if(expanded.has(key))expanded.delete(key);else expanded.add(key);
       signature=null;
     }else if(action==="quantity"){
-      quantity=Number(key);signature=null;
-      pane.querySelectorAll("[data-page-action=quantity]").forEach(b=>b.setAttribute("aria-pressed",String(b===button)));
-    }else if(action==="buy" || action==="buy-one" || action==="study"){
+      setResourceQuantity(key);
+      return;
+    }else if(action==="buy" || action==="study"){
       const selectedResource=action==="buy" && Economy.snapshot().resources.find(r=>r.id===key);
-      const order=selectedResource && quantity!==0 ? Math.min(quantity,selectedResource.maximumCount-selectedResource.owned) : quantity;
       const before=Economy.hud();
-      const success=action==="study"?Economy.study(key):Economy.buy(key,action==="buy-one"?1:order);
+      const success=action==="study"?Economy.study(key):selectedResource && Economy.buy(key,orderSize(selectedResource));
       if(success) {
         purchaseGain(before,Economy.hud(),button,e);
         window.dispatchEvent(new Event("duocounterview"));
@@ -3495,7 +3649,7 @@ window.DuoResidents = (() => {
     const title={resources:"Ресурсы",research:"Улучшения",world:"Научный город"}[section];
     container.innerHTML='<section class="pg-pane pg-'+name+'"><div class="pg-head'+(name==="world"?'':' pg-catalog-head')+'"><h2>'+title+'</h2>'+
       (name==="world"?'<button class="pg-citizens" data-page-action="residents">'+icon("team")+'Жители</button>':'<span class="pg-balance"></span>')+'</div><div class="pg-list"></div>'+
-      (name==="resources"?'<div class="pg-quantity"><strong>Размер покупки</strong><div>'+[1,50,100,0].map(n=>'<button '+idAttr("quantity",n)+' aria-pressed="'+(n===quantity)+'">'+(n?"×"+n:"MAX")+'</button>').join("")+'</div></div>':'')+
+      (name==="resources"?'<div class="pg-quantity"><strong>Размер покупки</strong><div>'+purchaseModes.map(n=>'<button '+idAttr("quantity",n)+' aria-pressed="'+(n===quantity)+'">'+(n?"×"+n:"MAX")+'</button>').join("")+'</div></div>':'')+
       (name!=="world"?'<div class="pg-purchase-gains" aria-live="polite" aria-relevant="additions"></div>':'')+
       '<div class="pg-overlay" hidden></div></section>';
     pane=container.firstElementChild;list=pane.querySelector(".pg-list");details=pane.querySelector(".pg-overlay");balance=pane.querySelector(".pg-balance");
@@ -3509,7 +3663,7 @@ window.DuoResidents = (() => {
     return document.activeElement;
   }
   function showWorldOverview(animated=true){map?.reset(animated);}
-  window.Pages={render,refresh,updateBalance,back:close,leaveDistrictForQuest,showWorldOverview};
+  window.Pages={render,refresh,updateBalance,setResourceQuantity,back:close,leaveDistrictForQuest,showWorldOverview};
 })();
 
 ;
@@ -7006,58 +7160,90 @@ window.Guide = (() => {
     const art=tag('div','gd-art');
     art.setAttribute('aria-hidden','true');
     function add(filename) {const image=tag('img');image.alt='';image.draggable=false;image.src=window.duoArt('art/'+filename);art.append(image);return image;}
-    if(type==='disc'||type==='gold'){
-      art.classList.add(type==='disc'?'gd-disc':'gd-gold');
+    if(type==='disc'){
+      art.classList.add('gd-disc');
       const image=add('formula.svg');
-      if(type==='disc'&&window.Appearance){
+      if(window.Appearance){
         const v=Appearance.visual('skins',Appearance.selection().skins);
         const plate=tag('span','gd-glyph-disc');plate.style.background=v.color;art.replaceChildren(plate);plate.append(image);
         if(v.dark)image.className='ap-pale';
       }
     }else if(type==='resources'||type==='team'){
       art.classList.add('gd-pair');(type==='resources'?['00','01','02']:['01','03']).forEach(i=>add('resource-'+i+'.webp'));
-    }else if(type==='city'){art.classList.add('gd-city');add('world-01.webp');}
-    else if(type==='wheel')art.append(tag('span','gd-wheel','∫'));
+    }else if(type==='city'){art.classList.add('gd-city');add('guide/city-school.webp');}
+    else if(type==='gold'){
+      art.classList.add('gd-gold-screen');
+      const picture=tag('picture');
+      const path=name=>window.duoArt('art/guide/golden-'+name+'.webp');
+      for(const [media,name] of [
+        ['(prefers-reduced-motion: reduce) and (orientation: portrait)','still-portrait'],
+        ['(prefers-reduced-motion: reduce)','still-landscape'],
+        ['(orientation: portrait)','flight-portrait']
+      ]){
+        const source=tag('source');source.media=media;source.srcset=path(name);picture.append(source);
+      }
+      const image=tag('img');image.alt='';image.draggable=false;
+      picture.append(image);image.src=path('flight-landscape');art.append(picture);
+    }else if(type==='wheel'){
+      art.classList.add('gd-reward-wheel');add('guide/daily-wheel.webp');
+    }
     else if(type==='hole')art.append(tag('span','gd-hole','I → II'));
     return art;
   }
   function render(container,onClose){
-    let page=0,x=0,y=0;
+    let page=-1,swipe=null;
     const frame=tag('div','gd-page'),body=tag('div','gd-reading');
     const dots=tag('span','gd-dots'),position=tag('span','gd-position');
-    dots.setAttribute('aria-hidden','true');
-    position.setAttribute('role','status');
+    dots.setAttribute('aria-hidden','true');position.setAttribute('role','status');
     const slides=pages.map(item=>{
-      const slide=tag('section','gd-slide');
-      slide.append(illustration(item.art),tag('h3','',item.title),tag('p','gd-copy',item.text),tag('p','gd-tip',item.hint));
-      body.append(slide);dots.append(tag('i'));
-      return slide;
+      const slide=tag('section','gd-slide'),copy=tag('div','gd-text');
+      slide.setAttribute('aria-hidden','true');
+      copy.append(tag('h3','',item.title),tag('p','gd-copy',item.text),tag('p','gd-tip',item.hint));
+      slide.append(copy);body.append(slide);dots.append(tag('i'));return slide;
     });
     const foot=tag('div','gd-foot'),controls=tag('div','gd-controls');
-    const prev=button('gd-prev nav-control','',()=>show(page-1));
-    const nextButton=button('gd-next','Дальше',()=>{
+    const prev=button('gd-prev','Назад',()=>show(page-1));
+    const nextButton=button('gd-next','Вперёд',()=>{
       if(page===pages.length-1)onClose?.();else show(page+1);
     });
-    prev.setAttribute('aria-label','Предыдущая страница');
     foot.append(dots,position);controls.append(prev,nextButton);frame.append(body,foot,controls);
     container.replaceChildren(frame);
-    function show(next,restoreFocus=''){
-      page=Math.max(0,Math.min(pages.length-1,next));
-      slides.forEach((slide,index)=>{
-        const current=index===page;
-        slide.setAttribute('aria-hidden',String(!current));
-        dots.children[index].classList.toggle('on',current);
-      });
+    function show(index){
+      const next=Math.max(0,Math.min(pages.length-1,index));
+      if(next===page)return;
+      if(page>=0){
+        slides[page].setAttribute('aria-hidden','true');
+        dots.children[page].classList.remove('on');
+        // The flight is a five-second recording. Replay it on each visit.
+        if(pages[page].art==='gold')slides[page].querySelector('.gd-art').remove();
+      }
+      page=next;
+      const slide=slides[page];
+      if(!slide.querySelector('.gd-art'))slide.prepend(illustration(pages[page].art));
+      slide.setAttribute('aria-hidden','false');dots.children[page].classList.add('on');
       body.scrollTop=0;
       position.textContent=(page+1)+' / '+pages.length;
       position.setAttribute('aria-label','Страница '+(page+1)+' из '+pages.length);
+      const transferFocus=page===0 && document.activeElement===prev;
       prev.disabled=page===0;
-      nextButton.textContent=page===pages.length-1?'Понятно':'Дальше';
-      if(restoreFocus || (prev.disabled && document.activeElement===prev))nextButton.focus({preventScroll:true});
+      nextButton.textContent=page===pages.length-1?'К игре':'Вперёд';
+      if(transferFocus)nextButton.focus({preventScroll:true});
     }
-    frame.ontouchstart=e=>{if(e.touches.length===1){x=e.touches[0].clientX;y=e.touches[0].clientY;}};
-    frame.ontouchend=e=>{if(!e.changedTouches.length)return;const dx=e.changedTouches[0].clientX-x,dy=e.changedTouches[0].clientY-y;if(Math.abs(dx)>48&&Math.abs(dx)>Math.abs(dy)*1.7)show(page+(dx<0?1:-1));};
-    frame.onkeydown=e=>{if(['ArrowRight','ArrowLeft'].includes(e.key)){e.preventDefault();show(page+(e.key==='ArrowRight'?1:-1),'next');}};
+    body.ontouchstart=e=>{
+      swipe=e.touches.length===1?{x:e.touches[0].clientX,y:e.touches[0].clientY}:null;
+    };
+    body.ontouchcancel=()=>{swipe=null;};
+    body.ontouchend=e=>{
+      if(!swipe||!e.changedTouches.length)return;
+      const dx=e.changedTouches[0].clientX-swipe.x,dy=e.changedTouches[0].clientY-swipe.y;
+      swipe=null;
+      if(Math.abs(dx)>48 && Math.abs(dx)>Math.abs(dy)*1.7)show(page+(dx<0?1:-1));
+    };
+    frame.onkeydown=e=>{
+      if(e.key==='ArrowRight'||e.key==='ArrowLeft'){
+        e.preventDefault();show(page+(e.key==='ArrowRight'?1:-1));
+      }
+    };
     show(0);
   }
   return {render};
@@ -7662,6 +7848,291 @@ window.PlayerAvatar=(()=>{
 })();
 
 ;
+// Only players who publish a score get a session. Gameplay works entirely offline.
+window.Leaderboard=(()=>{
+  'use strict';
+  const configURL='https://blumbutta.github.io/integrals-clicker-duo-demo/services/leaderboard.json';
+  const verificationURLs=new Set(['https://oauth.yandex.ru/device','https://oauth.yandex.com/device']);
+  const key='integrals.duomax.leaderboard.v1', minute=60000;
+  const learning=()=>window.DuoTraining && window.DuoTraining.currentStep?.()!=='done';
+  const paths={list:'/v1/leaderboard',device:'/v1/auth/device',poll:'/v1/auth/poll',score:'/v1/score',logout:'/v1/logout',remove:'/v1/me'};
+  const methods={'/config':'GET',[paths.list]:'GET',[paths.device]:'POST',[paths.poll]:'POST',[paths.score]:'POST',[paths.logout]:'POST',[paths.remove]:'DELETE'};
+  const scoreOK=s=>typeof s==='string' && /^(?:0|[1-9]\d{0,249}|10{250})$/.test(s);
+  const tokenOK=s=>typeof s==='string' && s.length>=16 && s.length<=512 && /^[A-Za-z0-9._~-]+$/.test(s);
+  function originOK(s){
+    if(typeof s!=='string')return false;
+    try{const u=new URL(s);return u.origin===s && u.protocol==='https:' && !u.port && /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(u.hostname);}
+    catch{return false;}
+  }
+  function restore(){
+    try{const s=JSON.parse(localStorage.getItem(key));return s&&originOK(s.origin)&&tokenOK(s.token)?s:null;}catch{return null;}
+  }
+  let session=restore();
+  function persist(value){
+    if(value && window.ProgressReset?.stale())return;
+    session=value;
+    try{if(value)localStorage.setItem(key,JSON.stringify(value));else localStorage.removeItem(key);}catch{}
+  }
+  class RequestError extends Error{constructor(status){super('Leaderboard request failed');this.status=status;}}
+  // The native WebView can deliver a response from just before a page reload.
+  let sequence=Math.floor(Math.random()*100000000);
+  const nativeCalls=new Map();
+  window.addEventListener('duorankresponse',event=>{
+    const d=event.detail,callback=nativeCalls.get(d?.id);
+    if(callback)callback(d.status,d.body);
+  });
+  function nativeCall(send,timeoutMS=18000){
+    return new Promise((resolve,reject)=>{
+      const id=++sequence;
+      function finish(status,body){
+        clearTimeout(timeout);nativeCalls.delete(id);
+        if(!Number.isInteger(status)||status<200||status>=300||typeof body!=='string'||body.length>65536){reject(new RequestError(status));return;}
+        try{resolve(JSON.parse(body));}catch{reject(new RequestError(0));}
+      }
+      const timeout=setTimeout(()=>finish(0,''),timeoutMS);
+      nativeCalls.set(id,finish);
+      try{send(id);}catch{finish(0,'');}
+    });
+  }
+  async function request(path,origin='',token='',data=null,keepalive=false){
+    const payload=data===null?'':JSON.stringify(data);
+    if(window.DuoRank)return nativeCall(id=>window.DuoRank.request(id,path,payload,token,origin));
+    const headers={Accept:'application/json'};
+    if(token)headers.Authorization='Bearer '+token;
+    if(payload)headers['Content-Type']='application/json';
+    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),5500);
+    try{
+      const response=await fetch(path==='/config'?configURL:origin+path,{
+        method:methods[path],headers,body:payload||undefined,signal:ctrl.signal,keepalive,
+        credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store',redirect:'error'
+      });
+      if(!response.ok)throw new RequestError(response.status);
+      const text=await response.text();
+      if(text.length>65536)throw new RequestError(0);
+      return JSON.parse(text);
+    }finally{clearTimeout(timeout);}
+  }
+  let origin='',configAt=0,configJob=null;
+  async function configure(force=false){
+    if(!force && configAt && Date.now()-configAt<5*minute)return origin;
+    if(!configJob)configJob=request('/config').then(data=>{
+      if(data.apiOrigin!=='' && !originOK(data.apiOrigin))throw new RequestError(0);
+      origin=data.apiOrigin;configAt=Date.now();
+      if(origin && session && session.origin!==origin)persist(null);
+      return origin;
+    }).finally(()=>{configJob=null;});
+    return configJob;
+  }
+  let host=null,view=0,entries=null,me=null,phase='',message='',confirmDelete=false,flow=null;
+  let paused=document.hidden,pollTimer=0,uploadTimer=0,lastUpload=0,uploadJob=null;
+  const el=(name,cls,text)=>{const n=document.createElement(name);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
+  function button(text,action,style=''){
+    const b=el('button','lb-button '+style,text);b.type='button';b.onclick=action;return b;
+  }
+  function rowOK(r){return r && Number.isSafeInteger(r.rank) && r.rank>0 && typeof r.name==='string' && r.name.length>0 && r.name.length<=100 && Number.isInteger(r.avatar) && r.avatar>=0 && r.avatar<PlayerAvatar.symbols.length && scoreOK(r.score);}
+  const pretty=s=>s.replace(/\B(?=(\d{3})+(?!\d))/g,'\u202f');
+  const greater=(a,b)=>a.length!==b.length?a.length>b.length:a>b;
+  function row(record){
+    const li=el('li','lb-row'),avatar=el('span',''),rank=el('span','lb-rank',String(record.rank));
+    PlayerAvatar.render(avatar,record.avatar);
+    li.append(rank,avatar,el('span','lb-name',record.name),el('strong','lb-score',pretty(record.score)+' ∫'));
+    return li;
+  }
+  function paint(){
+    if(!host)return;
+    const root=el('section','lb-page'),summary=el('div','lb-summary'),record=Economy.lifetimeWhole();
+    summary.append(el('h3','','Заработано за всё время'),el('strong','lb-total',pretty(record)+' ∫'),el('p','','Учитываются целые интегралы со всех престижей.'));
+    root.append(summary);
+    if(message){const note=el('p','lb-notice',message);note.setAttribute('role','status');root.append(note);}
+    if(phase==='loading'){root.append(el('p','lb-status','Загружаем рейтинг…'));}
+    else if(phase==='offline'){
+      root.append(button('Попробовать снова',()=>load(true)));
+      if(session)root.append(button('Выйти на этом устройстве',()=>{resetLocalSession();message='Вы вышли из рейтинга на этом устройстве.';paint();}));
+    }else if(phase==='ready'){
+      const account=el('div','lb-account');
+      if(session){
+        if(me)account.append(el('h3','',me.name),el('p','','Ваше место — '+me.rank+'. Рекорд в таблице — '+pretty(me.score)+' ∫.'));
+        if(confirmDelete){
+          account.append(el('p','','Удалить результат из общего рейтинга? Игровой прогресс сохранится.'));
+          const actions=el('div','lb-actions');actions.append(button('Отмена',()=>{confirmDelete=false;paint();}),button('Удалить результат',()=>accountAction(true),'lb-danger'));account.append(actions);
+        }else{
+          const actions=el('div','lb-actions');actions.append(button('Выйти из рейтинга',()=>accountAction(false)),button('Удалить мою запись',()=>{confirmDelete=true;paint();}));account.append(actions);
+        }
+      }else if(flow){
+        account.append(el('h3','','Вход с Яндекс ID'));
+        if(flow.ticket){
+          const line=el('p','',window.DuoRank?'Откройте Яндекс на Станции или отсканируйте QR-код телефоном.':'Откройте Яндекс в браузере или отсканируйте QR-код телефоном.');
+          line.append(document.createTextNode(' На странице '+flow.url.slice(8)+' введите код входа.'));
+          const device=el('div','lb-device'),qr=el('img','lb-qr');
+          qr.src=window.duoArt('art/guide/yandex-device-'+(flow.url.includes('.ru/')?'ru':'com')+'.png');
+          qr.alt='QR-код страницы входа Яндекс ID';qr.draggable=false;
+          device.append(qr,el('strong','lb-code',flow.code));account.append(line,device);
+          const actions=el('div','lb-device-actions');
+          if(window.DuoRank){
+            actions.append(button('Открыть Яндекс на Станции',openVerification,'lb-primary'));
+          }else{
+            const link=el('a','lb-button lb-primary','Открыть Яндекс');link.href=flow.url;
+            link.target='_blank';link.rel='noopener noreferrer';actions.append(link);
+          }
+          actions.append(button('Отменить вход',()=>{stopFlow();message='';paint();}));account.append(actions);
+          if(flow.externalError)account.append(el('p','lb-notice','Не удалось открыть браузер на Станции. Введите код на телефоне по ссылке или QR-коду.'));
+        }else account.append(el('p','','Получаем код…'),button('Отменить вход',()=>{stopFlow();message='';paint();}));
+      }else{
+        account.append(el('p','','После входа в общий рейтинг будут опубликованы ваш игровой значок, рекорд и автоматически выданный псевдоним. Рекорд будет обновляться во время игры.'),
+          button('Войти с Яндекс ID',begin,'lb-primary'));
+      }
+      root.append(account);
+      const list=el('section','lb-list');list.append(el('h3','','Топ игроков'));
+      if(entries?.length){const ol=el('ol','');for(const item of entries)ol.append(row(item));list.append(ol);}
+      else list.append(el('p','',entries?'В рейтинге пока нет участников.':'Загружаем результаты…'));
+      root.append(list);
+    }
+    host.replaceChildren(root);
+  }
+  async function fetchTable(id){
+    const saved=session;
+    const data=await request(paths.list,origin,saved?.token||'');
+    if(id!==view || saved?.token!==session?.token)return;
+    if(!Array.isArray(data.entries)||data.entries.length>50||!data.entries.every(rowOK)||(data.me!=null&&!rowOK(data.me)))throw new RequestError(0);
+    entries=data.entries;me=data.me||null;phase='ready';paint();
+  }
+  async function load(force=false){
+    const id=++view;
+    stopFlow();phase='loading';message='';paint();
+    try{
+      if(!await configure(force)){
+        if(id===view){phase='offline';message='Сервис общего рейтинга ещё не подключён. Ваш результат сохраняется в игре.';paint();}return;
+      }
+      if(id!==view)return;
+      await fetchTable(id);
+      if(id===view && session)scheduleUpload();
+    }catch(e){
+      if(id!==view)return;
+      if(e.status===401 && session){persist(null);await load();return;}
+      phase='offline';message='Не удалось загрузить общий рейтинг. Попробуйте ещё раз позже.';paint();
+    }
+  }
+  function open(panel){close();host=panel;load();}
+  function stopFlow(){clearTimeout(pollTimer);pollTimer=0;flow=null;}
+  function close(){++view;host=null;stopFlow();entries=null;me=null;message='';confirmDelete=false;}
+  function flowError(e){
+    stopFlow();
+    message=e.status===403?'Вход отменён в Яндекс ID.':e.status===410?'Срок действия кода истёк. Запросите новый код.':'Не удалось завершить вход. Попробуйте снова.';
+    paint();
+  }
+  function seconds(value,fallback,min,max){return Number.isFinite(value)?Math.min(max,Math.max(min,value)):fallback;}
+  async function begin(){
+    if(flow||!host||session)return;
+    const active={origin};flow=active;message='';paint();
+    try{
+      const data=await request(paths.device,active.origin,'',{});
+      if(flow!==active)return;
+      if(!tokenOK(data.ticket)||typeof data.userCode!=='string'||!/^[-A-Za-z0-9]{3,32}$/.test(data.userCode)||!verificationURLs.has(data.verificationUrl))throw new RequestError(0);
+      Object.assign(active,{ticket:data.ticket,code:data.userCode,url:data.verificationUrl,until:Date.now()+1000*seconds(data.expiresIn,600,1,3600),delay:1000*seconds(data.interval,5,1,3600)});
+      paint();schedulePoll();
+    }catch(e){if(flow===active)flowError(e);}
+  }
+  function schedulePoll(){
+    clearTimeout(pollTimer);
+    if(flow?.ticket && !paused&&!document.hidden&&host)pollTimer=setTimeout(poll,flow.delay);
+  }
+  async function openVerification(){
+    const active=flow;
+    if(!active || !verificationURLs.has(active.url))return;
+    try{
+      const result=await nativeCall(id=>window.DuoRank.openVerification(active.url,id),4000);
+      if(result.opened!==true)throw new RequestError(0);
+    }catch{
+      if(flow===active){active.externalError=true;paint();}
+    }
+  }
+  async function poll(){
+    const active=flow;
+    if(!active||paused||document.hidden||!host||active.polling)return;
+    if(Date.now()>=active.until){flowError(new RequestError(410));return;}
+    active.polling=true;
+    try{
+      const data=await request(paths.poll,active.origin,'',{ticket:active.ticket});
+      if(flow!==active)return;
+      if(data.status==='pending'){active.delay=1000*seconds(data.interval,active.delay/1000,1,3600);schedulePoll();return;}
+      if(data.status!=='authorized'||!tokenOK(data.session))throw new RequestError(0);
+      persist({origin:active.origin,token:data.session});stopFlow();lastUpload=0;message='Вы вошли в рейтинг.';paint();
+      if(!paused && !document.hidden)upload();else scheduleUpload();
+    }catch(e){
+      if(flow!==active)return;
+      if(e.status===429){active.delay=Math.max(active.delay,10000);schedulePoll();}else flowError(e);
+    }finally{active.polling=false;}
+  }
+  async function accountAction(remove){
+    if(!session||phase!=='ready')return;
+    const saved=session,id=view;clearTimeout(uploadTimer);
+    phase='loading';message='';paint();
+    try{
+      await request(remove?paths.remove:paths.logout,saved.origin,saved.token,remove?null:{});
+      if(session?.token===saved.token)persist(null);
+      if(id===view){await load();if(id+1===view){message=remove?'Ваша запись удалена.':'Вы вышли из рейтинга.';paint();}}
+    }catch(e){
+      if(e.status===401 && session?.token===saved.token)persist(null);
+      if(id!==view)return;
+      if(!session){await load();return;}
+      phase='ready';message='Не удалось связаться с сервисом. Попробуйте ещё раз.';paint();scheduleUpload();
+    }finally{confirmDelete=false;}
+  }
+  function scheduleUpload(){
+    clearTimeout(uploadTimer);
+    if(session && !learning() && !paused && !document.hidden)uploadTimer=setTimeout(upload,Math.max(1000,lastUpload+minute-Date.now()));
+  }
+  function resetLocalSession(){
+    const saved=session;
+    stopFlow();clearTimeout(uploadTimer);persist(null);me=null;confirmDelete=false;
+    if(saved)configure().then(verified=>{
+      if(verified===saved.origin)return request(paths.logout,verified,saved.token,{},true);
+    }).catch(()=>{});
+  }
+  async function upload(keepalive=false){
+    if(!session || uploadJob || learning() || (!keepalive&&(paused||document.hidden)))return;
+    if(Date.now()-lastUpload<(keepalive?10000:minute)){scheduleUpload();return;}
+    lastUpload=Date.now();
+    const saved=session;
+    uploadJob=(async()=>{
+      try{
+        if(!await configure()||session?.token!==saved.token||origin!==saved.origin||window.ProgressReset?.stale())return;
+        const score=Economy.lifetimeWhole(),avatar=PlayerAvatar.index;
+        if(scoreOK(saved.score) && !greater(score,saved.score) && saved.avatar===avatar)return;
+        const data=await request(paths.score,saved.origin,saved.token,{score,avatar},keepalive);
+        if(session?.token!==saved.token||!rowOK(data.me))return;
+        persist({...saved,score:data.me.score,avatar:data.me.avatar});
+        if(host&&phase==='ready'){me=data.me;paint();await fetchTable(view);}
+      }catch(e){
+        if(e.status===401 && session?.token===saved.token){persist(null);if(host)load();}
+        else if(host && phase==='ready'){message='Не удалось обновить рекорд. Игра повторит попытку.';paint();}
+      }
+    })();
+    try{await uploadJob;}finally{uploadJob=null;scheduleUpload();}
+  }
+  function suspend(){
+    paused=true;clearTimeout(uploadTimer);clearTimeout(pollTimer);
+    if(session)upload(true);
+  }
+  function resume(){
+    paused=document.hidden;if(paused)return;
+    scheduleUpload();schedulePoll();
+  }
+  document.addEventListener('visibilitychange',()=>document.hidden?suspend():resume());
+  window.addEventListener('duopause',suspend);window.addEventListener('pagehide',suspend);
+  window.addEventListener('duoresume',resume);window.addEventListener('pageshow',resume);
+  window.addEventListener('duotrainingcomplete',scheduleUpload);
+  window.addEventListener('storage',e=>{
+    if(e.key!==key)return;
+    const previous=session;session=restore();
+    if(previous?.token!==session?.token && host)load();
+    scheduleUpload();
+  });
+  if(session)scheduleUpload();
+  return Object.freeze({open,close,resetLocalSession});
+})();
+
+;
 window.Extras = (() => {
   "use strict";
   const roman=["0","I","II","III","IV","V","VI","VII","VIII","IX","X"];
@@ -7727,6 +8198,14 @@ window.Extras = (() => {
       return;
     }
     inner.innerHTML='<h2>Настройки</h2><p>Ваш профиль и атмосфера игры</p><details class="ex-card"><summary class="ex-avatar-summary"><span data-current-avatar></span>Значок профиля</summary><div class="ex-avatars"></div></details><div class="ex-card"><strong>Сохранено на устройстве</strong><p>Прогресс хранится на этом устройстве.</p></div><div class="ex-card ex-switches"></div><div class="ex-card"><strong>С благодарностью авторам</strong><p>rmbk / uburuntu — оригинальные интегралы<br>Orteil — Cookie Clicker<br>PT Serif — ParaType<br>Цифры Gelasio — Eben Sorkin</p><details class="font-attribution"><summary>Лицензии шрифтов</summary><pre></pre></details></div>';
+    const privacy=document.createElement('details');
+    privacy.className='ex-card ex-data-note';
+    privacy.innerHTML='<summary>Какие данные видны в рейтинге?</summary>' +
+      '<p>Участие добровольное. Другим игрокам видны твой игровой псевдоним, значок и рекорд по заработанным интегралам за всё время.</p>' +
+      '<p>При входе Яндекс подтверждает, что это твой аккаунт. Сервер игры сохраняет защищённую метку аккаунта, чтобы узнавать тебя на разных устройствах. Фото, имя, почта и телефон для рейтинга не используются.</p>' +
+      '<p>В разделе «Рейтинг» можно выйти из аккаунта или удалить свою запись для всех устройств. Основная партия хранится на этом устройстве.</p>';
+    inner.querySelector('.ex-switches').after(privacy);
+    window.ProgressReset?.addSettings(inner);
     window.HomeWidgets?.addSettings(inner);
     if(window.DuoStartup?.minimize){
       const section=document.createElement('div'),button=document.createElement('button');
@@ -7851,6 +8330,7 @@ window.Extras = (() => {
       document.getElementById('station').classList.remove('dw-presentation');
       const b=document.getElementById('close-sheet');if(b){b.disabled=false;b.setAttribute('aria-label','Закрыть');}
     }
+    if(screen==='leaderboard')window.Leaderboard.close();
     if(screen==='challenges')window.Quests?.close?.();
     if(screen==='honors')window.Honors?.unmount?.();
     clearTimeout(spinTimer);panel=null;screen='';spinning=false;confirm=false;
@@ -7859,6 +8339,7 @@ window.Extras = (() => {
     close();panel=container;screen=id;
     if(id==='profile'||id==='settings'){sub=id==='settings'||args?.profileTab==='settings'?'settings':'stats';profile()}
     else if(id==='help')Guide.render(panel,()=>App.closeSheet());
+    else if(id==='leaderboard')Leaderboard.open(panel);
     else if(id==='challenges')Quests.render(panel,typeof args==='string'?args:args?.districtID);
     else if(id==='honors')Honors.render(panel);
     else if(id==='daily')wheel();
@@ -8059,7 +8540,7 @@ window.HonorNotices=(()=>{
   function flushBalance() {
     clearTimeout(timer);
     timer = 0;
-    if (pendingValue === undefined || pendingValue === lastValue) return;
+    if (window.ProgressReset?.stale() || pendingValue === undefined || pendingValue === lastValue) return;
     lastSent = performance.now();
     try {
       const amount = IntegralNumbers.exact(pendingValue);
@@ -8104,7 +8585,7 @@ window.HonorNotices=(()=>{
       if (!bridge.needsArtwork(key)) { sentArt = key; return; }
       const art = await currentArtwork(key);
       // The player may change selection while the artwork is decoding.
-      if (key !== sentArt && key === artKey(Appearance.selection()) && key === 'art-v1:' + art.theme + ':' + art.skin
+      if (!window.ProgressReset?.stale() && key !== sentArt && key === artKey(Appearance.selection()) && key === 'art-v1:' + art.theme + ':' + art.skin
           && bridge.publishArtwork(key, art.background, art.button)) sentArt = key;
     } catch (error) {
       console.warn('Оформление виджета пока недоступно', error);
@@ -8180,9 +8661,11 @@ window.HonorNotices=(()=>{
   const sheetNames = {
     profile:'Профиль', settings:'Настройки', help:'Как играть',
     daily:'Подарок дня', challenges:'Задания', prestige:'Чёрная дыра', honors:'Достижения',
-    residents:'Жители', statistics:'Статистика'
+    residents:'Жители', statistics:'Статистика', leaderboard:'Общий рейтинг'
   };
   const iconPaths = {
+    leaderboard:'<path d="M8 3h8v6a4 4 0 0 1-8 0zm0 2H4v2a4 4 0 0 0 4.5 4M16 5h4v2a4 4 0 0 1-4.5 4M12 13v5m-5 3h10l-1-3H8z"/>',
+    exit:'<path d="M10 3H4v18h6m5-14 5 5-5 5m-7-5h12"/>',
     person:'<circle cx="12" cy="7.5" r="4" fill="currentColor" stroke="none"/><path d="M3 21c0-5.9 4-9.2 9-9.2s9 3.3 9 9.2z" fill="currentColor" stroke="none"/>',
     help:'<circle cx="12" cy="12" r="9.5"/><path d="M9.3 8.7a2.8 2.8 0 1 1 4.7 2.1c-1.4.9-2 1.5-2 3m0 2.6v.1"/>',
     sparkle:'<path d="m12 1.8 2.4 7.8 7.8 2.4-7.8 2.4-2.4 7.8-2.4-7.8-7.8-2.4 7.8-2.4z" fill="currentColor" stroke="none"/>',
@@ -8414,6 +8897,8 @@ window.HonorNotices=(()=>{
   }
   function setSheetChrome(name){
     layer.hidden=!name;
+    layer.classList.toggle('gd-open',name==='help');
+    layer.classList.toggle('lb-open',name==='leaderboard');
     for(const element of [home,page,header,tabs])element.toggleAttribute('inert',Boolean(name));
     for(const trigger of headerButtons)trigger.setAttribute('aria-expanded',String(trigger.dataset.sheet===name));
   }
@@ -8485,6 +8970,8 @@ window.HonorNotices=(()=>{
   }
   window.App={route,openSheet,closeSheet,sync,get activeRoute(){return active;},get scrolling(){return scrolling;},get sheet(){return sheet;}};
   window.duoBack=()=>{
+    if(window.ProgressReset?.back())return true;
+    if(exitDialog.open){exitDialog.close();return true;}
     if(window.WorldRebirth.active)return true;
     if(sheet){if(window.Extras?.back?.())return true;return closeSheet();}
     if(active!=='home'){
@@ -8496,11 +8983,29 @@ window.HonorNotices=(()=>{
   byId('tabs').addEventListener('click',e=>{const b=e.target.closest('[data-route]');if(b)route(b.dataset.route);});
   document.querySelectorAll('[data-sheet]').forEach(b=>b.addEventListener('click',()=>openSheet(b.dataset.sheet,null,b)));
   byId('close-sheet').addEventListener('click',()=>sheet==='honors'?closeSheet():window.duoBack());
+  const exitDialog=byId('exit-dialog'),exitButton=byId('exit-game');
+  exitButton.addEventListener('click',()=>{
+    if(exitDialog.open)return;
+    byId('exit-error').hidden=true;
+    exitDialog.showModal();
+    byId('exit-stay').focus({preventScroll:true});
+  });
+  byId('exit-stay').addEventListener('click',()=>exitDialog.close());
+  exitDialog.addEventListener('close',()=>exitButton.focus({preventScroll:true}));
+  byId('exit-confirm').addEventListener('click',()=>{
+    if(!exitDialog.open)return;
+    Economy.tick();
+    if(!Economy.save()){byId('exit-error').hidden=false;return;}
+    if(window.DuoStartup?.exitGame){window.DuoStartup.exitGame();return;}
+    // Re-open the browser document on its title screen with the game stopped.
+    location.replace('#duo-exited');
+    location.reload();
+  });
   // Older WebViews can deliver a clean down/up but omit click when rendering stalls.
   // Activate through the normal click path so that coaching and keyboard share its guards.
   function bindMenuTouches(){
     if(!window.PointerEvent)return;
-    const selector='#tabs [data-route],.head-actions [data-sheet],#close-sheet';
+    const selector='#tabs [data-route],.head-actions button,#close-sheet';
     const menuButton=node=>node?.closest?.(selector);
     const slop=10;
     let press=null,claimed=false,release=null;

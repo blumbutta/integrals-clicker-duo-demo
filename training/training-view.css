@@ -13,6 +13,10 @@
   z-index:2147483500;
 }
 #training-coach[hidden], #training-coach [hidden] { display:none!important }
+#training-coach .tr-shade, #training-coach[data-step="completed"] {
+  -webkit-mask-image:var(--tr-exit-cutout,none);
+  mask-image:var(--tr-exit-cutout,none);
+}
 #training-coach .tr-shade {
   position:absolute; top:0;right:0;bottom:0;left:0;
   width:100%; height:100%;
@@ -149,6 +153,7 @@ body[data-training-instruction] :is(.ex-golden,.ex-gold-reward,.ex-notice) {
 }
 #training-coach[data-compact="true"] .tr-title {font-size:.98em;margin-top:.12em}
 #training-coach[data-compact="true"] .tr-text {font-size:.88em;margin-top:.18em}
+#training-coach[data-step="global-ranking"] .tr-panel {max-width:min(15em,calc(100% - 1.25em))}
 @media (orientation:landscape) and (min-width:620px) {
   #training-coach .tr-panel {width:min(20.5em,44vw)}
   #training-coach:is([data-step="choose-theme"],[data-step="apply-theme"]) .tr-panel {width:clamp(228px,19vw,18em)}

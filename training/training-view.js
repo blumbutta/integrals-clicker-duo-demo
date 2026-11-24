@@ -30,7 +30,18 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     return [...new Set(nodes.filter(node => node && !(spec.lockTarget && contains(anchor,node))))];
   }
   function contains(outer, inner) { return !!inner && !!outer && (outer === inner || outer.contains(inner)); }
+  function exitButton() {
+    const button = document.getElementById('exit-game');
+    return button && !button.disabled && !button.closest('[inert],[hidden]') ? button : null;
+  }
+  function exitDialog() {
+    const dialog = document.getElementById('exit-dialog');
+    return dialog?.open ? dialog : null;
+  }
   function permitted(target) {
+    const dialog = exitDialog();
+    if (dialog) return contains(dialog, target);
+    if (target?.closest?.('#exit-game') && contains(exitButton(), target)) return true;
     if (!spec || spec.lock === false || contains(panel, target)) return true;
     if (spec.lockTarget && contains(currentTarget(),target)) return false;
     return allowedNodes().some(node => contains(node, target));
@@ -44,7 +55,7 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     if (event.type === 'pointerup' || event.type === 'pointercancel') {
       const original=capturedPointers.get(event.pointerId);
       capturedPointers.delete(event.pointerId);
-      if (original && original === currentTarget()) return;
+      if (original && original === currentTarget() && !exitDialog()) return;
     }
     if (permitted(event.target)) {
       if (event.type === 'pointerdown' && contains(currentTarget(),event.target)) {
@@ -58,13 +69,13 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
   function focusables() {
     const focusSelector = 'button:not(:disabled),a[href],input:not(:disabled),[tabindex]:not([tabindex="-1"]),select:not(:disabled)';
     const targets = allowedNodes().flatMap(node => node.matches(focusSelector) ? [node] : [...node.querySelectorAll(focusSelector)]);
-    return [...new Set([...targets, primary, skip])].filter(node => !node.hidden && node.getClientRects().length && permitted(node));
+    return [...new Set([...targets, primary, skip, exitButton()])].filter(node => node && !node.hidden && node.getClientRects().length && permitted(node));
   }
   function focus(node) {
     if (node) node.focus({preventScroll:true});
   }
   function keyGuard(event) {
-    if (!spec || spec.lock === false) return;
+    if (!spec || spec.lock === false || exitDialog()) return;
     if (event.key === 'Tab') {
       const list = focusables();
       event.preventDefault();
@@ -91,7 +102,8 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
         for (const type of types) window.removeEventListener(type,guardStartup,true);
         return;
       }
-      if (!event.isTrusted || (event.type!=='keydown' && !event.target.closest?.('#station'))) return;
+      if (!event.isTrusted || contains(exitButton(),event.target) || exitDialog() ||
+          (event.type!=='keydown' && !event.target.closest?.('#station'))) return;
       if (event.cancelable) event.preventDefault();
       event.stopImmediatePropagation();
     }
@@ -160,7 +172,7 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     }
     listen('keydown',keyGuard);
     listen('focusin',event => {
-      if (spec && !permitted(event.target)) focus(focusables()[0]);
+      if (spec && !exitDialog() && !permitted(event.target)) focus(focusables()[0]);
     });
     listen('scroll',schedule);
     listen('resize',schedule);
@@ -385,6 +397,13 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     const mainFrame=frameRegion(ring,anchor,region,viewport,bounds,p);
     const contextFrame=frameRegion(contextRing,context,context && clippedRect(context,bounds),viewport,bounds,p);
     const regions=[mainFrame,contextFrame].filter(Boolean);
+    const exitBounds=exitButton()?.getBoundingClientRect();
+    // Cut out only the exit control when the tutorial dims the laboratory or
+    // paints its finale. The confirmation dialog uses the browser's top layer.
+    const exitCutout=(spec.spotlight || spec.id==='completed') && exitBounds?.width && exitBounds?.height
+      ? `radial-gradient(ellipse ${exitBounds.width/2}px ${exitBounds.height/2}px at ${exitBounds.left-viewport.left+exitBounds.width/2}px ${exitBounds.top-viewport.top+exitBounds.height/2}px, transparent 98%, black 100%)`
+      : 'none';
+    if(root.style.getPropertyValue('--tr-exit-cutout')!==exitCutout) root.style.setProperty('--tr-exit-cutout',exitCutout);
     spotlight(viewport,regions);
     const target=mainFrame?.bounds;
     if (target) placeScoreGain(viewport,target,gap);
@@ -395,6 +414,12 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     }
     if(panel.hidden){placeCoach(tip,null,bounds,viewport,font,[],[]);return;}
     const protectedAreas=regions.map(frame=>frame.bounds);
+    if(exitBounds?.width && exitBounds.height) protectedAreas.push(exitBounds);
+    if(spec.id==='global-ranking'){
+      const balance=document.getElementById('balance');
+      const digits=balance && clippedRect(balance,bounds)?.visible;
+      if(digits)protectedAreas.push(digits);
+    }
     if(tip)protectedAreas.push(tip);
     if(!scoreGain.hidden)protectedAreas.push(scoreGain.getBoundingClientRect());
     if(spec.gainLabel){

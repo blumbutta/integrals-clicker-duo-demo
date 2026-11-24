@@ -7,10 +7,10 @@
   const completedKey = "trainingGuideComplete";
   const firstStep = "firstTap";
   const steps = [
-    firstStep, "score", "firstFunds", "bit", "passiveIntro", "passiveWatch",
+    firstStep, "score", "firstFunds", "bit", "buySize", "passiveIntro", "passiveWatch",
     "passiveResult", "earn", "upgrade", "testUpgrade", "upgradeResult", "school", "map", "schoolTask",
     "prepareQuiz", "timer", "quiz", "reward", "cooldown", "honors",
-    "honorsSeen", "gallery", "applyTheme", "home", "complete", "done"
+    "honorsSeen", "gallery", "applyTheme", "home", "ranking", "complete", "done"
   ];
   function loadLesson() {
     try {
@@ -29,6 +29,7 @@
   const control = (name, key) => '[data-page-action="' + name + '"][data-key="' + CSS.escape(key) + '"]';
   const tapButton = "#integral-button";
   const meter = "#home .meter";
+  const singlePurchase = control("quantity", "1");
   const schoolOnMap = '.wm-target[data-index="0"]';
   const schoolInList = '.pg-place[data-key="0"]';
   const districtTask = control("quests", "school");
@@ -38,6 +39,7 @@
   let paused, interval, ready = false;
 
   function save() {
+    if(window.ProgressReset?.stale())return;
     try { localStorage.setItem(storageKey, JSON.stringify(lesson)); } catch (_) {}
   }
   function updateSoon() {
@@ -61,6 +63,7 @@
     App.sync();
   }
   function leaveTraining() {
+    const wasInTraining = lesson.phase !== "done";
     window.Honors.releaseTrainingRewards();
     if (!Economy.progress(completedKey)) Economy.updateProgress(completedKey, true);
     lesson.phase = "done";
@@ -70,6 +73,7 @@
     Quests.setTrainingQuiz(false);
     stopTime(false);
     document.body.classList.remove("duo-training-active");
+    if (wasInTraining) window.dispatchEvent(new Event("duotrainingcomplete"));
   }
   function finish() {
     if (lesson.phase === "complete") leaveTraining();
@@ -92,6 +96,9 @@
     return true;
   }
   function screenHome(title, text) { return navigate("home", title, text); }
+  function prepareSinglePurchase() {
+    if (el(singlePurchase)?.getAttribute("aria-pressed") === "false") Pages.setResourceQuantity(1);
+  }
   function highlightSchool(title, text) {
     show(lesson.phase + "-building", schoolOnMap, title, text, {point: true});
   }
@@ -114,6 +121,10 @@
   function render() {
     if (!ready || document.hidden) return;
     if (hasPrestige()) return leaveTraining();
+    if (el("#exit-dialog")?.open) {
+      stopTime(true);
+      return;
+    }
     // A gift becomes available on the next calendar day, including after a
     // refresh of a practice tab. Keep it available for free play afterwards.
     if (App.sheet === "daily") App.closeSheet();
@@ -131,10 +142,27 @@
         show("first-funds", tapButton, "Накопи 15 ∫", "Нажимай на интеграл и следи за счётом.", {paused: false, compact: true, context: meter});
         return;
       case "bit":
-        if (Economy.owned("autoclick") > 0) return go("passiveIntro");
+        if (Economy.owned("autoclick") > 0) return go("buySize");
         if (navigate("resources", "Первый ресурс доступен", "Ты накопил 15 ∫. Открой «Ресурсы» внизу.")) return;
+        prepareSinglePurchase();
         show("buy-bit", control("buy", "autoclick"), "Бит информации", "Нажми на цену, чтобы купить бит. Он начнёт зарабатывать интегралы сам.", {highlight: '.pg-resource[data-row="autoclick"]'});
         return;
+      case "buySize": {
+        if (navigate("resources", "Размер покупки", "Открой «Ресурсы», чтобы выбрать размер покупки.")) return;
+        const selected = el('.pg-quantity [aria-pressed="true"]')?.dataset.key;
+        if (!selected) return;
+        if (selected === "1" && lesson.triedBuySize) return go("passiveIntro");
+        const group = {point: true, highlight: ".pg-quantity", allowed: [".pg-quantity"]};
+        if (selected === "1") {
+          show("quantity-try", control("quantity", "10"), "Сколько купить за раз?",
+            "×1, ×10 и ×25 задают число ресурсов за покупку. MAX выберет столько, на сколько хватит интегралов. Нажми ×10 и посмотри на цену бита.", group);
+        } else {
+          if (!lesson.triedBuySize) { lesson.triedBuySize = true; save(); }
+          show("quantity-single", singlePurchase, "Цена меняется вместе с количеством",
+            "Попробуй другие размеры покупки. Когда закончишь, верни ×1 — чуть позже мы пригласим одного школьника.", group);
+        }
+        return;
+      }
       case "passiveIntro":
         if (screenHome("Посмотрим на доход", "Вернись к интегралу. Теперь счёт может расти без нажатий.")) return;
         explain("income-intro", meter, "Бит уже работает", "Он приносит 0,25 ∫ в секунду, пока игра открыта. Убери палец и понаблюдай за счётом.", "Посмотреть", () => go("passiveWatch", {incomeStart: window.LiveCounters.balance()}), {point: true, pointAt: "#rate"});
@@ -189,6 +217,7 @@
       case "school":
         if (Economy.owned("abacus")) return go("map");
         if (navigate("resources", "Пора пригласить школьника", "На счёте есть 125 ∫. Открой «Ресурсы».")) return;
+        prepareSinglePurchase();
         show("buy-schoolchild", control("buy", "abacus"), "Первый житель", "Нажми на цену, чтобы пригласить школьника. С ним в научном городе откроется школа.", {highlight: '.pg-resource[data-row="abacus"]'});
         return;
       case "map":
@@ -307,12 +336,19 @@
         const theme = Honors.catalog("themes").find(item => item.id === current);
         const caption = theme ? "Фон «" + theme.name + "» виден и на других вкладках." : "Этот фон виден и на других вкладках.";
         explain("theme-reveal", null, changed ? "Во, смотри, ты поменял оформление!" : "Твой фон лаборатории",
-          caption, "Дальше", () => go("complete", {themeAcknowledged: true}), {point: true});
+          caption, "Дальше", () => go("ranking", {themeAcknowledged: true}), {point: true});
         return;
       }
+      case "ranking":
+        if (App.activeRoute !== "home" || App.sheet) App.route("home");
+        explain("global-ranking", "#leaderboard", "Глобальный рейтинг",
+          "Здесь можно сравнить, сколько интегралов игроки заработали за всё время. Если захочешь участвовать, войди через Яндекс ID.",
+          "Дальше", () => go("complete", {rankingSeen: true}), {point: true});
+        return;
       case "complete":
         // An unfinished save from before the reveal should still show its chosen theme.
         if (!lesson.themeAcknowledged) return go("home");
+        if (!lesson.rankingSeen) return go("ranking");
         explain("completed", null, "Обучение пройдено",
           "Школа открыта, а бит уже приносит интегралы. Приглашай новых жителей, чтобы город рос.",
           "Играть самостоятельно", finish, {point: true});
@@ -324,7 +360,7 @@
   function restoreScreen() {
     const p = lesson.phase;
     if (p === "upgrade") App.route("research");
-    if (p === "bit" || p === "school") App.route("resources");
+    if (["bit", "buySize", "school"].includes(p)) App.route("resources");
     if (["map", "schoolTask", "prepareQuiz", "timer", "quiz", "reward", "cooldown"].includes(p)) {
       App.route("world");
       if (p !== "map") el(schoolInList)?.click();
@@ -362,6 +398,7 @@
       window.addEventListener(event, updateSoon);
     }
     for (const event of ["click","pointerup","visibilitychange"]) document.addEventListener(event, updateSoon, true);
+    el("#exit-dialog")?.addEventListener("close", updateSoon);
     // Income may cross the next threshold while the player is watching without input.
     interval = setInterval(() => {
       if (["passiveWatch","firstFunds","earn"].includes(lesson.phase)) updateSoon();

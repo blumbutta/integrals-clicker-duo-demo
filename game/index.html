@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#091824">
 <title>Integrals Clicker · Дуо Макс</title>
-<link rel="stylesheet" href="game.css?v=f3eef8fac5db">
+<link rel="stylesheet" href="game.css?v=4d8ba78b889c">
 
 
 
@@ -23,16 +23,18 @@
 
 
 <script>if(window.DuoStartup?.isComplete?.())document.documentElement.classList.add("duo-warm");</script>
-<script defer src="display.js?v=a9b7dd39b8ad"></script><script defer src="launch.js?v=8876156b717a"></script>
+<script defer src="display.js?v=a9b7dd39b8ad"></script><script defer src="launch.js?v=3ae0c7d3687e"></script>
 </head>
 <body class="duo-launching">
 <div id="station" inert aria-hidden="true">
 <header class="masthead">
   <div class="brand" aria-label="Integrals Clicker"><span class="brand-glyph" aria-hidden="true">∫</span><span class="brand-title">Integrals<small>C L I C K E R</small></span></div>
   <div class="head-actions">
+    <button id="leaderboard" type="button" data-sheet="leaderboard" class="icon-button" aria-label="Общий рейтинг" title="Общий рейтинг" aria-haspopup="dialog" aria-controls="dialog-layer" aria-expanded="false"><i data-icon="leaderboard" aria-hidden="true"></i></button>
     <button id="honors-btn" data-sheet="honors" class="icon-button" aria-label="Достижения" aria-haspopup="dialog" aria-controls="dialog-layer" aria-expanded="false"><i data-icon="medal" aria-hidden="true"></i></button>
     <button id="profile" data-sheet="profile" class="icon-button" aria-label="Профиль и статистика" aria-haspopup="dialog" aria-controls="dialog-layer" aria-expanded="false"><span class="avatar-disc" aria-hidden="true"></span></button>
     <button id="help" data-sheet="help" class="icon-button" aria-label="Как играть" aria-haspopup="dialog" aria-controls="dialog-layer" aria-expanded="false"><i data-icon="help"></i></button>
+    <button id="exit-game" type="button" class="icon-button" aria-label="Выйти из игры" title="Выйти из игры" aria-haspopup="dialog" aria-controls="exit-dialog"><i data-icon="exit" aria-hidden="true"></i></button>
   </div>
 </header>
 <div class="wood-trim" aria-hidden="true"></div>
@@ -74,17 +76,30 @@
 <div class="ls-seal"><svg viewBox="0 0 228 228" aria-hidden="true"><circle cx="114" cy="114" r="113.5" stroke-opacity=".55"/><circle cx="114" cy="114" r="105.5" stroke-opacity=".19"/><path opacity="0.65" d="M213.180 114.000 L207.480 114.000"/><path opacity="0.25" d="M211.673 131.222 L209.428 130.827"/><path opacity="0.25" d="M207.199 147.922 L205.056 147.142"/><path opacity="0.65" d="M199.892 163.590 L194.956 160.740"/><path opacity="0.25" d="M189.976 177.752 L188.230 176.286"/><path opacity="0.25" d="M177.752 189.976 L176.286 188.230"/><path opacity="0.65" d="M163.590 199.892 L160.740 194.956"/><path opacity="0.25" d="M147.922 207.199 L147.142 205.056"/><path opacity="0.25" d="M131.222 211.673 L130.827 209.428"/><path opacity="0.65" d="M114.000 213.180 L114.000 207.480"/><path opacity="0.25" d="M96.778 211.673 L97.173 209.428"/><path opacity="0.25" d="M80.078 207.199 L80.858 205.056"/><path opacity="0.65" d="M64.410 199.892 L67.260 194.956"/><path opacity="0.25" d="M50.248 189.976 L51.714 188.230"/><path opacity="0.25" d="M38.024 177.752 L39.770 176.286"/><path opacity="0.65" d="M28.108 163.590 L33.044 160.740"/><path opacity="0.25" d="M20.801 147.922 L22.944 147.142"/><path opacity="0.25" d="M16.327 131.222 L18.572 130.827"/><path opacity="0.65" d="M14.820 114.000 L20.520 114.000"/><path opacity="0.25" d="M16.327 96.778 L18.572 97.173"/><path opacity="0.25" d="M20.801 80.078 L22.944 80.858"/><path opacity="0.65" d="M28.108 64.410 L33.044 67.260"/><path opacity="0.25" d="M38.024 50.248 L39.770 51.714"/><path opacity="0.25" d="M50.248 38.024 L51.714 39.770"/><path opacity="0.65" d="M64.410 28.108 L67.260 33.044"/><path opacity="0.25" d="M80.078 20.801 L80.858 22.944"/><path opacity="0.25" d="M96.778 16.327 L97.173 18.572"/><path opacity="0.65" d="M114.000 14.820 L114.000 20.520"/><path opacity="0.25" d="M131.222 16.327 L130.827 18.572"/><path opacity="0.25" d="M147.922 20.801 L147.142 22.944"/><path opacity="0.65" d="M163.590 28.108 L160.740 33.044"/><path opacity="0.25" d="M177.752 38.024 L176.286 39.770"/><path opacity="0.25" d="M189.976 50.248 L188.230 51.714"/><path opacity="0.65" d="M199.892 64.410 L194.956 67.260"/><path opacity="0.25" d="M207.199 80.078 L205.056 80.858"/><path opacity="0.25" d="M211.673 96.778 L209.428 97.173"/><path class="ls-stars" d="M189.774 185.774l2.8 4 -2.8 4 -2.8 -4z M38.226 34.226l2.8 4 -2.8 4 -2.8 -4z"/></svg></div>
 <div class="ls-title">Integrals</div><div class="ls-subtitle"><span>CLICKER</span></div>
 </div><div class="ls-credit"><div>blumbutta</div><small>СОЗДАТЕЛЬ ИГРЫ</small></div></div></section>
-<template id="game-modules"><script defer src="game.js?v=ee627b52f53d"></script></template>
+<dialog id="exit-dialog" aria-labelledby="exit-heading" aria-describedby="exit-description">
+  <h2 id="exit-heading">Выйти из игры?</h2>
+  <p id="exit-description">При следующем запуске ты продолжишь эту партию.</p>
+  <p id="exit-error" role="alert" hidden>Не удалось сохранить игру. Попробуй ещё раз.</p>
+  <div class="exit-actions">
+    <button id="exit-stay" type="button" autofocus>Остаться</button>
+    <button id="exit-confirm" type="button">Выйти</button>
+  </div>
+</dialog>
+<template id="game-modules"><script defer src="game.js?v=e70cf12fe553"></script></template>
 <script id="new-game-training">// Select modules before launch.js opens the ordinary game's inert template.
 (() => {
   "use strict";
   const modules = document.getElementById("game-modules");
   if (!modules || window.DuoTraining || !/\/game(?:\/index\.html|\/)?$/.test(location.pathname)) return;
 
+  // Select first-run coaching before the shared economy and achievements initialize.
+(() => {
+  "use strict";
+  if (window.DuoTraining) return;
   const saveKey = "integrals.duomax.progress.v1";
   const lessonKey = "integrals-clicker-duo-tutorial-v1";
-  const phases = new Set(("firstTap score firstFunds bit passiveIntro passiveWatch passiveResult earn upgrade testUpgrade upgradeResult " +
-    "school map schoolTask prepareQuiz timer quiz reward cooldown team honors honorsSeen gallery applyTheme home complete").split(" "));
+  const phases = new Set(("firstTap score firstFunds bit buySize passiveIntro passiveWatch passiveResult earn upgrade testUpgrade upgradeResult " +
+    "school map schoolTask prepareQuiz timer quiz reward cooldown team honors honorsSeen gallery applyTheme home ranking complete").split(" "));
   function parse(value) {
     try { return JSON.parse(value); } catch (_) { return null; }
   }
@@ -112,6 +127,7 @@
       try { tab?.setItem(tempKey, JSON.stringify([...values])); } catch (_) {}
     }
     const fallback = {
+      duoReadOnlyFallback: true,
       getItem(key) {
         if (values.has(key)) return values.get(key);
         try { return original?.getItem(key) ?? null; } catch (_) { return null; }
@@ -141,9 +157,13 @@
   }
 
   window.DuoTraining = {};
+})();
+
+if (!window.DuoTraining) return;
+
   const sheet = document.createElement("link");
-  sheet.rel = "stylesheet"; sheet.href = "../training/training-view.css?v=421ca8b6d4b2"; document.head.append(sheet);
-  const scripts = ["../training/game.js?v=778ca298d2a4", "../training/training-view.js?v=9b5f4a4f0171", "../training/training.js?v=34390f5a51ec"].map(src => {
+  sheet.rel = "stylesheet"; sheet.href = "../training/training-view.css?v=be6c8a6bfc1b"; document.head.append(sheet);
+  const scripts = ["../training/game.js?v=ec6dc8c14a11", "../training/training-view.js?v=32d0a9566a76", "../training/training.js?v=2a0c0da01d7a"].map(src => {
     const script = document.createElement("script");
     script.defer = true; script.src = src;
     return script;
