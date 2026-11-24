@@ -83,3 +83,27 @@ jobs:
         run: |
           tail -25 /tmp/duo-emulator.log || true
           timeout 8 "$ANDROID_HOME/platform-tools/adb" -s "$ANDROID_SERIAL" logcat -d -s 'DuoWidgetQA:I' 'AndroidRuntime:E' '*:S' | tail -100 || true
+
+      - name: Capture production ANR and WebView evidence
+        if: failure()
+        shell: bash
+        run: |
+          adb -s "$ANDROID_SERIAL" root >/dev/null
+          adb -s "$ANDROID_SERIAL" wait-for-device
+          adb -s "$ANDROID_SERIAL" shell dumpsys activity lastanr | head -150 || true
+          adb -s "$ANDROID_SERIAL" logcat -d -b events | grep -E 'am_anr|am_crash|am_kill|am_finish_activity|am_new_intent|wm_on_resume_called' | tail -80 || true
+          adb -s "$ANDROID_SERIAL" logcat -d | grep -Ei 'ANR in |Input dispatching timed out|chromium.*(error|fail)|cr_WebView|FATAL EXCEPTION|timed out waiting|Application is not responding' | tail -80 || true
+          adb -s "$ANDROID_SERIAL" shell ls -l /data/anr || true
+          for trace in $(adb -s "$ANDROID_SERIAL" shell ls -t /data/anr | tr -d '\r' | head -3); do
+            adb -s "$ANDROID_SERIAL" exec-out cat "/data/anr/$trace" > "$RUNNER_TEMP/$trace"
+            python3 - "$RUNNER_TEMP/$trace" <<'PY'
+          import sys
+          data=open(sys.argv[1],errors="replace").read()
+          for segment in data.split("----- pid "):
+              if "Cmd line: ru.mathclicker.duo\n" not in segment: continue
+              print(segment[:400])
+              lines=segment.splitlines()
+              for i,line in enumerate(lines):
+                  if line.startswith(('"main"','"JavaBridge"','"Chrome_InProc','"Binder:')): print('\n'.join(lines[i:i+35]))
+          PY
+          done
