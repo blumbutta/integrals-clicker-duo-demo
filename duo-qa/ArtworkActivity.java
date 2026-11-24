@@ -69,7 +69,67 @@ public final class ArtworkActivity extends Activity {
 
     private void runScenario() {
         web.loadUrl(ORIGIN + "/seed/" + scenario);
-        handler.postDelayed(this::awaitApp, 600);
+        if (getIntent().getBooleanExtra("galleryOnly",false)) handler.postDelayed(this::galleryReady,600);
+        else handler.postDelayed(this::awaitApp, 600);
+    }
+
+    private void galleryReady() {
+        String code="(function(){if(!window.App||document.querySelector('#launch-screen'))return false;App.route('appearance');return true;})()";
+        web.evaluateJavascript(code, ret->{
+            if (!"true".equals(ret)) {handler.postDelayed(this::galleryReady,350);return;}
+            handler.postDelayed(()->pickTile(false),550);
+        });
+    }
+
+    private void touch(float x,float y) {
+        long start=android.os.SystemClock.uptimeMillis();
+        android.view.MotionEvent down=android.view.MotionEvent.obtain(start,start,android.view.MotionEvent.ACTION_DOWN,x,y,0);
+        down.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        web.dispatchTouchEvent(down);down.recycle();
+        handler.postDelayed(()->{
+            android.view.MotionEvent up=android.view.MotionEvent.obtain(start,android.os.SystemClock.uptimeMillis(),android.view.MotionEvent.ACTION_UP,x,y,0);
+            up.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+            web.dispatchTouchEvent(up);up.recycle();
+        },65);
+    }
+
+    private void pickTile(boolean icon) {
+        String kind=icon?"icons":"themes";
+        String code="(function(){var g=document.querySelector('.ap-grid[data-kind="+kind+"]');if(!g)return ['no grid'];var gr=g.getBoundingClientRect(),bs=g.querySelectorAll('.ap-card');"
+            +"for(var i=0;i<bs.length;i++){var b=bs[i],st=b.dataset.state;if(st!=='open'&&st!=='spark'"+(icon?"&&st!=='check'":"")+")continue;"
+            +"var r=b.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2,e=document.elementFromPoint(x,y);"
+            +"if(gr.width>=60&&gr.height>=60&&r.width>=28&&r.height>=28&&x>=gr.left&&x<gr.right&&y>gr.top&&y<gr.bottom&&e&&e.closest('.ap-card')===b)"
+            +"return [b.dataset.id,x,y,innerWidth,gr.width,gr.height,r.width,r.height];}return ['no reachable unlocked tile',bs.length,gr.width,gr.height];})()";
+        web.evaluateJavascript(code,ret->{
+            try {
+                org.json.JSONArray j=new org.json.JSONArray(ret);
+                if(j.length()!=8) throw new Exception(kind+" gallery not accessible "+ret);
+                String id=j.getString(0);
+                float scale=web.getWidth()/(float)j.getDouble(3);
+                Log.i(TAG,"Gallery "+kind+" "+ret);
+                touch((float)j.getDouble(1)*scale,(float)j.getDouble(2)*scale);
+                handler.postDelayed(()->checkPreview(icon,id),450);
+            }catch(Exception e){Log.e(TAG,"FAIL "+e.getMessage(),e);}
+        });
+    }
+
+    private void checkPreview(boolean icon,String id) {
+        String code="(function(){var p=document.querySelector('.ap-detail:not([hidden]) .ap-preview'),b=document.querySelector('.ap-grid .ap-card[aria-pressed=true]'),a=document.querySelector('.ap-use'),i=p&&p.querySelector('.ap-icon-preview');"
+            +"if(!p||!b||!a)return ['missing preview'];var r=p.getBoundingClientRect();return [b.dataset.id,p.dataset.kind,r.width,r.height,a.disabled,i?i.naturalWidth:0];})()";
+        web.evaluateJavascript(code,ret->{
+            try {
+                org.json.JSONArray j=new org.json.JSONArray(ret);
+                if(j.length()!=6||!id.equals(j.getString(0))||j.getDouble(2)<30||j.getDouble(3)<30||!j.getString(1).equals(icon?"icons":"themes")||(!icon&&j.getBoolean(4))||(icon&&j.getInt(5)<1))throw new Exception("Invalid selected preview "+ret+" expected "+id);
+                Log.i(TAG,"Selected preview "+ret);
+                if(icon){String orientation=getResources().getConfiguration().orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE?"landscape":"portrait";Log.i(TAG,"PASS gallery "+orientation+" selectable theme and icon previews");return;}
+                web.evaluateJavascript("(function(){var b=document.querySelector('.ap-tabs > button:nth-child(3)'),r=b.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2,innerWidth]})()",coords->{
+                    try {org.json.JSONArray a=new org.json.JSONArray(coords);float scale=web.getWidth()/(float)a.getDouble(2);
+                        touch((float)a.getDouble(0)*scale,(float)a.getDouble(1)*scale);
+                        handler.postDelayed(()->pickTile(true),500);
+                    }catch(Exception e){Log.e(TAG,"FAIL category "+e.getMessage(),e);}
+                });
+            }catch(Exception e){Log.e(TAG,"FAIL "+e.getMessage(),e);}
+        });
     }
 
     private void awaitApp() {

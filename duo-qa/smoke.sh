@@ -190,3 +190,4 @@ verify_click "$relaunched" 1
 echo "PASS: one real hosted lab; upgraded balance, background and disk artwork, stable binding across rotation and process relaunch."
 skin "$relaunched" > "$RUNNER_TEMP/duo-widget-skin"
 echo "PASS: hosted final package $final_hash"
+bash duo-qa/artwork.sh "$(skin "$relaunched")" gallery
