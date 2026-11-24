@@ -171,7 +171,7 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     invite.setAttribute('aria-labelledby',inviteTitle.id);
     const details = element('div','tr-invite-copy',invite);
     element('p','',details).textContent='Из Яндекса игра получит имя и уникальный для этой игры ID. Фото и почту игра не запрашивает.';
-    element('p','',details).textContent='Другим игрокам будут видны имя, игровой эмодзи, эпоха, престиж и текущий баланс в целых интегралах.';
+    element('p','',details).textContent='Игроки увидят имя, эмодзи, эпоху, престиж и текущий счёт. Результат обновляется автоматически во время игры.';
     element('p','tr-invite-later',details).textContent='Можно подключиться позже в разделе «Общий рейтинг».';
     const qr = element('figure','tr-invite-qr',invite);
     inviteQR = element('img','',qr);

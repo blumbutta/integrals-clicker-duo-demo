@@ -7853,35 +7853,41 @@ window.PlayerAvatar=(()=>{
 })();
 
 ;
-// Network activity belongs to the open leaderboard. The game itself stays offline.
+// Participating players publish during foreground play. The table is fetched only while displayed.
 window.Leaderboard=(()=>{
   'use strict';
-  const configURL='https://blumbutta.github.io/integrals-clicker-duo-demo/services/leaderboard.json';
+  const apiOrigin='https://153.51.163.172';
   const verificationURLs=new Set(['https://oauth.yandex.ru/device','https://oauth.yandex.com/device']);
   const key='integrals.duomax.leaderboard.v1',refreshInterval=60000;
   const paths={list:'/v1/leaderboard',device:'/v1/auth/device',poll:'/v1/auth/poll',score:'/v1/score',logout:'/v1/logout',remove:'/v1/me'};
-  const methods={'/config':'GET',[paths.list]:'GET',[paths.device]:'POST',[paths.poll]:'POST',[paths.score]:'POST',[paths.logout]:'POST',[paths.remove]:'DELETE'};
+  const methods={[paths.list]:'GET',[paths.device]:'POST',[paths.poll]:'POST',[paths.score]:'POST',[paths.logout]:'POST',[paths.remove]:'DELETE'};
   const tokenOK=s=>typeof s==='string' && s.length>=16 && s.length<=512 && /^[A-Za-z0-9._~-]+$/.test(s);
   const scoreOK=s=>typeof s==='string' && /^(?:0|[1-9]\d{0,249}|10{250})$/.test(s);
-  function originOK(s){
-    if(typeof s!=='string')return false;
-    try{const u=new URL(s);return u.origin===s && u.protocol==='https:' && !u.port && /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(u.hostname);}
-    catch{return false;}
-  }
   function restore(){
-    try{const s=JSON.parse(localStorage.getItem(key));return s?.rules===2&&originOK(s.origin)&&tokenOK(s.token)?s:null;}catch{return null;}
+    try{
+      const saved=localStorage.getItem(key);
+      if(!saved)return null;
+      const s=JSON.parse(saved);
+      if(s?.rules===2 && s.origin===apiOrigin && tokenOK(s.token))return s;
+      // A session belongs only to the service that issued it.
+      localStorage.removeItem(key);
+    }catch{}
+    return null;
   }
-  let session=restore(),host=null,generation=0,nativePaused=false,pageHidden=false,origin='',flow=null,entries=null,me=null;
+  let session=restore(),host=null,generation=0,nativePaused=false,pageHidden=false,flow=null,entries=null,me=null;
   let pollTimer=0,refreshTimer=0,busy=false,options=false,removeConfirm=false,message='',consented=false;
   function persist(s){
     if(s && window.ProgressReset?.stale())return;
     session=s;
     try{if(s)localStorage.setItem(key,JSON.stringify(s));else localStorage.removeItem(key);}catch{}
   }
-  function visible(){
-    return Boolean(host?.isConnected) && !document.hidden && !nativePaused && !pageHidden && !window.ProgressReset?.stale()
+  function foreground(){
+    return !document.hidden && !nativePaused && !pageHidden && !window.ProgressReset?.stale()
       && (consented||!window.DuoTraining||window.DuoTraining.currentStep?.()==='done');
   }
+  const visible=()=>Boolean(host?.isConnected)&&foreground();
+  const canSync=()=>foreground()&&(visible()||session?.autoPublish===true);
+  const online=()=>navigator.onLine!==false;
   const current=id=>id===generation && visible();
   class RequestError extends Error{constructor(status,body={}){super('Leaderboard request failed');this.status=status;this.data=body;}}
   function unpack(status,text){
@@ -7905,8 +7911,8 @@ window.Leaderboard=(()=>{
       try{send(id);}catch{finish(0,'');}
     });
   }
-  async function request(path,base='',token='',body=null){
-    if(!visible())throw new RequestError(0);
+  async function request(path,base,token='',body=null){
+    if(base!==apiOrigin || !online() || !(path===paths.score ? canSync() : visible()))throw new RequestError(0);
     const payload=body===null?'':JSON.stringify(body);
     if(window.DuoRank)return nativeCall(id=>window.DuoRank.request(id,path,payload,token,base));
     const headers={Accept:'application/json'};
@@ -7914,22 +7920,12 @@ window.Leaderboard=(()=>{
     if(payload)headers['Content-Type']='application/json';
     const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),5500);controllers.add(ctrl);
     try{
-      const response=await fetch(path==='/config'?configURL:base+path,{
+      const response=await fetch(apiOrigin+path,{
         method:methods[path],headers,body:payload||undefined,signal:ctrl.signal,
         credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store',redirect:'error'
       });
       return unpack(response.status,await response.text());
     }finally{clearTimeout(timeout);controllers.delete(ctrl);}
-  }
-  async function configure(id){
-    if(origin)return origin;
-    const data=await request('/config');
-    if(!current(id))throw new RequestError(0);
-    if(data.apiOrigin==='')throw new RequestError(503);
-    if(!originOK(data.apiOrigin))throw new RequestError(0);
-    origin=data.apiOrigin;
-    if(session && session.origin!==origin){persist(null);throw new RequestError(401);}
-    return origin;
   }
   const el=(name,cls,text)=>{const n=document.createElement(name);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   function button(text,fn,cls=''){
@@ -7952,7 +7948,7 @@ window.Leaderboard=(()=>{
   function info(root,copy){const p=el('p','lb-notice',copy);p.setAttribute('role','status');root.append(p);}
   function guest(root){
     const content=el('section','lb-connect'),intro=el('div','lb-intro');
-    intro.append(el('h3','','Подключите Яндекс ID'),el('p','','Для общего рейтинга нужен интернет. Достаточно один раз войти в свой аккаунт на этом устройстве.'),
+    intro.append(el('h3','','Подключите Яндекс ID'),el('p','','Для общего рейтинга нужен интернет. После входа игра автоматически обновляет результат во время игры, примерно раз в минуту.'),
       el('p','lb-privacy','Из Яндекс ID игра использует имя и уникальный для приложения ID. Игроки увидят ваше имя, игровой значок, вселенную, престиж и текущий счёт. ID нужен для привязки аккаунта.'));
     content.append(intro);
     if(message)info(content,message);
@@ -7992,6 +7988,17 @@ window.Leaderboard=(()=>{
     const root=el('section','lb-page');
     if(!session)guest(root);
     else{
+      if(!session.autoPublish){
+        info(root,'Можно обновлять результат автоматически во время игры. Публикуются тот же текущий счёт, престиж и игровой значок.');
+        root.append(button('Включить автообновление',()=>{persist({...session,autoPublish:true});paint();refresh();},'lb-primary'));
+      }
+      if(session.blocked){
+        const epoch=compareGeneration(Economy.rankingProgress(),session.blocked);
+        if(epoch===0){
+          info(root,'В рейтинге уже есть другой результат этого аккаунта. Можно продолжить публиковать счёт с этого устройства.');
+          root.append(button('Использовать счёт этого устройства',()=>{persist({...session,blocked:null,stamp:null});paint();refresh();}));
+        }else if(epoch<0)info(root,'В рейтинге уже сохранён результат этой учётной записи с более поздним престижем или вселенной.');
+      }
       if(me){const personal=el('section','lb-personal'),list=el('ol','');personal.append(el('h3','','Ваше место'));list.append(entry(me,true));personal.append(list);root.append(personal);}
       if(entries){
         const top=el('section','lb-top'),list=el('ol','');top.append(el('h3','','Топ игроков'));
@@ -8001,7 +8008,7 @@ window.Leaderboard=(()=>{
       }
       if(message)info(root,message);
       else if(!entries)info(root,'Загружаем рейтинг…');
-      if(message && !busy)root.append(button('Попробовать снова',()=>refresh(true)));
+      if(message && !busy)root.append(button('Попробовать снова',()=>refresh()));
       accountOptions(root);
     }
     host.replaceChildren(root);
@@ -8017,50 +8024,68 @@ window.Leaderboard=(()=>{
     if(!Array.isArray(data.entries)||data.entries.length>50||!data.entries.every(rowOK)||(data.me!==null&&!ownOK(data.me)))throw new RequestError(0);
     return data;
   }
+  let prestigePending=false;
   function timer(){
     clearTimeout(refreshTimer);
-    if(visible()&&session)refreshTimer=setTimeout(refresh,refreshInterval);
+    if(session&&canSync())refreshTimer=setTimeout(refresh,prestigePending?0:refreshInterval);
+    prestigePending=false;
   }
   const fingerprint=r=>[r.cosmicAscensions,r.prestige,r.score,r.avatar].join('/');
   const compareGeneration=(a,b)=>a.cosmicAscensions===b.cosmicAscensions?a.prestige-b.prestige:a.cosmicAscensions-b.cosmicAscensions;
-  async function refresh(retry=false){
-    if(!visible()||!session||busy)return;
-    if(retry)origin='';
-    const id=generation,saved=session;
-    const valid=()=>current(id)&&session?.token===saved.token;
+  function progressNow(){return {...Economy.rankingProgress(),avatar:PlayerAvatar.index};}
+  function observeRemote(row,progress){
+    // A different session or device has published. Increasing idle income on
+    // this device is not sufficient reason to overwrite that other game.
+    const stamp=fingerprint(progress);
+    if(fingerprint(row)===stamp){
+      persist({...session,revision:row.revision,stamp,blocked:null});
+    }else{
+      const blocked={cosmicAscensions:row.cosmicAscensions,prestige:row.prestige};
+      persist({...session,revision:row.revision,stamp:null,blocked});
+    }
+  }
+  async function refresh(){
+    if(!session||busy||!canSync())return;
+    if(!online()){
+      message='Рейтинг обновится, когда появится интернет.';
+      if(visible())paint();
+      timer();return;
+    }
+    const id=generation,saved=session,progress=progressNow(),stamp=fingerprint(progress);
+    const valid=()=>id===generation&&canSync()&&session?.token===saved.token;
+    const shouldWrite=saved.stamp!==stamp&&(!saved.blocked||compareGeneration(progress,saved.blocked)>0);
+    if(!shouldWrite&&!visible()){timer();return;}
     busy=true;message='';
-    if(!entries)paint();
+    if(visible()&&!entries)paint();
     try{
-      await configure(id);
-      if(!valid())return;
-      // Read the server revision first. Opening a separate device must not
-      // overwrite a newer score just because it holds an older local game.
-      let data=await table(saved);
-      if(!valid())return;
-      const progress={...Economy.rankingProgress(),avatar:PlayerAvatar.index};
-      const stamp=fingerprint(progress),remote=data.me,epoch=remote?compareGeneration(progress,remote):1;
-      const changed=saved.revision===remote?.revision && saved.stamp!==stamp;
-      const write=!remote || epoch>0 || (epoch===0 && changed);
-      if(write){
+      if(shouldWrite){
         try{
-          const result=await request(paths.score,saved.origin,saved.token,{...progress,revision:remote?.revision||0});
+          const result=await request(paths.score,saved.origin,saved.token,{...progress,revision:saved.revision||0});
           if(!valid())return;
           if(!ownOK(result.me))throw new RequestError(0);
-          persist({...saved,revision:result.me.revision,stamp});
+          persist({...session,revision:result.me.revision,stamp,blocked:null});
         }catch(e){
-          if(e.status!==409)throw e;
           if(!valid())return;
-          // A newer observation won the race. Adopt it, without retrying the discarded snapshot.
+          if(e.status!==409||!ownOK(e.data?.me))throw e;
+          observeRemote(e.data.me,progress);
+          if(!saved.blocked&&compareGeneration(progress,e.data.me)>0)prestigePending=true;
         }
-        data=await table(saved);
-        if(!valid())return;
       }
-      entries=data.entries;me=data.me;
-      if(me)persist({...saved,revision:me.revision,stamp});
+      if(visible()){
+        const data=await table(saved);
+        if(!valid())return;
+        entries=data.entries;me=data.me;
+        if(me && me.revision!==session.revision)observeRemote(me,progress);
+      }
     }catch(e){
-      if(current(id))fail(e);
+      if(valid())fail(e);
     }finally{
-      if(current(id)){busy=false;paint();timer();}
+      if(id===generation){
+        busy=false;
+        setNativeVisible(canSync());
+        if(visible())paint();
+        timer();
+      }
     }
   }
   function stopFlow(){clearTimeout(pollTimer);pollTimer=0;flow=null;}
@@ -8070,9 +8095,7 @@ window.Leaderboard=(()=>{
     if(flow||!visible()||session)return;
     const id=generation,active={};flow=active;message='';paint();
     try{
-      active.origin=await configure(id);
-      if(!current(id)||flow!==active)return;
-      const data=await request(paths.device,active.origin,'',{rules:2});
+      const data=await request(paths.device,apiOrigin,'',{rules:2});
       if(!current(id)||flow!==active)return;
       if(!tokenOK(data.ticket)||typeof data.userCode!=='string'||!/^[-A-Za-z0-9]{3,32}$/.test(data.userCode)||!verificationURLs.has(data.verificationUrl))throw new RequestError(0);
       Object.assign(active,{ticket:data.ticket,code:data.userCode,url:data.verificationUrl,until:Date.now()+1000*seconds(data.expiresIn,600),delay:1000*seconds(data.interval,5)});
@@ -8095,11 +8118,11 @@ window.Leaderboard=(()=>{
     active.polling=true;
     try{
       if(Date.now()>=active.until)throw new RequestError(410);
-      const data=await request(paths.poll,active.origin,'',{ticket:active.ticket});
+      const data=await request(paths.poll,apiOrigin,'',{ticket:active.ticket});
       if(!current(id)||flow!==active)return;
       if(data.status==='pending'){active.delay=1000*seconds(data.interval,active.delay/1000);schedulePoll();return;}
       if(data.status!=='authorized'||!tokenOK(data.session))throw new RequestError(0);
-      persist({rules:2,origin:active.origin,token:data.session});stopFlow();message='';paint();refresh();
+      persist({rules:2,autoPublish:true,origin:apiOrigin,token:data.session});stopFlow();message='';paint();refresh();
     }catch(e){
       if(!current(id)||flow!==active)return;
       if(e.status===429){active.delay=Math.max(active.delay,10000);schedulePoll();}
@@ -8111,8 +8134,6 @@ window.Leaderboard=(()=>{
     const id=restart(),saved=session;
     busy=true;message='';
     try{
-      await configure(id);
-      if(!current(id)||session?.token!==saved.token)return;
       await request(remove?paths.remove:paths.logout,saved.origin,saved.token,remove?null:{});
       if(session?.token===saved.token)resetLocalSession();
     }catch(e){
@@ -8127,36 +8148,55 @@ window.Leaderboard=(()=>{
     for(const finish of nativeCalls.values())finish(0,'');
     return generation;
   }
-  function setNativeVisible(value){window.DuoRank?.setVisible?.(value);}
+  function setNativeVisible(value){window.DuoRank?.setVisible?.(Boolean(value&&online()));}
   function resetLocalSession(){
     restart();stopFlow();persist(null);entries=null;me=null;message='';options=false;removeConfirm=false;
+    setNativeVisible(visible());
     if(host)paint();
   }
   function open(panel,args){
-    close();host=panel;consented=args?.connect===true;session=restore();setNativeVisible(visible());paint();
+    close();host=panel;consented=args?.connect===true;setNativeVisible(visible());paint();
     if(session)refresh();else if(consented)begin();
   }
   function close(){
-    restart();setNativeVisible(false);host=null;stopFlow();entries=null;me=null;origin='';message='';options=false;removeConfirm=false;consented=false;
+    restart();setNativeVisible(false);host=null;stopFlow();entries=null;me=null;message='';options=false;removeConfirm=false;consented=false;
+    setNativeVisible(canSync());timer();
   }
   function suspend(){
     setNativeVisible(false);restart();
     if(flow){flow.polling=false;if(!flow.ticket)stopFlow();}
   }
   function resume(){
-    if(!visible())return;
+    if(!canSync())return;
     setNativeVisible(true);
-    if(flow)schedulePoll();else if(session)refresh();else paint();
+    if(flow)schedulePoll();else if(session)refresh();else if(visible())paint();
   }
   document.addEventListener('visibilitychange',()=>document.hidden?suspend():resume());
   window.addEventListener('duopause',()=>{nativePaused=true;suspend();});
   window.addEventListener('duoresume',()=>{nativePaused=false;resume();});
   window.addEventListener('pagehide',()=>{pageHidden=true;suspend();});
   window.addEventListener('pageshow',()=>{pageHidden=false;resume();});
+  window.addEventListener('offline',()=>{
+    suspend();message='Рейтинг обновится, когда появится интернет.';if(visible())paint();
+  });
+  window.addEventListener('online',resume);
+  window.addEventListener('duotrainingcomplete',resume);
+  window.addEventListener('duoprestige',()=>{
+    if(!session||!canSync())return;
+    if(busy)prestigePending=true;else refresh();
+  });
   window.addEventListener('storage',e=>{
-    if(e.key!==key)return;
-    const previous=session;session=restore();
-    if(host && previous?.token!==session?.token){restart();stopFlow();entries=null;me=null;origin='';message='';paint();if(session)refresh();}
+    if(e.key!==key&&e.key!==null)return;
+    const next=restore();
+    // Keep this tab's last acknowledged revision; a sibling tab's newer
+    // revision cannot be used as permission to overwrite it with stale data.
+    if(next?.token===session?.token){
+      if(next && next.autoPublish!==session.autoPublish){session={...session,autoPublish:next.autoPublish};resume();}
+      return;
+    }
+    restart();setNativeVisible(false);stopFlow();session=next;entries=null;me=null;message='';
+    if(visible())paint();
+    resume();
   });
   return Object.freeze({open,close,resetLocalSession,isConnected:()=>!!session});
 })();
@@ -8232,7 +8272,7 @@ window.Extras = (() => {
     privacy.innerHTML='<summary>Какие данные видны в рейтинге?</summary>' +
       '<p>Ты сам выбираешь, участвовать ли в рейтинге. Из Яндекс ID игра сохраняет имя и защищённую метку твоего аккаунта. Яндекс выдаёт разрешение на имя вместе с другими полями профиля. Игра их пропускает.</p>' +
       '<p>Участникам видны твоё имя, игровой значок, престиж и текущий баланс интегралов. После перехода в новую вселенную её номер тоже учитывается. Если прогресс совпадает, выше окажется тот, чей результат сервер получил раньше.</p>' +
-      '<p>Результат обновляется, пока открыт «Рейтинг» и есть интернет. В этом же разделе можно выйти из аккаунта или удалить свою запись на всех устройствах. Партия сохраняется на устройстве.</p>';
+      '<p>Когда включено автообновление и есть интернет, игра отправляет текущий результат примерно раз в минуту во время игры и при новом престиже. В разделе «Рейтинг» можно выйти из аккаунта или удалить свою запись на всех устройствах. Партия сохраняется на устройстве.</p>';
     inner.querySelector('.ex-switches').after(privacy);
     window.ProgressReset?.addSettings(inner);
     window.HomeWidgets?.addSettings(inner);
