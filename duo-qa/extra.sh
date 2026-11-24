@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="$ANDROID_HOME/platform-tools:$PATH"
 # A normal launcher resolves the game's currently enabled alias. The OS task
 # description is collected separately because some launchers use that artwork.
 launcher=$(adb -s "$ANDROID_SERIAL" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p ru.mathclicker.duo | tr -d '\r')
