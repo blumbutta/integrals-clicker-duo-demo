@@ -1,7 +1,7 @@
-name: Verify Duo Max 0.3.20 on Android 11
+name: Diagnose warm re-entry on Android 11
 on:
   push:
-    branches: [qa/duo-release-0320]
+    branches: [qa/duo-anr-0320]
     paths: [.github/workflows/duo-api30-smoke.yml]
 permissions:
   contents: read
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 50
     env:
       ANDROID_SERIAL: emulator-5556
-      QA_BRANCH: qa/duo-release-0320
+      QA_BRANCH: qa/duo-anr-0320
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -42,44 +42,29 @@ jobs:
           adb -s "$ANDROID_SERIAL" shell wm size 1200x1920
           adb -s "$ANDROID_SERIAL" shell wm density 160
           adb -s "$ANDROID_SERIAL" shell getprop ro.build.version.sdk
-      - name: Await exact one-widget release APK
+
+      - name: Install exact public APK and collect warm and cold exit behavior
+        run: bash duo-qa/anr.sh
+      - name: Capture production ANR and WebView evidence
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          for attempt in $(seq 1 110); do
-            git fetch --no-tags --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
-            if git cat-file -e FETCH_HEAD:duo-qa/release-0320.sha256 2>/dev/null; then
-              git checkout FETCH_HEAD -- duo-qa
-              cmp duo-qa/release-0320.sha256 duo-qa/final.sha256
-              echo "$(tr -d '\r\n' < duo-qa/final.sha256)  duo-qa/final.apk" | sha256sum -c -
-              exit 0
-            fi
-            sleep 15
+          adb -s "$ANDROID_SERIAL" root >/dev/null
+          adb -s "$ANDROID_SERIAL" wait-for-device
+          adb -s "$ANDROID_SERIAL" shell dumpsys activity lastanr | head -150 || true
+          adb -s "$ANDROID_SERIAL" logcat -d -b events | grep -E 'am_anr|am_crash|am_kill|am_finish_activity|am_new_intent|wm_on_resume_called' | tail -80 || true
+          adb -s "$ANDROID_SERIAL" logcat -d | grep -Ei 'ANR in |Input dispatching timed out|chromium.*(error|fail)|cr_WebView|FATAL EXCEPTION|timed out waiting|Application is not responding' | tail -80 || true
+          adb -s "$ANDROID_SERIAL" shell ls -l /data/anr || true
+          for trace in $(adb -s "$ANDROID_SERIAL" shell ls -t /data/anr | tr -d '\r' | head -3); do
+            adb -s "$ANDROID_SERIAL" exec-out cat "/data/anr/$trace" > "$RUNNER_TEMP/$trace"
+            python3 - "$RUNNER_TEMP/$trace" <<'PY'
+          import sys
+          data=open(sys.argv[1],errors="replace").read()
+          for segment in data.split("----- pid "):
+              if "Cmd line: ru.mathclicker.duo\n" not in segment: continue
+              print(segment[:400])
+              lines=segment.splitlines()
+              for i,line in enumerate(lines):
+                  if line.startswith(('"main"','"JavaBridge"','"Chrome_InProc','"Binder:')): print('\n'.join(lines[i:i+35]))
+          PY
           done
-          echo 'Signed final one-widget build did not arrive' >&2
-          exit 1
-      - name: Verify production update, balance widget and both gallery orientations
-        run: bash duo-qa/smoke.sh
-      - name: Render selected background and button in stock WebView
-        if: '!cancelled()'
-        run: bash duo-qa/artwork.sh "$(cat "$RUNNER_TEMP/duo-widget-skin" 2>/dev/null || echo unknown)"
-      - name: Verify portrait and landscape navigation button edges
-        if: '!cancelled()'
-        run: bash duo-qa/extra.sh edge
-      - name: Verify map zoom, click and two-contact purchases
-        if: '!cancelled()'
-        run: |
-          git fetch --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
-          git checkout FETCH_HEAD -- duo-qa/TwoFingerActivity.java
-          bash duo-qa/extra.sh pinch
-          echo "PASS: final package $(cat duo-qa/final.sha256)"
-      - name: Reboot tablet and verify the pinned balance widget
-        run: bash duo-qa/widget-reboot.sh
-      - name: Exercise launcher icon changes and return to home
-        if: '!cancelled()'
-        run: bash duo-qa/launcher-reentry.sh
-      - name: Device diagnostics on failure
-        if: failure()
-        run: |
-          tail -25 /tmp/duo-emulator.log || true
-          timeout 8 "$ANDROID_HOME/platform-tools/adb" -s "$ANDROID_SERIAL" logcat -d -s 'DuoWidgetQA:I' 'AndroidRuntime:E' '*:S' | tail -100 || true
