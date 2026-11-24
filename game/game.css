@@ -1263,8 +1263,9 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 .ex-widget-preview::before { content:""; display:block; padding-top:37.5% }
 .ex-widget-preview img { position:absolute; left:4%; top:10%; width:30%; height:80%; object-fit:contain }
 .ex-widget-preview .ex-widget-amount { position:absolute; left:37%; right:4%; top:50%; transform:translateY(-50%); overflow:hidden; text-align:center; text-overflow:ellipsis; white-space:nowrap; font:700 1.15em var(--serif); color:#fff2d7; text-shadow:0 1px 3px #14212b }
-.ex-widget-picker button,.ex-account button { min-height:44px; padding:.45em 1em; border:1px solid #d6b77c; border-radius:.55rem; background:#193640; color:#fff1d1; font:700 1em var(--serif) }
-.ex-account button { margin-top:.6rem }
+.ex-widget-picker button,.ex-account button,.ex-data-note button { min-height:44px; padding:.45em 1em; border:1px solid #d6b77c; border-radius:.55rem; background:#193640; color:#fff1d1; font:700 1em var(--serif) }
+.ex-account button,.ex-data-note button { margin:.6rem .55rem 0 0 }
+.ex-data-note button.ex-delete-record { background:#66393d; color:#ffeddf }
 .ex-profile-page [data-account-status] { overflow-wrap:anywhere }
 .ex-widget-picker [role="status"]:empty { display:none }
 
@@ -1621,7 +1622,7 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 .lb-page h3,.lb-page p,.lb-page ol {margin:0}
 .lb-page h3 {font:italic 700 clamp(25px,1.65rem,48px)/1.15 var(--serif)}
 .lb-page p {font:400 clamp(17px,1.13rem,34px)/1.42 var(--system)}
-.lb-connect,.lb-intro,.lb-instructions,.lb-personal,.lb-top,.lb-account {display:grid; align-content:start; gap:.65rem; min-width:0}
+.lb-connect,.lb-intro,.lb-instructions,.lb-personal,.lb-top {display:grid; align-content:start; gap:.65rem; min-width:0}
 .lb-connect {width:100%; max-width:46rem; margin:0 auto; padding-top:clamp(8px,2vh,40px); gap:clamp(14px,1.1rem,36px)}
 .lb-intro h3 {font-size:clamp(29px,2.1rem,60px); color:var(--gold)}
 .lb-intro p {max-width:63ch}
@@ -1634,7 +1635,6 @@ i[data-icon] svg { display:block; width:100%; height:100% }
   font:700 max(17px,1.03rem)/1.18 var(--system); text-decoration:none; touch-action:manipulation;
 }
 .lb-primary {color:var(--ink); background:var(--gold)}
-.lb-danger {color:#ffe0db; background:#753f42}
 .lb-device {
   display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; justify-items:start;
   gap:clamp(12px,2vw,46px); padding-top:.95rem; border-top:1px solid var(--line);
@@ -1657,8 +1657,6 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 .lb-rank {color:var(--gold); font-family:var(--figures); font-variant-numeric:tabular-nums}
 .lb-name,.lb-score {min-width:0; overflow-wrap:anywhere}
 .lb-score {text-align:right; color:var(--gold); font-family:var(--figures)}
-.lb-account {padding-top:.3rem}
-.lb-toggle {font-size:max(15px,.9rem)}
 @media(max-width:620px) {
   .lb-device {grid-template-columns:minmax(0,1fr)}
 }

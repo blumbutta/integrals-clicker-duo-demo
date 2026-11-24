@@ -81,7 +81,7 @@ window.ProgressReset=(()=>{
   function prepareDialog(){
     if(dialog)return;
     dialog=document.createElement('dialog');dialog.className='progress-reset-dialog';dialog.setAttribute('aria-labelledby','reset-title');dialog.setAttribute('aria-describedby','reset-description reset-board');
-    dialog.innerHTML='<h2 id="reset-title"></h2><p id="reset-description"></p><p id="reset-board">На этом устройстве произойдёт выход из рейтинга. Публичный рекорд сохранится. Удалить его отдельно можно в разделе «Рейтинг».</p><p class="reset-error" role="alert" hidden></p><div class="exit-actions"><button type="button" data-reset="cancel"></button><button type="button" data-reset="confirm"></button></div>';
+    dialog.innerHTML='<h2 id="reset-title"></h2><p id="reset-description"></p><p id="reset-board">На этом устройстве произойдёт выход из рейтинга. Публичный рекорд сохранится. Чтобы удалить и рекорд, сначала открой в настройках «Какие данные видны в рейтинге?».</p><p class="reset-error" role="alert" hidden></p><div class="exit-actions"><button type="button" data-reset="cancel"></button><button type="button" data-reset="confirm"></button></div>';
     document.body.append(dialog);
     title=dialog.querySelector('h2');description=dialog.querySelector('#reset-description');error=dialog.querySelector('.reset-error');
     cancel=dialog.querySelector('[data-reset=cancel]');action=dialog.querySelector('[data-reset=confirm]');
@@ -845,6 +845,18 @@ window.DuoAudio = (() => {
       teamGainCps,teamGainFraction:baseCps ? teamGainCps / baseCps : 0,teamResearchFraction:team};
   }
   function production(){ return productionCache || (productionCache=calculateProduction(owned)); }
+  function resourceUnitProduction(id, prod) {
+    const count=owned(id);
+    if(count)return prod.rates[id]/count;
+    if(!discovered.has(id))return 0;
+    // The first purchase can form a pair. Only its own output belongs on the card.
+    if(!prod.firstUnitRates)prod.firstUnitRates=new Map();
+    if(!prod.firstUnitRates.has(id)){
+      const projected=calculateProduction(key=>key===id?1:owned(key));
+      prod.firstUnitRates.set(id,projected.rates[id]);
+    }
+    return prod.firstUnitRates.get(id);
+  }
   function productionGain(id, quantity){
     if(!catalogue.has(id)||!Number.isInteger(quantity)||quantity<1)return 0;
     return Math.max(0,calculateProduction(key=>owned(key)+(key===id ? quantity : 0)).cps-production().cps);
@@ -945,7 +957,7 @@ window.DuoAudio = (() => {
       researchCount:studied.size, totalPurchased:Object.values(state.purchases).reduce((a,b)=>a+b,0),
       // UI reads the full shop and research catalogue only on their respective screens.
       get resources() { return resources.map(item => ({...item, owned:owned(item.id), purchasedThisRun:state.runPurchases[item.id]||0, price:price(item.id), discovered:discovered.has(item.id), unseen:discovered.has(item.id) && !state.seen.includes(item.id), unlocked:isUnlocked(item),
-        canBuy:isUnlocked(item) && state.balance >= price(item.id), production:prod.rates[item.id], teamBonusFraction:prod.teamBonus[item.id] || 0})); },
+        canBuy:isUnlocked(item) && state.balance >= price(item.id), production:prod.rates[item.id], unitProduction:resourceUnitProduction(item.id,prod), teamBonusFraction:prod.teamBonus[item.id] || 0})); },
       get research() { return research.map(researchStatus); }
     };
   }
@@ -3076,30 +3088,39 @@ window.DuoResidents = (() => {
     const i=s.resources.findIndex(v=>v.id===r.id);
     return expose && i>=0 ? '<img class="pg-portrait" alt="" src="'+art("resource",i)+'">' : '<span class="pg-unknown" aria-hidden="true">?</span>';
   }
-  function orderSize(r) {return Math.min(quantity,r.maximumCount-r.owned);}
   function buyInfo(r,s) {
     const limit=r.maximumCount-r.owned;
-    const nominal=quantity===0 ? Economy.quantity(r.id,0) : orderSize(r);
+    const nominal=quantity===0 ? Economy.quantity(r.id,0) : Math.min(quantity,limit);
     const cost=limit>0 ? Economy.price(r.id,Math.max(1,nominal)) : Infinity;
     return {cost,nominal,allowed:r.unlocked && s.balance>=cost && nominal>0};
   }
+  function purchaseAttrs(r,b) {
+    return idAttr("buy",r.id)+' data-count="'+b.nominal+'" data-owned="'+r.owned+'"'+(b.allowed?'':' disabled');
+  }
   function resourcePrice(r,b) {
     if(r.owned===r.maximumCount)return "Лимит достигнут";
-    return (b.nominal===0?"от ":"")+catalog(b.cost)+" ∫";
+    return (b.nominal===0?"За 1 шт. · ":"")+fmt(b.cost)+" ∫";
+  }
+  function resourceQuantityLabel(r,b) {
+    if(r.owned>=r.maximumCount || !b.nominal)return "MAX";
+    return "×"+fmt(b.nominal);
+  }
+  function resourceIncome(r) {
+    return rate(r.unitProduction)+" ∫/с "+(r.owned?"за единицу":"за первую единицу");
   }
   function resourceRow(s,r,index) {
       const b=buyInfo(r,s), name=r.discovered?r.name:"Неизвестный ресурс", previous=s.resources[index-1];
       const requirement=!r.unlocked ? (previous?.discovered ? "Сначала получите: "+previous.name : "Сначала откройте предыдущий ресурс") : "";
-      const description=requirement || (r.discovered? "+"+catalog(r.baseCps)+" ∫/с · базовая скорость" :
+      const description=requirement || (r.discovered? resourceIncome(r) :
         "Неизвестный ресурс");
       const color=r.discovered?["#284052","#244637","#2b365e","#60482b","#173f4a","#3b3158","#45284d","#293f66","#273651","#512f45","#205257"][index%11]:"#25313a";
       return '<article class="pg-resource '+(b.allowed?"pg-ready":"")+'" data-row="'+r.id+'" style="--resource-color:'+color+'">'+
-        '<button type="button" class="pg-buy" '+idAttr("buy",r.id)+(b.allowed?'':' disabled')+' aria-label="Купить '+esc(name)+'" aria-describedby="resource-facts-'+r.id+' resource-price-'+r.id+'"></button>'+
+        '<button type="button" class="pg-buy" '+purchaseAttrs(r,b)+' aria-label="Купить '+esc(name)+'" aria-describedby="resource-facts-'+r.id+' resource-price-'+r.id+'"></button>'+
         '<div class="pg-resource-heading"><strong>'+esc(r.discovered?r.name:"???")+'</strong><button class="pg-info" '+idAttr("resource",r.id)+' aria-label="Описание: '+esc(name)+'">ⓘ</button></div>'+
         '<div class="pg-resource-body">'+
         '<span class="pg-art-box">'+resourceImage(s,r,r.discovered)+(r.unseen?'<b class="pg-new">!</b>':'')+'</span>'+
         '<span class="pg-resource-copy"><small>'+esc(description)+'</small></span>'+
-        '<span class="pg-resource-facts" id="resource-facts-'+r.id+'"><span>'+fmt(r.owned)+' в работе</span><b>'+ (r.owned>=r.maximumCount?"MAX":'×'+fmt(b.nominal))+'</b></span>'+
+        '<span class="pg-resource-facts" id="resource-facts-'+r.id+'"><span>'+fmt(r.owned)+' в работе</span><b>'+resourceQuantityLabel(r,b)+'</b></span>'+
         '<em class="pg-resource-price" id="resource-price-'+r.id+'">'+resourcePrice(r,b)+'</em></div></article>';
   }
   function blackHoleRequirement(last){
@@ -3137,7 +3158,7 @@ window.DuoResidents = (() => {
     resources.forEach((r,i)=>{
       const ent=resourceEntries[i], b=buyInfo(r,s), previous=resources[i-1];
       const fixed=[r.discovered,r.unlocked,!!previous?.discovered].join("|");
-      const dynamic=[r.owned,b.allowed,b.nominal,b.cost,r.unseen].join("|");
+      const dynamic=[r.owned,b.allowed,b.nominal,b.cost,r.unitProduction,r.unseen].join("|");
       if(ent.staticKey!==fixed){
         if(ent.staticKey!==null){
           const tpl=document.createElement("template");tpl.innerHTML=resourceRow(s,r,i);
@@ -3158,8 +3179,10 @@ window.DuoResidents = (() => {
       if(ent.dynamicKey===dynamic)return;
       ent.dynamicKey=dynamic;
       ent.button.disabled=!b.allowed;ent.row.classList.toggle("pg-ready",b.allowed);
+      ent.button.dataset.count=b.nominal;ent.button.dataset.owned=r.owned;
+      if(r.discovered && r.unlocked)copyChanged(ent.summary,resourceIncome(r));
       copyChanged(ent.owned,fmt(r.owned)+" в работе");
-      copyChanged(ent.qty,r.owned>=r.maximumCount?"MAX":"×"+fmt(b.nominal));
+      copyChanged(ent.qty,resourceQuantityLabel(r,b));
       copyChanged(ent.cost,resourcePrice(r,b));
       if(ent.badge!==r.unseen){
         if(r.unseen){const n=document.createElement("b");n.className="pg-new";n.textContent="!";ent.art.append(n);}
@@ -3358,11 +3381,16 @@ window.DuoResidents = (() => {
       if(r.owned<r.maximumCount)purchaseLabel=(b.nominal?"Купить ×"+fmt(b.nominal):"Недоступно")+" · "+priceText;
       title=r.discovered?r.name:"Неизвестный ресурс";
       const req=!r.unlocked?s.resources[s.resources.indexOf(r)-1]:null;
-      const hint=req?(req.discovered?"Сначала получите: "+req.name:"Сначала откройте предыдущий ресурс"):"Название откроется, когда вы накопите "+catalog(r.basePrice)+" ∫.";
+      const hint=req?(req.discovered?"Сначала получите: "+req.name:"Сначала откройте предыдущий ресурс"):"Название откроется, когда вы накопите "+fmt(r.basePrice)+" ∫.";
       const studied=s.research.filter(i=>i.studied&&i.target===r.id);
       body='<div class="pg-intro"><div class="pg-detail-portrait">'+resourceImage(s,r,r.discovered)+'</div><p>'+esc(r.discovered?r.description:hint)+'</p></div>'+
-        (r.discovered?'<div class="pg-detail-facts">'+dw("В работе",fmt(r.owned))+dw("Базовое производство",catalog(r.baseCps)+" ∫/с")+dw("Суммарно с улучшениями и парами",rate(r.production)+" ∫/с")+dw("Лимит ресурса",fmt(r.maximumCount))+(r.owned<r.maximumCount?dw(b.nominal?"Покупка ×"+fmt(b.nominal):"Цена за один",catalog(b.cost)+" ∫"):'')+'</div><p>После 100 экземпляров цена растёт медленнее.</p><h4>Изученные улучшения</h4>'+(studied.length?studied.map(i=>'<p>✓ '+esc(i.name)+'</p>').join(""):'<p>Для этого ресурса пока нет изученных улучшений.</p>'):'')+
-        '<button class="pg-cta" '+idAttr("buy",r.id)+(b.allowed?'':' disabled')+'>'+purchaseLabel+'</button>';
+        (r.discovered?'<div class="pg-detail-facts">'+dw("В работе",fmt(r.owned))+
+          dw(r.owned?"Доход одной единицы":"Доход первой единицы после покупки",rate(r.unitProduction)+" ∫/с")+
+          dw("Доход всех в работе",rate(r.production)+" ∫/с")+dw("Лимит ресурса",fmt(r.maximumCount))+
+          (r.owned<r.maximumCount?dw(b.nominal?"Цена за "+fmt(b.nominal)+" шт.":"Цена за 1 шт.",fmt(b.cost)+" ∫"):'')+
+          '</div><p>В доходе учтены престиж, улучшения и совместные проекты. После 100 экземпляров цена растёт медленнее.</p><h4>Изученные улучшения</h4>'+
+          (studied.length?studied.map(i=>'<p>✓ '+esc(i.name)+'</p>').join(""):'<p>Для этого ресурса пока нет изученных улучшений.</p>'):'')+
+        '<button class="pg-cta" '+purchaseAttrs(r,b)+'>'+purchaseLabel+'</button>';
     }else if(type==="research"){
       const item=s.research.find(a=>a.id===key);
       return item?researchDetail(s,item):"";
@@ -3457,7 +3485,7 @@ window.DuoResidents = (() => {
         const r=s.resources.find(x=>x.id===selected.key);
         if(r){
           const b=buyInfo(r,s);
-          relevant=[r.discovered,r.unlocked,r.owned,b.nominal,b.allowed,b.cost,r.production,s.researchCount,s.totalHelpers];
+          relevant=[r.discovered,r.unlocked,r.owned,b.nominal,b.allowed,b.cost,r.production,r.unitProduction,s.researchCount,s.totalHelpers];
         }
       } else if(selected.type==="research"){
         const item=s.research.find(x=>x.id===selected.key);
@@ -3629,9 +3657,9 @@ window.DuoResidents = (() => {
       setResourceQuantity(key);
       return;
     }else if(action==="buy" || action==="study"){
-      const selectedResource=action==="buy" && Economy.snapshot().resources.find(r=>r.id===key);
       const before=Economy.hud();
-      const success=action==="study"?Economy.study(key):selectedResource && Economy.buy(key,orderSize(selectedResource));
+      const count=Number(button.dataset.count);
+      const success=action==="study"?Economy.study(key):count>0 && Economy.owned(key)===Number(button.dataset.owned) && Economy.buy(key,count);
       if(success) {
         purchaseGain(before,Economy.hud(),button,e);
         window.dispatchEvent(new Event("duocounterview"));
@@ -7882,7 +7910,8 @@ window.Leaderboard=(()=>{
     return null;
   }
   let session=restore(),host=null,generation=0,nativePaused=false,pageHidden=false,flow=null,entries=null,me=null;
-  let pollTimer=0,refreshTimer=0,busy=false,options=false,removeConfirm=false,message='',consented=false;
+  let pollTimer=0,refreshTimer=0,busy=false,message='',consented=false;
+  let accountRequests=0,removingToken=null;
   function displayName(s){
     return typeof s?.name==='string'&&s.name.length<=100?s.name:'';
   }
@@ -7901,49 +7930,55 @@ window.Leaderboard=(()=>{
       && (consented||!window.DuoTraining||window.DuoTraining.currentStep?.()==='done');
   }
   const visible=()=>Boolean(host?.isConnected)&&foreground();
-  const canSync=()=>foreground()&&(visible()||session?.autoPublish===true);
+  const canSync=()=>foreground()&&(!session||session.token!==removingToken)&&(visible()||session?.autoPublish===true);
   const online=()=>navigator.onLine!==false;
   const current=id=>id===generation && visible();
   class RequestError extends Error{constructor(status,body={}){super('Leaderboard request failed');this.status=status;this.data=body;}}
-  function unpack(status,text){
+  function unpack(status,text,path){
     let data;
     if(typeof text==='string' && text.length<=65536){try{data=JSON.parse(text);}catch{}}
     if(!Number.isInteger(status)||status<200||status>=300)throw new RequestError(status,data||{});
-    if(!data||typeof data!=='object')throw new RequestError(status);
+    if(!data || typeof data!=='object' || (path===paths.score && !ownOK(data.me)) || (path===paths.list && !listOK(data))){
+      throw new RequestError(status,{error:'invalid_response'});
+    }
     return data;
   }
   let sequence=Math.floor(Math.random()*100000000);
   const nativeCalls=new Map(),controllers=new Set();
   window.addEventListener('duorankresponse',e=>{const d=e.detail;nativeCalls.get(d?.id)?.(d.status,d.body);});
-  function nativeCall(send,timeoutMS=18000){
+  function nativeCall(send,timeoutMS=18000,path){
     return new Promise((resolve,reject)=>{
       const id=++sequence;
       function finish(status,body){
         clearTimeout(timeout);nativeCalls.delete(id);
-        try{resolve(unpack(status,body));}catch(error){reject(error);}
+        try{resolve(unpack(status,body,path));}catch(error){reject(error);}
       }
-      const timeout=setTimeout(()=>finish(0,''),timeoutMS);nativeCalls.set(id,finish);
+      finish.accountRequest=path===paths.logout||path===paths.remove;
+      const timeout=setTimeout(()=>finish(0,'{"error":"timeout"}'),timeoutMS);nativeCalls.set(id,finish);
       try{send(id);}catch{finish(0,'');}
     });
   }
   async function request(path,base,token='',body=null){
-    if(base!==apiOrigin || !online() || !(path===paths.score ? canSync() : visible()))throw new RequestError(0);
+    const accountRequest=path===paths.logout||path===paths.remove;
+    const allowed=accountRequest?foreground():path===paths.score?canSync():visible();
+    if(base!==apiOrigin || !online() || !allowed)throw new RequestError(0);
     const payload=body===null?'':JSON.stringify(body);
-    if(window.DuoRank)return nativeCall(id=>window.DuoRank.request(id,path,payload,token,base),path===paths.poll?24000:18000);
+    if(window.DuoRank)return nativeCall(id=>window.DuoRank.request(id,path,payload,token,base),path===paths.poll?24000:18000,path);
     const headers={Accept:'application/json'};
     if(token)headers.Authorization='Bearer '+token;
     if(payload)headers['Content-Type']='application/json';
     // A successful poll can include both the token exchange and a profile lookup.
-    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),path===paths.poll?16000:5500);controllers.add(ctrl);
+    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),path===paths.poll?16000:5500);
+    if(!accountRequest)controllers.add(ctrl);
     try{
       const response=await fetch(apiOrigin+path,{
         method:methods[path],headers,body:payload||undefined,signal:ctrl.signal,
         credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store',redirect:'error'
       });
-      return unpack(response.status,await response.text());
+      return unpack(response.status,await response.text(),path);
     }catch(e){
       if(e instanceof RequestError)throw e;
-      throw new RequestError(0);
+      throw new RequestError(0,{error:ctrl.signal.aborted?'timeout':'network'});
     }finally{clearTimeout(timeout);controllers.delete(ctrl);}
   }
   const el=(name,cls,text)=>{const n=document.createElement(name);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
@@ -7958,6 +7993,9 @@ window.Leaderboard=(()=>{
       && Number.isInteger(r.prestige) && r.prestige>=0 && r.prestige<=10 && Number.isSafeInteger(r.cosmicAscensions) && r.cosmicAscensions>=0;
   }
   const ownOK=r=>rowOK(r)&&Number.isSafeInteger(r.revision)&&r.revision>0;
+  function listOK(data){
+    return Array.isArray(data.entries) && data.entries.length<=50 && data.entries.every(rowOK) && (data.me===null||ownOK(data.me));
+  }
   function entry(record,own=false){
     const item=el('li','lb-row'+(own?' lb-mine':'')),avatar=el('span',''),player=el('span','lb-player');
     PlayerAvatar.render(avatar,record.avatar,record.prestige);
@@ -7990,36 +8028,11 @@ window.Leaderboard=(()=>{
     if(flow.externalError)info(instructions,'Браузер Станции недоступен. Откройте страницу на телефоне.');
     card.append(qr,instructions);content.append(card);root.append(content);
   }
-  function accountOptions(root){
-    const account=el('div','lb-account');
-    const toggle=button(options?'Скрыть настройки рейтинга':'Управление аккаунтом',()=>{options=!options;removeConfirm=false;paint();},'lb-toggle');
-    toggle.setAttribute('aria-expanded',String(options));account.append(toggle);
-    if(options){
-      const actions=el('div','lb-actions');
-      if(removeConfirm){
-        account.append(el('p','','Удалить запись из общего рейтинга? Партия на устройстве сохранится.'));
-        actions.append(button('Отмена',()=>{removeConfirm=false;paint();}),button('Удалить результат',()=>accountAction(true),'lb-danger'));
-      }else actions.append(button('Выйти из рейтинга',()=>accountAction(false)),button('Удалить мою запись',()=>{removeConfirm=true;paint();}));
-      account.append(actions);
-    }
-    root.append(account);
-  }
   function paint(){
     if(!host)return;
     const root=el('section','lb-page');
     if(!session)guest(root);
     else{
-      if(!session.autoPublish){
-        info(root,'Можно обновлять результат автоматически во время игры. Публикуются заработанные за всё время интегралы, престиж, вселенная и игровой значок.');
-        root.append(button('Включить автообновление',()=>{persist({...session,autoPublish:true});paint();refresh();},'lb-primary'));
-      }
-      if(session.blocked){
-        const comparison=compareProgress(Economy.rankingProgress(),session.blocked);
-        if(comparison===0){
-          info(root,'У этой партии такой же результат, как у другой партии аккаунта. Можно показать значок этого устройства.');
-          root.append(button('Использовать этот значок',()=>{persist({...session,blocked:null,stamp:null});paint();refresh();}));
-        }else if(comparison<0)info(root,'В рейтинге учтена лучшая партия этого аккаунта. Когда вы превзойдёте её результат, место обновится.');
-      }
       if(me){const personal=el('section','lb-personal'),list=el('ol','');personal.append(el('h3','','Ваше место'));list.append(entry(me,true));personal.append(list);root.append(personal);}
       if(entries){
         const top=el('section','lb-top'),list=el('ol','');top.append(el('h3','','Топ игроков'));
@@ -8031,7 +8044,6 @@ window.Leaderboard=(()=>{
       if(message)info(root,message);
       else if(!entries)info(root,'Загружаем рейтинг…');
       if(message && !busy)root.append(button('Попробовать снова',()=>refresh()));
-      accountOptions(root);
     }
     host.replaceChildren(root);
   }
@@ -8044,18 +8056,33 @@ window.Leaderboard=(()=>{
     message=e.status===503?'Сервис рейтинга сейчас недоступен. Попробуйте позже.':
       e.status===429?'Слишком много запросов. Попробуйте немного позже.':'Не удалось подключиться к рейтингу. Проверьте интернет и попробуйте снова.';
   }
-  async function table(saved){
-    const data=await request(paths.list,saved.origin,saved.token);
-    if(!Array.isArray(data.entries)||data.entries.length>50||!data.entries.every(rowOK)||(data.me!==null&&!ownOK(data.me)))throw new RequestError(0);
-    return data;
+  function diagnostic(text,operation,code){
+    let client='браузер';
+    if(window.DuoRank){
+      client='APK';
+      try{
+        const version=window.DuoRank.appVersion?.();
+        if(typeof version==='string' && /^\d{1,4}(?:\.\d{1,4}){1,3}$/.test(version))client+=' '+version;
+      }catch{}
+    }
+    return text+' Код '+operation+'-'+code+' · '+client+'.';
   }
+  const transportMessages=new Map([
+    ['tls','Не удалось установить защищённое соединение с сервером рейтинга.'],
+    ['timeout','Сервер рейтинга не ответил вовремя. Попробуйте снова.'],
+    ['dns','Не удалось определить сетевой адрес сервера рейтинга.'],
+    ['connect','Не удалось установить соединение с сервером рейтинга.'],
+    ['cancelled','Запрос рейтинга прервался. Попробуйте снова.'],
+    ['network','Не удалось подключиться к рейтингу. Проверьте интернет и попробуйте снова.']
+  ]);
   // null means this opening of the standings has not needed a compatibility check.
   let rankingRouteMissing=null;
   const routeNotFound=e=>e.status===404 && e.data?.error==='not_found';
-  async function rankingFailure(error,valid){
+  async function rankingFailure(error,valid,operation){
     if(!valid())return;
     if(routeNotFound(error))rankingRouteMissing=true;
-    if(error.status===0 && rankingRouteMissing===null && visible() && online() && !window.DuoRank){
+    const networkFailure=error.status===0 && error.data?.error==='network' && !window.DuoRank;
+    if(networkFailure && rankingRouteMissing===null && visible() && online()){
       // Older services reject OPTIONS for /v2. A simple GET exposes the route's
       // status to the browser without sending the player's session or score.
       let missing=false;
@@ -8065,9 +8092,23 @@ window.Leaderboard=(()=>{
       rankingRouteMissing=missing;
     }
     if(!valid())return;
-    if(rankingRouteMissing && (routeNotFound(error)||error.status===0)){
-      message='Для рейтинга по заработанным интегралам нужно обновить сервер игры. Яндекс ID подключён, прогресс сохраняется в игре.';
-    }else fail(error);
+    const status=error.status;
+    if(rankingRouteMissing && (routeNotFound(error)||networkFailure)){
+      message=diagnostic('Для рейтинга по заработанным интегралам нужно обновить сервер игры. Яндекс ID подключён, прогресс сохраняется в игре.',operation,'404');
+    }else if(status===401 && error.data?.error==='unauthorized'){
+      consentRequired();message=diagnostic(message,operation,'401');
+    }else if(status===426){
+      message=diagnostic('Для подключения к рейтингу обновите игру. Яндекс ID останется подключён.',operation,'426');
+    }else if(status>=200 && status<300){
+      message=diagnostic('Сервер вернул данные рейтинга в неожиданном формате. Попробуйте снова.',operation,'DATA-'+status);
+    }else if(Number.isInteger(status) && status>=300 && status<600){
+      const text=status===429?'Слишком много запросов. Игра повторит попытку позже.':
+        status>=500?'Сервер рейтинга временно недоступен. Игра повторит попытку.':'Сервер рейтинга отклонил запрос. Попробуйте снова.';
+      message=diagnostic(text,operation,status);
+    }else{
+      const reason=error.data?.error;
+      message=diagnostic(transportMessages.get(reason)||transportMessages.get('network'),operation,transportMessages.has(reason)?reason.toUpperCase():'CONNECTION');
+    }
   }
   let prestigePending=false;
   function timer(){
@@ -8093,13 +8134,14 @@ window.Leaderboard=(()=>{
   async function refresh(){
     if(!session||busy||!canSync())return;
     if(!online()){
-      message='Рейтинг обновится, когда появится интернет.';
+      message=diagnostic('Рейтинг обновится, когда появится интернет.','SYNC','OFFLINE');
       if(visible())paint();
       timer();return;
     }
     const id=generation,saved=session,progress=progressNow(),stamp=fingerprint(progress);
     const valid=()=>id===generation&&canSync()&&session?.token===saved.token;
     const shouldWrite=saved.stamp!==stamp&&(!saved.blocked||compareProgress(progress,saved.blocked)>0);
+    let operation=shouldWrite?'SCORE':'TOP';
     if(!shouldWrite&&!visible()){timer();return;}
     busy=true;message='';
     if(visible()&&!entries)paint();
@@ -8108,7 +8150,6 @@ window.Leaderboard=(()=>{
         try{
           const result=await request(paths.score,saved.origin,saved.token,{...progress,revision:saved.revision||0});
           if(!valid())return;
-          if(!ownOK(result.me))throw new RequestError(0);
           persist({...session,name:result.me.name,revision:result.me.revision,stamp,blocked:null});
         }catch(e){
           if(!valid())return;
@@ -8118,7 +8159,8 @@ window.Leaderboard=(()=>{
         }
       }
       if(visible()){
-        const data=await table(saved);
+        operation='TOP';
+        const data=await request(paths.list,saved.origin,saved.token);
         if(!valid())return;
         if(rankingRouteMissing)rankingRouteMissing=false;
         entries=data.entries;me=data.me;
@@ -8126,7 +8168,7 @@ window.Leaderboard=(()=>{
         else if(me && me.name!==displayName(session))persist({...session,name:me.name});
       }
     }catch(e){
-      await rankingFailure(e,valid);
+      await rankingFailure(e,valid,operation);
     }finally{
       if(id===generation){
         busy=false;
@@ -8197,28 +8239,59 @@ window.Leaderboard=(()=>{
       if(id===generation&&flow===active){active.polling=false;schedulePoll();}
     }
   }
-  async function accountAction(remove){
-    if(!visible()||!session)return;
-    const id=restart(),saved=session;
-    busy=true;message='';
+  // Account actions come from the player's profile. Changing sheets must not
+  // cancel an explicitly confirmed logout or deletion half way through.
+  async function profileRequest(path,saved){
+    ++accountRequests;setNativeVisible(true);
+    try{return await request(path,saved.origin,saved.token,path===paths.logout?{}:null);}
+    finally{--accountRequests;setNativeVisible(canSync());}
+  }
+  async function signOut(){
+    const saved=session;
+    if(!saved||!foreground())return;
+    setNativeVisible(false);
+    resetLocalSession();
+    if(online()){
+      try{await profileRequest(paths.logout,saved);}catch{/* Offline sign-out also takes effect locally. */}
+    }
+  }
+  async function deleteRankingData(){
+    const saved=session;
+    if(!saved||!foreground()||removingToken===saved.token)return false;
+    if(!online())throw new Error('Для удаления записи нужен интернет. Подключитесь и попробуйте снова.');
+    removingToken=saved.token;setNativeVisible(false);restart();
     try{
-      await request(remove?paths.remove:paths.logout,saved.origin,saved.token,remove?null:{});
+      await profileRequest(paths.remove,saved);
       if(session?.token===saved.token)resetLocalSession();
+      return true;
     }catch(e){
-      if(!current(id))return;
-      if(!remove){resetLocalSession();return;}
-      fail(e);
-    }finally{if(current(id)){busy=false;options=false;removeConfirm=false;paint();timer();}}
+      if(session?.token===saved.token && e.status===401 && e.data?.error==='unauthorized'){
+        resetLocalSession();
+        throw new Error('Срок входа истёк. Подключите Яндекс ID в рейтинге и повторите удаление.');
+      }
+      throw new Error('Сервер не подтвердил удаление. Проверьте соединение и попробуйте снова.');
+    }finally{
+      if(removingToken===saved.token)removingToken=null;
+      setNativeVisible(canSync());timer();
+    }
+  }
+  function selectAvatar(){
+    if(session?.blocked&&compareProgress(Economy.rankingProgress(),session.blocked)===0){
+      persist({...session,blocked:null,stamp:null});
+    }
+  }
+  function enableAutoPublish(){
+    if(session&&!session.autoPublish){persist({...session,autoPublish:true});resume();}
   }
   function restart(){
     ++generation;busy=false;clearTimeout(pollTimer);clearTimeout(refreshTimer);
     for(const ctrl of controllers)ctrl.abort();
-    for(const finish of nativeCalls.values())finish(0,'');
+    for(const finish of nativeCalls.values())if(!finish.accountRequest)finish(0,'');
     return generation;
   }
-  function setNativeVisible(value){window.DuoRank?.setVisible?.(Boolean(value&&online()));}
+  function setNativeVisible(value){window.DuoRank?.setVisible?.(Boolean(online()&&(value||(accountRequests>0&&foreground()))));}
   function resetLocalSession(){
-    restart();stopFlow();persist(null);entries=null;me=null;message='';options=false;removeConfirm=false;
+    restart();stopFlow();persist(null);entries=null;me=null;message='';
     setNativeVisible(visible());
     if(host)paint();
   }
@@ -8227,7 +8300,7 @@ window.Leaderboard=(()=>{
     if(session)refresh();else if(consented)begin();
   }
   function close(){
-    restart();setNativeVisible(false);host=null;stopFlow();entries=null;me=null;message='';options=false;removeConfirm=false;consented=false;rankingRouteMissing=null;
+    restart();setNativeVisible(false);host=null;stopFlow();entries=null;me=null;message='';consented=false;rankingRouteMissing=null;
     setNativeVisible(canSync());timer();
   }
   function suspend(){
@@ -8248,7 +8321,9 @@ window.Leaderboard=(()=>{
   window.addEventListener('pagehide',()=>{pageHidden=true;suspend();});
   window.addEventListener('pageshow',()=>{pageHidden=false;resume();});
   window.addEventListener('offline',()=>{
-    suspend();message=flow?'Проверим подтверждение, когда появится интернет.':'Рейтинг обновится, когда появится интернет.';if(visible()){paint();schedulePoll();}
+    suspend();message=flow?'Проверим подтверждение, когда появится интернет.':
+      session?diagnostic('Рейтинг обновится, когда появится интернет.','SYNC','OFFLINE'):'Рейтинг обновится, когда появится интернет.';
+    if(visible()){paint();schedulePoll();}
   });
   window.addEventListener('online',resume);
   window.addEventListener('duotrainingcomplete',resume);
@@ -8273,7 +8348,7 @@ window.Leaderboard=(()=>{
     if(visible())paint();
     resume();
   });
-  return Object.freeze({open,close,resetLocalSession,isConnected:()=>!!session,accountName:()=>displayName(session)});
+  return Object.freeze({open,close,resetLocalSession,signOut,deleteRankingData,selectAvatar,enableAutoPublish,needsPublishConsent:()=>Boolean(session&&!session.autoPublish),isConnected:()=>!!session,accountName:()=>displayName(session)});
 })();
 
 ;
@@ -8316,6 +8391,33 @@ window.Extras = (() => {
     });
   }
   window.addEventListener('duoavatar',updateProfileAvatars);
+  function accountButton(text,click){
+    const button=document.createElement('button');button.type='button';button.textContent=text;button.onclick=click;
+    return button;
+  }
+  function accountActions(area,remove){
+    const label=remove?'Удалить запись из рейтинга':'Выйти из Яндекс ID';
+    const trigger=accountButton(label,()=>{
+      const copy=document.createElement('p');copy.setAttribute('role','status');
+      copy.textContent=remove?'Удалить имя и результат из общего рейтинга и отключить все устройства? Игровая партия сохранится.':
+        'Выйти из Яндекс ID на этом устройстве? Игра перестанет отправлять результат. Твоя партия и опубликованный результат сохранятся.';
+      const cancel=accountButton('Отмена',()=>{area.replaceChildren(trigger);trigger.focus({preventScroll:true});});
+      const confirm=accountButton(remove?'Удалить запись':'Выйти',async()=>{
+        cancel.disabled=true;confirm.disabled=true;
+        if(!remove){await Leaderboard.signOut();return;}
+        copy.textContent='Удаляем запись из рейтинга…';
+        try{await Leaderboard.deleteRankingData();}
+        catch(error){
+          if(area.contains(copy)){
+            copy.textContent=error.message;cancel.disabled=false;confirm.disabled=false;cancel.focus({preventScroll:true});
+          }
+        }
+      });
+      if(remove)confirm.className='ex-delete-record';
+      area.replaceChildren(copy,cancel,confirm);cancel.focus({preventScroll:true});
+    });
+    area.replaceChildren(trigger);
+  }
   function updateProfileAccount(){
     if(!panel || (screen!=='profile'&&screen!=='settings'))return;
     const text=panel.querySelector('[data-account-status]');
@@ -8326,6 +8428,16 @@ window.Extras = (() => {
       text.textContent=linked?(name?'Яндекс ID · '+name:'Яндекс ID подключён'):'';
     }else{
       text.textContent=linked?(name?'Подключён · '+name:'Аккаунт подключён'):'Аккаунт не подключён';
+      const area=panel.querySelector('[data-account-actions]'),privacy=panel.querySelector('[data-ranking-privacy-actions]');
+      if(linked)accountActions(area,false);
+      else area.replaceChildren(accountButton('Открыть рейтинг',()=>App.openSheet('leaderboard')));
+      privacy.replaceChildren();
+      if(!linked)return;
+      if(Leaderboard.needsPublishConsent()){
+        const consent=accountButton('Включить автообновление',()=>{Leaderboard.enableAutoPublish();updateProfileAccount();});
+        privacy.append(consent);
+      }
+      const remove=document.createElement('div');privacy.append(remove);accountActions(remove,true);
     }
   }
   window.addEventListener('duorankaccount',updateProfileAccount);
@@ -8358,17 +8470,16 @@ window.Extras = (() => {
     inner.innerHTML='<h2>Настройки</h2><p>Ваш профиль и атмосфера игры</p><details class="ex-card"><summary class="ex-avatar-summary"><span data-current-avatar></span>Значок профиля</summary><div class="ex-avatars"></div></details><div class="ex-card"><strong>Сохранено на устройстве</strong><p>Прогресс хранится на этом устройстве.</p></div><div class="ex-card ex-switches"></div><div class="ex-card"><strong>С благодарностью авторам</strong><p>rmbk / uburuntu — оригинальные интегралы<br>Orteil — Cookie Clicker<br>PT Serif — ParaType<br>Цифры Gelasio — Eben Sorkin</p><details class="font-attribution"><summary>Лицензии шрифтов</summary><pre></pre></details></div>';
     const account=document.createElement('div');
     account.className='ex-card ex-account';
-    account.innerHTML='<strong>Яндекс ID</strong><p data-account-status role="status"></p><button type="button">Открыть рейтинг</button>';
-    account.querySelector('button').onclick=()=>App.openSheet('leaderboard');
+    account.innerHTML='<strong>Яндекс ID</strong><p data-account-status role="status"></p><div data-account-actions></div>';
     inner.querySelector('.ex-card').before(account);
-    updateProfileAccount();
     const privacy=document.createElement('details');
     privacy.className='ex-card ex-data-note';
     privacy.innerHTML='<summary>Какие данные видны в рейтинге?</summary>' +
       '<p>Ты сам выбираешь, участвовать ли в рейтинге. Из Яндекс ID игра сохраняет имя и защищённую метку твоего аккаунта. Яндекс выдаёт разрешение на имя вместе с другими полями профиля. Игра их пропускает.</p>' +
       '<p>Участникам видны твоё имя, игровой значок, вселенная, престиж и заработанные за всё время интегралы. Место определяется сначала вселенной, затем престижем и суммой заработанного в целых интегралах. При равенстве выше тот, чей результат сервер получил раньше.</p>' +
-      '<p>Когда включено автообновление и есть интернет, игра отправляет текущий результат примерно раз в 10 секунд во время игры и при новом престиже. В разделе «Рейтинг» можно выйти из аккаунта или удалить свою запись на всех устройствах. Партия сохраняется на устройстве.</p>';
+      '<p>Когда включено автообновление и есть интернет, игра отправляет текущий результат примерно раз в 10 секунд во время игры и при новом престиже. Выход из Яндекс ID отключает только это устройство. После подключения здесь можно отдельно удалить имя и результат из общего рейтинга и завершить вход на всех устройствах. Партия сохранится.</p><div data-ranking-privacy-actions></div>';
     inner.querySelector('.ex-switches').after(privacy);
+    updateProfileAccount();
     window.ProgressReset?.addSettings(inner);
     window.HomeWidgets?.addSettings(inner);
     if(window.DuoStartup?.minimize){
@@ -8396,7 +8507,7 @@ window.Extras = (() => {
       button.type='button';button.dataset.avatarOption=String(index);
       button.setAttribute('aria-label',symbol||'Стандартный значок профиля');
       PlayerAvatar.render(disc,index);button.append(disc);picker.append(button);
-      button.onclick=()=>PlayerAvatar.choose(index);
+      button.onclick=()=>{PlayerAvatar.choose(index);window.Leaderboard.selectAvatar();};
     });
     updateProfileAvatars();
     [['sound','Музыка и звуки'],['haptics','Отклик на касания']].forEach(([key,name])=>{
