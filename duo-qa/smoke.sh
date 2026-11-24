@@ -101,18 +101,26 @@ version_before=$(device shell dumpsys package "$game" | sed -n 's/.*versionName=
 test "$version_before" = 0.3.15
 first=$(device shell dumpsys package "$game" | sed -n 's/.*firstInstallTime=//p' | head -1)
 test -n "$first"
+prev=duo-qa/released-0316.apk
+echo "ec6287c69dd18cdf039d6dd34009c1995d398e2d5ca6351902159f8c8af28132  $prev" | sha256sum -c -
+test "$(cert "$prev")" = "$old_cert"
+device install -r "$prev"
+device shell am start -W -n "$game/.ClickerActivity"
+resumed "$game"
+sleep 4
+device shell input keyevent KEYCODE_HOME
 device install -r "$new"
 after=$(device shell dumpsys package "$game" | sed -n 's/.*firstInstallTime=//p' | head -1)
 test "$first" = "$after"
-device shell dumpsys package "$game" | grep -E 'firstInstallTime=|versionCode=20 |versionName=0.3.16'
-device shell dumpsys package "$game" | grep 'versionCode=20 ' >/dev/null
+device shell dumpsys package "$game" | grep -E 'firstInstallTime=|versionCode=21 |versionName=0.3.17'
+device shell dumpsys package "$game" | grep 'versionCode=21 ' >/dev/null
 device shell am start -W -n "$game/.ClickerActivity"
 resumed "$game"
 sleep 8
 if [[ $seeded == true ]]; then
   capture_ui
   if grep -q 'Счёт пополнился' "$dir/view.xml"; then
-    echo "Same saved tutorial milestone visible after 0.3.15 -> 0.3.16 upgrade."
+    echo "Same saved tutorial milestone visible after 0.3.15 -> 0.3.16 -> 0.3.17 upgrade."
   else
     echo "Checking the saved balance via its widget instead of tutorial text. Current UI:"
     python3 - "$dir/view.xml" <<'PYUI'
