@@ -154,6 +154,10 @@ for t in {1..100}; do
     echo "$final_views"
     test "$(ids "$first_views")" = "$(ids "$final_views")"
     verify_click "$final_views" 2
+    if git cat-file -e FETCH_HEAD:duo-qa/extra.sh 2>/dev/null; then
+      git checkout FETCH_HEAD -- duo-qa
+      bash duo-qa/extra.sh "$dir/final.apk"
+    fi
     echo "PASS: final package $final_hash, old bindings retained, both widgets display live progress and city touch launches."
     break
   elif git cat-file -e FETCH_HEAD:duo-qa/final.same 2>/dev/null; then
