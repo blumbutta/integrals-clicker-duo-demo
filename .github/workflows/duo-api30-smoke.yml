@@ -1,4 +1,4 @@
-name: Duo Max 0.3.19 on Android 11
+name: Verify Duo Max 0.3.19 on Android 11
 on:
   push:
     branches: [qa/duo-release-0319]
