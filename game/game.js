@@ -2531,7 +2531,7 @@ window.WorldCollapse = (() => {
     const backdrop=bitmap(1,1),backdropContext=backdrop.getContext('2d',{alpha:false});
     if(!ctx)throw Error('Нет Canvas 2D');
     canvas.setAttribute('aria-hidden','true');
-    Object.assign(canvas.style,{position:'absolute',inset:'0',width:'100%',height:'100%',pointerEvents:'none'});
+    Object.assign(canvas.style,{position:'absolute',top:'0',left:'0',width:'100%',height:'100%',pointerEvents:'none'});
     const wings=makeWings();
     let gpu=makeGpu(land,people,wings),software=gpu?null:makeSoftware(land,people,wings),slowFrames=0,closed=false;
     const motion=window.matchMedia('(prefers-reduced-motion: reduce)');
