@@ -9,7 +9,7 @@ sed -e 's/review.duo.widgetcheck/review.duo.artcheck/g' -e 's/HostActivity/Artwo
 sed 's@src/HostActivity.java@src/ArtworkActivity.java@g' "$base/build-host.sh" > "$tmpdir/build-host.sh"
 bash "$tmpdir/build-host.sh" "$tmpdir/art.apk"
 adb -s "$ANDROID_SERIAL" install "$tmpdir/art.apk"
-adb -s "$ANDROID_SERIAL" shell am start -W -n review.duo.artcheck/.ArtworkActivity
+adb -s "$ANDROID_SERIAL" shell am start -W -n review.duo.artcheck/.ArtworkActivity --es hostArtwork "$1"
 pid=$(adb -s "$ANDROID_SERIAL" shell pidof -s review.duo.artcheck | tr -d '\r')
 for attempt in {1..65}; do
   logs=$(adb -s "$ANDROID_SERIAL" logcat -d --pid="$pid" -s 'DuoArtworkQA:V' 'AndroidRuntime:E' '*:S')

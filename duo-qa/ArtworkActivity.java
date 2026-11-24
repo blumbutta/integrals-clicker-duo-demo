@@ -95,6 +95,15 @@ public final class ArtworkActivity extends Activity {
         return hash;
     }
 
+    private String hostSample(Bitmap bitmap) {
+        long hash = 1;
+        for (int y=0;y<7;y++) for (int x=0;x<13;x++) {
+            int px=(x*2+1)*bitmap.getWidth()/26, py=(y*2+1)*bitmap.getHeight()/14;
+            hash=31*hash+bitmap.getPixel(px,py);
+        }
+        return bitmap.getWidth() + "x" + bitmap.getHeight() + "-" + Long.toHexString(hash);
+    }
+
     public final class Probe {
         @JavascriptInterface public void error(String why) { Log.e(TAG,"FAIL JS " + why); }
         @JavascriptInterface public void capture(String theme,String skin,String bg,String art) {
@@ -102,6 +111,12 @@ public final class ArtworkActivity extends Activity {
                 if (!THEMES[scenario].equals(theme) || !SKINS[scenario].equals(skin)) throw new IllegalStateException("Wrong game selection " + theme + "/" + skin);
                 Bitmap back = decode(bg,640,240), disk = decode(art,160,160);
                 if ((disk.getPixel(0,0) >>> 24) != 0 || (disk.getPixel(80,80) >>> 24) < 220) throw new IllegalStateException("Button alpha");
+                if (scenario==0) {
+                    String sample = hostSample(back) + "/" + hostSample(disk);
+                    String expected = getIntent().getStringExtra("hostArtwork");
+                    if (sample.equals(expected)) Log.i(TAG, "MATCH production RemoteViews pixels match selected in-game art " + sample);
+                    else Log.i(TAG, "Comparison for default fallback or color conversion: host=" + expected + ", WebView=" + sample);
+                }
                 long backHash=fingerprint(back), diskHash=fingerprint(disk);
                 if (scenario==1 && (previous[0]==backHash || previous[1]!=diskHash)) throw new IllegalStateException("Theme-only change did not alter only background");
                 if (scenario==2 && (previous[0]!=backHash || previous[1]==diskHash)) throw new IllegalStateException("Skin-only change did not alter only button");
