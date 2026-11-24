@@ -154,6 +154,9 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 .tab-badge { position:absolute; left:67%; top:-.5rem; min-width:1.1rem; min-height:1.1rem; padding:.05rem .22rem; display:grid; place-items:center; border-radius:1rem; background:var(--gold); color:var(--ink); font:bold .67rem/1 var(--system) }
 #section-page { overflow:auto }
 #dialog-layer { position:absolute; top:0;right:0;bottom:0;left:0; z-index:12; background:var(--lab-theme); background-image:linear-gradient(transparent,rgba(9,24,36,.70)) }
+.themed-sheet > #dialog-layer {background:var(--page-wash)}
+/* Keep the current tab's layout and scroll position behind a full-screen sheet. */
+.themed-sheet > [inert],.themed-sheet > .wood-trim {visibility:hidden}
 .sheet { margin:0 auto; width:100%; max-width:40.625rem; padding:0 1.25rem; height:100%; display:flex; flex-direction:column }
 .sheet-head { flex:none; display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:max(.75rem,env(safe-area-inset-top)) 0 .5rem }
 .sheet-head h2 { margin:0; font:bold italic 1.75rem/1.14 var(--serif) }
@@ -969,7 +972,6 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 
 /* The native collection uses a chapter rail, a laurel medallion and a wall of awards. */
 .hc-gallery {
-  --honor-ink: #111e26;
   --honor-line: #c5d4d32b;
   --honor-muted: #b6c6c8;
   --honor-gold: #e8c67c;
@@ -981,18 +983,17 @@ i[data-icon] svg { display:block; width:100%; height:100% }
   min-height: 0;
   overflow: hidden;
   color: var(--cream);
-  background: var(--honor-ink);
   text-align: left;
   font: 500 1rem/1.35 var(--system);
 }
 .hc-gallery *, .hc-gallery *::before, .hc-gallery *::after {box-sizing:border-box}
 #sheet-content:has(> .hc-gallery) {padding-bottom:env(safe-area-inset-bottom,0px);overflow:hidden}
 .sheet:has(.hc-gallery) {max-width:none;padding-inline:0}
-.sheet:has(.hc-gallery) .sheet-head {padding-inline:.9rem;background:var(--honor-ink,#111e26)}
+.sheet:has(.hc-gallery) .sheet-head {padding-inline:.9rem}
 .hc-fallback-title {margin:0 auto 0 0;font:italic bold 1.58rem var(--serif)}
 .hc-chapter-summary h3,.hc-group-title,.hc-detail h3,.hc-detail h4 {margin:0;font-family:var(--serif)}
 .hc-gallery .hc-eras {
-  gap:.36rem;padding:.32rem .85rem;margin:0;background:#101d25;
+  gap:.36rem;padding:.32rem .85rem;margin:0;background:#101d254d;
   border-bottom:1px solid var(--honor-line);}
 .hc-gallery .hc-era {
   display:grid;place-content:center;justify-items:center;gap:.21rem;
@@ -1013,7 +1014,7 @@ i[data-icon] svg { display:block; width:100%; height:100% }
   display:flex; align-items:center;gap:.65rem; min-height:3.4rem;
   padding:.42rem .7rem;margin-bottom:.7rem;
   border-radius:1rem; border:1px solid #d2bb814f;
-  background:linear-gradient(110deg,#303a3b 0%,#263239 66%,#23323a);
+  background:linear-gradient(110deg,#303a3bcc,#2632399e 66%,#23323a99);
 }
 .hc-chapter-summary div {min-width:0}
 .hc-chapter-summary h3 {font-weight:700;font-style:italic;font-size:1.34rem;line-height:1.12;overflow-wrap:anywhere}
@@ -1033,9 +1034,9 @@ i[data-icon] svg { display:block; width:100%; height:100% }
   grid-template-areas:"medal title" "medal state";align-items:center;align-content:center;
   gap:.22rem .52rem;min-width:0;min-height:3.6rem;padding:.45rem .6rem;
   text-align:left;color:var(--cream);border:1px solid var(--honor-line);
-  border-radius:.85rem;background:#1b2a32;
+  border-radius:.85rem;background:#13232ba6;
 }
-.hc-award.received {background:#2e3433;border-color:#cbaa6770}
+.hc-award.received {background:#36382eaa;border-color:#cbaa6770}
 .hc-award:active {background:#2d3f47}
 .hc-award:focus-visible,.hc-gallery button:focus-visible {outline:.14rem solid var(--honor-gold);outline-offset:-.14rem}
 .hc-award-top {display:contents}
@@ -1070,11 +1071,11 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 .hc-medal-large.hc-medal-earned::before {top:.28rem;right:.28rem;bottom:.28rem;left:.28rem}
 .hc-detail-lead small,.hc-detail-value {font:500 .98rem/1.32 var(--system);color:var(--honor-muted)}
 .hc-detail h3 {font:italic bold 1.85rem/1.12 var(--serif)}
-.hc-detail-box {margin-bottom:.72rem;padding:1rem 1.08rem;border:1px solid var(--honor-line);border-radius:.88rem;background:#1c2b33;overflow-wrap:anywhere}
+.hc-detail-box {margin-bottom:.72rem;padding:1rem 1.08rem;border:1px solid var(--honor-line);border-radius:.88rem;background:#192a32ab;overflow-wrap:anywhere}
 .hc-detail-box h4 {font-weight:700;font-size:1.32rem;line-height:1.18}
 .hc-detail-box p {margin:.46rem 0 0;font-size:1.08rem;line-height:1.43}
 .hc-detail-box progress {margin:.9rem 0 .35rem}
-.hc-detail-gift {border-color:#cbaa6757;background:#2c3433}
+.hc-detail-gift {border-color:#cbaa6757;background:#32372eaf}
 .hc-detail-gift h4 {color:var(--honor-gold)}
 /* Portrait grid rows must recalculate their natural height after a turn. */
 @media (orientation:landscape) {
@@ -1235,6 +1236,9 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 .ex-gold-reward{position:absolute;z-index:9;pointer-events:none;color:#ffdc82;text-shadow:1px 1px #0a1116;font:bold 28px/1 Georgia,serif;animation:ex-float 1.75s ease-out forwards}@keyframes ex-float{to{opacity:0;transform:translateY(-100px)}}
 
 #station .ex-wrap.ex-profile-page {font-family:var(--serif)}
+.ex-profile-page .ex-card,.ex-profile-page .ex-totals,.ex-profile-page .ex-grid > .ex-stat,.ex-profile-page .ex-segments {
+  background:linear-gradient(150deg,#203842a6,#0a1921ae);
+}
 #station .ex-profile-page h2 {font:italic 700 max(29px,1.95rem)/1.16 var(--serif)}
 #station .ex-profile-page .ex-segments button {
   min-height:max(44px,2.85rem);border-radius:.45rem;font:700 max(16px,1.04rem)/1.2 var(--serif);
@@ -1353,7 +1357,6 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 #dialog-layer.dw-open {
   background:radial-gradient(circle at center,transparent 12%,rgba(9,24,36,.60));
 }
-.dw-presentation>.masthead,.dw-presentation>.wood-trim,.dw-presentation>#home,.dw-presentation>#section-page,.dw-presentation>#tabs{visibility:hidden}
 .dw-open .sheet {width:100%;max-width:42rem}
 .dw-open .sheet .sheet-head {align-items:flex-start;padding-top:max(1.2rem,env(safe-area-inset-top));padding-bottom:0}
 .dw-open .sheet .sheet-head h2 {font:italic bold 2.1rem/1.16 var(--serif)}
@@ -1518,10 +1521,7 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 /* The reader shares the game's viewport, including on older Station WebViews. */
 #dialog-layer.gd-open {
   --guide-inset:clamp(14px,4vw,72px);
-  padding:0; background-color:var(--lab-theme);
-  background-image:linear-gradient(170deg,rgba(9,24,36,.36),rgba(9,24,36,.88)),var(--blue-image);
-  background-size:100% 100%,37.5rem 37.5rem;
-  background-blend-mode:normal,soft-light;
+  padding:0;
 }
 #dialog-layer.gd-open .sheet {
   width:100%; max-width:none; height:100%; min-height:0; padding:0; overflow:hidden;

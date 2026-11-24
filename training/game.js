@@ -765,9 +765,12 @@ window.DuoAudio = (() => {
   const state = load();
   function savedLifetime() {return state.lifetimeBits ? BigInt("0x"+state.lifetimeBits) : magnitude(state.lifetimeEarned);}
   let lifetime=savedLifetime();
-  function lifetimeText(pending=0){
+  function lifetimeWithPending(pending){
     const estimate=lifetime+magnitude(pending);
-    const total=estimate>lifetimeCap ? lifetimeCap : estimate;
+    return estimate>lifetimeCap ? lifetimeCap : estimate;
+  }
+  function lifetimeText(pending=0){
+    const total=lifetimeWithPending(pending);
     const tenths=(total*10n + fractionUnit/2n) >> fractionBits;
     const whole=String(tenths/10n).replace(/\B(?=(\d{3})+(?!\d))/g," ");
     return whole + (tenths%10n ? ","+String(tenths%10n) : "");
@@ -1066,11 +1069,9 @@ window.DuoAudio = (() => {
   window.addEventListener("pagehide", pause);
   window.addEventListener("pageshow", () => { if (!document.hidden) resume(); });
   function hud() { const prod=production(); return {balance:state.balance,cps:prod.cps,clickPower:prod.clickPower,clicks:state.clicks}; }
-  function lifetimeWhole(){return String((lifetime>lifetimeCap?lifetimeCap:lifetime)>>fractionBits);}
+  function lifetimeWhole(pending=0){return String(lifetimeWithPending(pending)>>fractionBits);}
   function rankingProgress(){
-    const current=LiveCounters.balance();
-    const score=current>=1e250?10n**250n:BigInt(Math.floor(Math.max(0,current)));
-    return {score:String(score),prestige:state.prestigeLevel,cosmicAscensions:Math.min(Number.MAX_SAFE_INTEGER,state.cosmicAscensions)};
+    return {score:lifetimeWhole(pendingIncome(clock())),prestige:state.prestigeLevel,cosmicAscensions:Math.min(Number.MAX_SAFE_INTEGER,state.cosmicAscensions)};
   }
   window.Economy = {snapshot, hud, rankingProgress, commitHonors, productionGain, lifetimeWhole, lifetimeText, progress, updateProgress, award, resetRun, markSeen, owned,
     purchased:id => state.purchases[id] || 0, grantValue:(id,count) => catalogue.has(id) ? theoreticalPrice(catalogue.get(id),owned(id),count) : 0,
@@ -6247,7 +6248,7 @@ function draw(){
   const t=motion.matches?0:performance.now()/1000;
   const overlay=document.getElementById('dialog-layer');
   const unobstructed=!overlay||overlay.hidden;
-  const showPage=unobstructed||overlay.classList.contains('dw-open');
+  const showPage=unobstructed||station.classList.contains('themed-sheet');
   const showScene=unobstructed&&!document.getElementById('home')?.hidden;
   const pageLook=backdrop?.fx ? backdrop : null;
   const stopped=document.hidden||nativePaused||window.WorldRebirth?.covering||window.App?.scrolling;
@@ -7858,8 +7859,8 @@ window.Leaderboard=(()=>{
   'use strict';
   const apiOrigin='https://153.51.163.172';
   const verificationURLs=new Set(['https://oauth.yandex.ru/device','https://oauth.yandex.com/device']);
-  const key='integrals.duomax.leaderboard.v1',refreshInterval=60000;
-  const paths={list:'/v1/leaderboard',device:'/v1/auth/device',poll:'/v1/auth/poll',score:'/v1/score',logout:'/v1/logout',remove:'/v1/me'};
+  const key='integrals.duomax.leaderboard.v1',refreshInterval=10000;
+  const paths={list:'/v2/leaderboard',device:'/v1/auth/device',poll:'/v1/auth/poll',score:'/v2/score',logout:'/v1/logout',remove:'/v1/me'};
   const methods={[paths.list]:'GET',[paths.device]:'POST',[paths.poll]:'POST',[paths.score]:'POST',[paths.logout]:'POST',[paths.remove]:'DELETE'};
   const tokenOK=s=>typeof s==='string' && s.length>=16 && s.length<=512 && /^[A-Za-z0-9._~-]+$/.test(s);
   const scoreOK=s=>typeof s==='string' && /^(?:0|[1-9]\d{0,249}|10{250})$/.test(s);
@@ -7868,7 +7869,13 @@ window.Leaderboard=(()=>{
       const saved=localStorage.getItem(key);
       if(!saved)return null;
       const s=JSON.parse(saved);
-      if(s?.rules===2 && s.origin===apiOrigin && tokenOK(s.token))return s;
+      if(s?.rules===2 && s.origin===apiOrigin && tokenOK(s.token)){
+        if(s.scoreMetric==='lifetime')return s;
+        // The old revision and fingerprint refer to the balance table.
+        const migrated={...s,scoreMetric:'lifetime',revision:0,stamp:null,blocked:null};
+        try{localStorage.setItem(key,JSON.stringify(migrated));}catch{}
+        return migrated;
+      }
       // A session belongs only to the service that issued it.
       localStorage.removeItem(key);
     }catch{}
@@ -7955,13 +7962,15 @@ window.Leaderboard=(()=>{
     const item=el('li','lb-row'+(own?' lb-mine':'')),avatar=el('span',''),player=el('span','lb-player');
     PlayerAvatar.render(avatar,record.avatar,record.prestige);
     player.append(el('strong','lb-name',record.name),el('small','lb-prestige','Престиж '+roman[record.prestige]+(record.cosmicAscensions?' · Вселенная '+pretty(String(BigInt(record.cosmicAscensions)+1n)) :'')));
-    item.append(el('span','lb-rank',String(record.rank)),avatar,player,el('strong','lb-score',pretty(record.score)+' ∫'));return item;
+    const score=el('strong','lb-score',pretty(record.score)+' ∫');
+    score.title='Заработано за всё время';
+    item.append(el('span','lb-rank',String(record.rank)),avatar,player,score);return item;
   }
   function info(root,copy){const p=el('p','lb-notice',copy);p.setAttribute('role','status');root.append(p);}
   function guest(root){
     const content=el('section','lb-connect'),intro=el('div','lb-intro');
-    intro.append(el('h3','','Подключите Яндекс ID'),el('p','','Для общего рейтинга нужен интернет. После входа игра автоматически обновляет результат во время игры, примерно раз в минуту.'),
-      el('p','lb-privacy','Из Яндекс ID игра использует имя и уникальный для приложения ID. Игроки увидят ваше имя, игровой значок, вселенную, престиж и текущий счёт. ID нужен для привязки аккаунта.'));
+    intro.append(el('h3','','Подключите Яндекс ID'),el('p','','Для общего рейтинга нужен интернет. Во время игры изменения отправляются автоматически, примерно раз в 10 секунд.'),
+      el('p','lb-privacy','Из Яндекс ID игра использует имя и уникальный для приложения ID. Игроки увидят ваше имя, игровой значок, вселенную, престиж и сумму интегралов, заработанных за всё время. ID нужен для привязки аккаунта.'));
     content.append(intro);
     if(message)info(content,message);
     if(!flow){content.append(button('Подключить Яндекс ID',begin,'lb-primary'));root.append(content);return;}
@@ -8001,19 +8010,20 @@ window.Leaderboard=(()=>{
     if(!session)guest(root);
     else{
       if(!session.autoPublish){
-        info(root,'Можно обновлять результат автоматически во время игры. Публикуются тот же текущий счёт, престиж и игровой значок.');
+        info(root,'Можно обновлять результат автоматически во время игры. Публикуются заработанные за всё время интегралы, престиж, вселенная и игровой значок.');
         root.append(button('Включить автообновление',()=>{persist({...session,autoPublish:true});paint();refresh();},'lb-primary'));
       }
       if(session.blocked){
-        const epoch=compareGeneration(Economy.rankingProgress(),session.blocked);
-        if(epoch===0){
-          info(root,'В рейтинге уже есть другой результат этого аккаунта. Можно продолжить публиковать счёт с этого устройства.');
-          root.append(button('Использовать счёт этого устройства',()=>{persist({...session,blocked:null,stamp:null});paint();refresh();}));
-        }else if(epoch<0)info(root,'В рейтинге уже сохранён результат этой учётной записи с более поздним престижем или вселенной.');
+        const comparison=compareProgress(Economy.rankingProgress(),session.blocked);
+        if(comparison===0){
+          info(root,'У этой партии такой же результат, как у другой партии аккаунта. Можно показать значок этого устройства.');
+          root.append(button('Использовать этот значок',()=>{persist({...session,blocked:null,stamp:null});paint();refresh();}));
+        }else if(comparison<0)info(root,'В рейтинге учтена лучшая партия этого аккаунта. Когда вы превзойдёте её результат, место обновится.');
       }
       if(me){const personal=el('section','lb-personal'),list=el('ol','');personal.append(el('h3','','Ваше место'));list.append(entry(me,true));personal.append(list);root.append(personal);}
       if(entries){
         const top=el('section','lb-top'),list=el('ol','');top.append(el('h3','','Топ игроков'));
+        if(entries.length)info(top,'При одной вселенной и престиже место определяют интегралы, заработанные за всё время.');
         for(const r of entries)list.append(entry(r,me?.rank===r.rank));
         if(entries.length)top.append(list);else top.append(el('p','','В рейтинге пока нет результатов.'));
         root.append(top);
@@ -8046,16 +8056,17 @@ window.Leaderboard=(()=>{
     prestigePending=false;
   }
   const fingerprint=r=>[r.cosmicAscensions,r.prestige,r.score,r.avatar].join('/');
-  const compareGeneration=(a,b)=>a.cosmicAscensions===b.cosmicAscensions?a.prestige-b.prestige:a.cosmicAscensions-b.cosmicAscensions;
+  function compareProgress(a,b){
+    return a.cosmicAscensions-b.cosmicAscensions || a.prestige-b.prestige ||
+      a.score.length-b.score.length || (a.score===b.score?0:a.score>b.score?1:-1);
+  }
   function progressNow(){return {...Economy.rankingProgress(),avatar:PlayerAvatar.index};}
   function observeRemote(row,progress){
-    // A different session or device has published. Increasing idle income on
-    // this device is not sufficient reason to overwrite that other game.
     const stamp=fingerprint(progress);
     if(fingerprint(row)===stamp){
       persist({...session,name:row.name,revision:row.revision,stamp,blocked:null});
     }else{
-      const blocked={cosmicAscensions:row.cosmicAscensions,prestige:row.prestige};
+      const blocked={cosmicAscensions:row.cosmicAscensions,prestige:row.prestige,score:row.score};
       persist({...session,name:row.name,revision:row.revision,stamp:null,blocked});
     }
   }
@@ -8068,7 +8079,7 @@ window.Leaderboard=(()=>{
     }
     const id=generation,saved=session,progress=progressNow(),stamp=fingerprint(progress);
     const valid=()=>id===generation&&canSync()&&session?.token===saved.token;
-    const shouldWrite=saved.stamp!==stamp&&(!saved.blocked||compareGeneration(progress,saved.blocked)>0);
+    const shouldWrite=saved.stamp!==stamp&&(!saved.blocked||compareProgress(progress,saved.blocked)>0);
     if(!shouldWrite&&!visible()){timer();return;}
     busy=true;message='';
     if(visible()&&!entries)paint();
@@ -8083,7 +8094,7 @@ window.Leaderboard=(()=>{
           if(!valid())return;
           if(e.status!==409||!ownOK(e.data?.me))throw e;
           observeRemote(e.data.me,progress);
-          if(!saved.blocked&&compareGeneration(progress,e.data.me)>0)prestigePending=true;
+          if(!saved.blocked&&compareProgress(progress,e.data.me)>0)prestigePending=true;
         }
       }
       if(visible()){
@@ -8145,7 +8156,7 @@ window.Leaderboard=(()=>{
         return;
       }
       if(data.status!=='authorized'||!tokenOK(data.session))throw new RequestError(200);
-      persist({rules:2,autoPublish:true,origin:apiOrigin,token:data.session});stopFlow();message='';paint();refresh();
+      persist({rules:2,scoreMetric:'lifetime',autoPublish:true,origin:apiOrigin,token:data.session});stopFlow();message='';paint();refresh();
     }catch(e){
       if(!current(id)||flow!==active)return;
       if(configurationError(e)){stopFlow();message=configurationMessage;}
@@ -8207,6 +8218,9 @@ window.Leaderboard=(()=>{
     setNativeVisible(true);
     if(flow)schedulePoll();else if(session)refresh();else if(visible())paint();
   }
+  // The splash screen loads game modules after pageshow and the native resume event.
+  // By this point the economy, saved account and tutorial have all been restored.
+  window.addEventListener('duolaunchcomplete',resume);
   document.addEventListener('visibilitychange',()=>document.hidden?suspend():resume());
   window.addEventListener('duopause',()=>{nativePaused=true;suspend();});
   window.addEventListener('duoresume',()=>{nativePaused=false;resume();});
@@ -8331,8 +8345,8 @@ window.Extras = (() => {
     privacy.className='ex-card ex-data-note';
     privacy.innerHTML='<summary>Какие данные видны в рейтинге?</summary>' +
       '<p>Ты сам выбираешь, участвовать ли в рейтинге. Из Яндекс ID игра сохраняет имя и защищённую метку твоего аккаунта. Яндекс выдаёт разрешение на имя вместе с другими полями профиля. Игра их пропускает.</p>' +
-      '<p>Участникам видны твоё имя, игровой значок, престиж и текущий баланс интегралов. После перехода в новую вселенную её номер тоже учитывается. Если прогресс совпадает, выше окажется тот, чей результат сервер получил раньше.</p>' +
-      '<p>Когда включено автообновление и есть интернет, игра отправляет текущий результат примерно раз в минуту во время игры и при новом престиже. В разделе «Рейтинг» можно выйти из аккаунта или удалить свою запись на всех устройствах. Партия сохраняется на устройстве.</p>';
+      '<p>Участникам видны твоё имя, игровой значок, вселенная, престиж и заработанные за всё время интегралы. Место определяется сначала вселенной, затем престижем и суммой заработанного в целых интегралах. При равенстве выше тот, чей результат сервер получил раньше.</p>' +
+      '<p>Когда включено автообновление и есть интернет, игра отправляет текущий результат примерно раз в 10 секунд во время игры и при новом престиже. В разделе «Рейтинг» можно выйти из аккаунта или удалить свою запись на всех устройствах. Партия сохраняется на устройстве.</p>';
     inner.querySelector('.ex-switches').after(privacy);
     window.ProgressReset?.addSettings(inner);
     window.HomeWidgets?.addSettings(inner);
@@ -8411,7 +8425,6 @@ window.Extras = (() => {
   function wheel(){
     const m=ExtraModel.load(),s=Economy.snapshot(),o=m.receipt?null:ExtraModel.offer();
     document.getElementById('dialog-layer').classList.add('dw-open');
-    document.getElementById('station').classList.add('dw-presentation');
     const closeButton=document.getElementById('close-sheet');
     if(closeButton){closeButton.disabled=false;closeButton.setAttribute('aria-label','Закрыть колесо');}
     panel.innerHTML='<article class="ex-wrap ex-wheel"><p class="dw-date"></p><div class="dw-stage"></div><p class="dw-message" role="status" hidden></p></article>';
@@ -8456,7 +8469,6 @@ window.Extras = (() => {
     statsFields=null;
     if(screen==='daily'){
       document.getElementById('dialog-layer').classList.remove('dw-open');
-      document.getElementById('station').classList.remove('dw-presentation');
       const b=document.getElementById('close-sheet');if(b){b.disabled=false;b.setAttribute('aria-label','Закрыть');}
     }
     if(screen==='leaderboard')window.Leaderboard.close();
@@ -9027,6 +9039,7 @@ window.HonorNotices=(()=>{
   }
   function setSheetChrome(name){
     layer.hidden=!name;
+    layer.parentElement.classList.toggle('themed-sheet',['leaderboard','honors','profile','settings','help','daily'].includes(name));
     layer.classList.toggle('gd-open',name==='help');
     layer.classList.toggle('lb-open',name==='leaderboard');
     for(const element of [home,page,header,tabs])element.toggleAttribute('inert',Boolean(name));
