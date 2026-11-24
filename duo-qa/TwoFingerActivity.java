@@ -25,10 +25,12 @@ public final class TwoFingerActivity extends Activity {
     private AssetManager game;
     private long down;
     private int polls;
+    private boolean portrait;
     private boolean failed;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        portrait=getIntent().getBooleanExtra("portraitMenu",false);
         try {
             game = getPackageManager().getResourcesForApplication("ru.mathclicker.duo").getAssets();
         } catch (Exception e) { fail(e); return; }
@@ -77,6 +79,7 @@ public final class TwoFingerActivity extends Activity {
             }
             try {
                 JSONArray j = new JSONArray(ret);
+                if (portrait){web.evaluateJavascript("App.route('home')", v->handler.postDelayed(()->menuEdge(0),250));return;}
                 final float ratio = web.getWidth() / (float)j.getDouble(0);
                 final float[][] pts = new float[2][2];
                 for(int i=0;i<2;i++) for(int a=0;a<2;a++) pts[i][a]=(float)j.getJSONArray(i+1).getDouble(a)*ratio;
@@ -197,7 +200,7 @@ public final class TwoFingerActivity extends Activity {
         // Sample the whole visible bar independently of the element hit rectangles.
         String[] tabs={"research","resources","home","world","appearance"};
         String[] actions={"honors","profile","help"};
-        if(test==13){Log.i("DuoTouchQA","PASS landscape menu edges, two concurrent purchases, scroll cancellation and map pinch");return;}
+        if(test==13){Log.i("DuoTouchQA",portrait?"PASS portrait menu edges":"PASS landscape menu edges, two concurrent purchases, scroll cancellation and map pinch");return;}
         boolean header=test>=10;
         String name=header?actions[test-10]:tabs[test%5];
         String expr=header
@@ -206,7 +209,7 @@ public final class TwoFingerActivity extends Activity {
         web.evaluateJavascript("(function(){"+expr+"return [innerWidth,innerHeight,x,y]})()", v->{
             try{
                 JSONArray a=new JSONArray(v);
-                if(a.getInt(0)<=a.getInt(1))throw new Exception("Expected landscape viewport "+v);
+                if((a.getInt(0)<a.getInt(1))!=portrait)throw new Exception("Unexpected viewport "+v);
                 float f=web.getWidth()/(float)a.getDouble(0);
                 float[][] p={{(float)a.getDouble(2)*f,(float)a.getDouble(3)*f}};
                 down=SystemClock.uptimeMillis();
