@@ -277,7 +277,10 @@
       }
       case "applyTheme": {
         const current = Appearance.selection().themes;
-        if (current === lesson.themeId || (lesson.originalTheme && current !== lesson.originalTheme)) return go("home");
+        if ((lesson.originalTheme && current !== lesson.originalTheme) ||
+            (!lesson.originalTheme && current === lesson.themeId)) {
+          return go("home", {themeId: current});
+        }
         if (!el(".ap-use:not(:disabled)")) return go("gallery");
         const selected = el('.ap-card[aria-pressed="true"]')?.dataset.id;
         if (selected && selected !== lesson.themeId) {
@@ -287,12 +290,23 @@
         show("apply-theme", ".ap-use", "Примерь оформление", "Нажми «Применить» или посмотри другой открытый фон.", {point: true, allowed: [...document.querySelectorAll(availableThemes)]});
         return;
       }
-      case "home":
-        if (screenHome("Посмотрим, как получилось", "Вернись на главный экран.")) return;
-        go("complete");
+      case "home": {
+        if (App.activeRoute !== "home" || App.sheet) App.route("home");
+        const current = Appearance.selection().themes;
+        const changed = lesson.originalTheme ? current !== lesson.originalTheme : current === lesson.themeId;
+        if (!changed && lesson.themeId) return go("gallery", {themeId: null});
+        const theme = Honors.catalog("themes").find(item => item.id === current);
+        const caption = theme ? "Фон «" + theme.name + "» виден и на других вкладках." : "Этот фон виден и на других вкладках.";
+        explain("theme-reveal", null, changed ? "Во, смотри, ты поменял оформление!" : "Твой фон лаборатории",
+          caption, "Дальше", () => go("complete", {themeAcknowledged: true}), {point: true});
         return;
+      }
       case "complete":
-        explain("completed", "#balance", "Теперь лаборатория твоя", "У тебя есть автодоход, школа и первое пройденное испытание. Город будет расти с каждым новым жителем.", "Играть самостоятельно", finish);
+        // An unfinished save from before the reveal should still show its chosen theme.
+        if (!lesson.themeAcknowledged) return go("home");
+        explain("completed", null, "Обучение пройдено",
+          "Школа открыта, а бит уже приносит интегралы. Приглашай новых жителей, чтобы город рос.",
+          "Играть самостоятельно", finish, {point: true});
         return;
     }
   }

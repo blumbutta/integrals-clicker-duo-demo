@@ -4,7 +4,7 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
   let spec, root, panel, ring, contextRing, shade, shadePath, title, copy, head, progress, skip, primary;
   let pointer, focusedAnchor, contextAnchor, resizeWatch, treeWatch, frame, scrolledAnchor;
   const capturedPointers = new Map();
-  let scoreGain;
+  let scoreGain,finaleSchool;
   const listen = (type, handler, options=true) => window.addEventListener(type, handler, options);
   const element = (tag, cls, parent) => {
     const node = document.createElement(tag);
@@ -147,6 +147,8 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     const message = element('div','tr-message',panel);
     message.setAttribute('aria-live','polite');
     message.setAttribute('aria-atomic','true');
+    finaleSchool=element('img','tr-finale-school',panel);
+    finaleSchool.alt='';finaleSchool.draggable=false;finaleSchool.hidden=true;
     title = element('h2','tr-title',message);
     copy = element('p','tr-text',message);
     primary = element('button','tr-primary',panel);
@@ -256,49 +258,76 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     for (const region of regions) d+=region.path;
     if(shadePath.getAttribute('d')!==d) shadePath.setAttribute('d',d);
   }
-  function placePointer(target,card,bounds,viewport,font) {
-    pointer.hidden=true;
-    if (!target?.width || !target.height) return;
-    const full=clamp(font*2.95,42,92);
-    const reference=card || bounds;
-    const cx=(reference.left+reference.right)/2, cy=(reference.top+reference.bottom)/2;
-    const gap=4, edge=3;
-    const avoid=card ? [card] : [];
-    if (!scoreGain.hidden) {
-      avoid.push(scoreGain.getBoundingClientRect());
-      const balance=document.getElementById('balance');
-      const digits=balance && clippedRect(balance,bounds)?.visible;
-      if (digits?.width) avoid.push(digits);
+  function overlapArea(a,b) {
+    return Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left)) *
+      Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
+  }
+  function placeCoach(tip,card,bounds,viewport,font,protectedAreas,otherControls) {
+    const full=clamp(font*2.95,42,92), pad=Math.max(6,font*.43), gap=Math.max(5,font*.28);
+    const left=bounds.left+pad,top=bounds.top+pad;
+    const width=card?.width||0,height=card?.height||0;
+    const right=bounds.right-pad-width,bottom=bounds.bottom-pad-height;
+    const gain=scoreGain.hidden?null:scoreGain.getBoundingClientRect();
+    let best=null;
+    function consider(arrow,x,y,preference) {
+      const l=clamp(x,left,right),t=clamp(y,top,bottom);
+      const caption=box(l,t,l+width,t+height);
+      if(card && overlapArea(arrow.rect,caption)>1)return;
+      const tailGap=card?Math.hypot(Math.max(0,l-arrow.backX,arrow.backX-caption.right),
+        Math.max(0,t-arrow.backY,arrow.backY-caption.bottom)):0;
+      let cost=preference+tailGap*3;
+      if(card){
+        for(const r of protectedAreas)cost+=overlapArea(caption,r)*50;
+        for(const r of otherControls)cost+=overlapArea(caption,r)/font;
+      }
+      if(!best||cost<best.cost)best={arrow,l,t,cost};
     }
-    const obstacles=avoid.map(r=>box(r.left-gap,r.top-gap,r.right+gap,r.bottom+gap));
-    let winner;
-    // Point toward the edge of the actual control from a free strip of screen.
-    // Prefer the side nearest the caption, keeping its entire box unobstructed.
-    for (const length of [full,full*.72]) {
-      const thickness=length*40/64;
-      for (const [dx,dy,angle] of [[1,0,0],[-1,0,180],[0,1,90],[0,-1,-90]]) {
-        for (const ratio of [.5,.25,.75,.12,.88]) {
-          const x=dx===1 ? target.left-gap : dx===-1 ? target.right+gap : target.left+target.width*ratio;
-          const y=dy===1 ? target.top-gap : dy===-1 ? target.bottom+gap : target.top+target.height*ratio;
-          const backX=x-length*dx, backY=y-length*dy;
-          const rect=box(Math.min(x,backX)-Math.abs(dy)*thickness/2,Math.min(y,backY)-Math.abs(dx)*thickness/2,
-            Math.max(x,backX)+Math.abs(dy)*thickness/2,Math.max(y,backY)+Math.abs(dx)*thickness/2);
-          if (rect.left<bounds.left+edge || rect.top<bounds.top+edge ||
-              rect.right>bounds.right-edge || rect.bottom>bounds.bottom-edge) continue;
-          if (obstacles.some(obj=>{const overlap=intersect(rect,obj);return overlap.width && overlap.height;})) continue;
-          const cost=Math.hypot(backX-cx,backY-cy)+Math.abs(ratio-.5)*full*3;
-          if (!winner || cost<winner.cost) winner={x,y,angle,length,thickness,cost};
+    if(tip?.width&&tip.height){
+      // The arrow and its caption are one placement: attach the caption to the
+      // tail, while the tip stays on the actual control, even at a screen edge.
+      for(const length of [full,full*.72]){
+        const thickness=length*40/64;
+        for(const [dx,dy,angle] of [[0,1,90],[0,-1,-90],[1,0,0],[-1,0,180]]){
+          for(const ratio of [.5,.23,.77,.1,.9]){
+            const x=dx===1?tip.left-4:dx===-1?tip.right+4:tip.left+tip.width*ratio;
+            const y=dy===1?tip.top-4:dy===-1?tip.bottom+4:tip.top+tip.height*ratio;
+            const backX=x-length*dx,backY=y-length*dy;
+            const rect=box(Math.min(x,backX)-Math.abs(dy)*thickness/2,Math.min(y,backY)-Math.abs(dx)*thickness/2,
+              Math.max(x,backX)+Math.abs(dy)*thickness/2,Math.max(y,backY)+Math.abs(dx)*thickness/2);
+            if(rect.left<bounds.left+2||rect.right>bounds.right-2||rect.top<bounds.top+2||rect.bottom>bounds.bottom-2)continue;
+            if(gain&&overlapArea(rect,gain)>0)continue;
+            const arrow={x,y,backX,backY,rect,length,thickness,angle};
+            const preference=Math.abs(ratio-.5)*font+(full-length)*.7;
+            if(!card){consider(arrow,0,0,preference);continue;}
+            for(const align of [.5,.16,.84]){
+              const l=dx===1?backX-gap-width:dx===-1?backX+gap:backX-width*align;
+              const t=dy===1?backY-gap-height:dy===-1?backY+gap:backY-height*align;
+              consider(arrow,l,t,preference+Math.abs(align-.5));
+              // A cornered target may only have room beside the arrow.
+              if(dx){
+                consider(arrow,backX-width*align,rect.top-gap-height,preference+font*.8);
+                consider(arrow,backX-width*align,rect.bottom+gap,preference+font*.8);
+              }else{
+                consider(arrow,rect.left-gap-width,backY-height*align,preference+font*.8);
+                consider(arrow,rect.right+gap,backY-height*align,preference+font*.8);
+              }
+            }
+          }
         }
       }
-      if (winner) break;
     }
-    if (!winner) return;
-    pointer.hidden=false;
-    coordinate(pointer,'left',winner.x-viewport.left-winner.length);
-    coordinate(pointer,'top',winner.y-viewport.top-winner.thickness/2);
-    coordinate(pointer,'width',winner.length);
-    coordinate(pointer,'height',winner.thickness);
-    pointer.style.transform='rotate('+winner.angle+'deg)';
+    pointer.hidden=!best;
+    if(best){
+      const a=best.arrow;
+      coordinate(pointer,'left',a.x-viewport.left-a.length);
+      coordinate(pointer,'top',a.y-viewport.top-a.thickness/2);
+      coordinate(pointer,'width',a.length);coordinate(pointer,'height',a.thickness);
+      pointer.style.transform='rotate('+a.angle+'deg)';
+    }
+    if(card){
+      coordinate(panel,'left',(best?best.l:clamp((left+right)/2,left,right))-viewport.left);
+      coordinate(panel,'top',(best?best.t:bottom)-viewport.top);
+    }
   }
   function layout() {
     if (!spec || !root || root.hidden) return;
@@ -307,7 +336,7 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     const bounds = stage ? intersect(viewport, stage.getBoundingClientRect()) : viewport;
     if (!bounds.width || !bounds.height) return;
     const font = parseFloat(getComputedStyle(root).fontSize) || 18;
-    const pad = Math.max(6,Math.round(font*.58)), gap = Math.max(10,Math.round(font*.72));
+    const gap = Math.max(10,Math.round(font*.72));
     const anchor = visualTarget(), context=resolve(spec.context);
     if (focusedAnchor !== anchor) {
       if (focusedAnchor) resizeWatch?.unobserve(focusedAnchor);
@@ -329,6 +358,29 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
         region=clippedRect(anchor,bounds);
       }
     }
+    const aim=resolve(spec.pointAt) || currentTarget();
+    let aimRect=aim && clippedRect(aim,bounds);
+    function reachable(r){
+      return r && r.visible.width>=Math.min(24,r.raw.width*.5) &&
+        r.visible.height>=Math.min(24,r.raw.height*.5);
+    }
+    if(aimRect && !reachable(aimRect)){
+      // A scrolled gallery may have several equally valid choices. Point to
+      // one that is still in view. A mandatory single target must be reachable.
+      let alternate;
+      if(spec.id==='choose-theme'){
+        for(const n of allowedNodes()){
+          const r=clippedRect(n,bounds);
+          if(reachable(r)){alternate=r;break;}
+        }
+      }
+      if(alternate)aimRect=alternate;
+      else if(aim.scrollIntoView){
+        aim.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
+        aimRect=clippedRect(aim,bounds);
+        region=anchor && clippedRect(anchor,bounds);
+      }
+    }
     const p=Math.max(3,Math.round(font*.2));
     const mainFrame=frameRegion(ring,anchor,region,viewport,bounds,p);
     const contextFrame=frameRegion(contextRing,context,context && clippedRect(context,bounds),viewport,bounds,p);
@@ -336,68 +388,33 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     spotlight(viewport,regions);
     const target=mainFrame?.bounds;
     if (target) placeScoreGain(viewport,target,gap);
-    const aim=resolve(spec.pointAt) || currentTarget();
-    const tip=aim ? clippedRect(aim,bounds)?.visible : target;
-    if (panel.hidden) {
-      placePointer(tip,null,bounds,viewport,font);
+    const tip=aimRect?.visible || target;
+    if(spec.id==='completed'||spec.id==='theme-reveal'){
+      pointer.hidden=true;panel.style.removeProperty('left');panel.style.removeProperty('top');
       return;
     }
-    const card=panel.getBoundingClientRect();
-    const left=bounds.left+pad, top=bounds.top+pad;
-    const right=bounds.right-pad-card.width, bottom=bounds.bottom-pad-card.height;
-    const landscape=bounds.width>bounds.height;
-    let choices=[];
-    if (target) {
-      const cx=(target.left+target.right-card.width)/2, cy=(target.top+target.bottom-card.height)/2;
-      const horizontal=[['right',target.right+gap,cy],['left',target.left-gap-card.width,cy]];
-      const vertical=[['below',cx,target.bottom+gap],['above',cx,target.top-gap-card.height]];
-      choices=landscape ? horizontal.concat(vertical) : vertical.concat(horizontal);
+    if(panel.hidden){placeCoach(tip,null,bounds,viewport,font,[],[]);return;}
+    const protectedAreas=regions.map(frame=>frame.bounds);
+    if(tip)protectedAreas.push(tip);
+    if(!scoreGain.hidden)protectedAreas.push(scoreGain.getBoundingClientRect());
+    if(spec.gainLabel){
+      const integral=document.getElementById('integral-button');
+      if(integral)protectedAreas.push(integral.getBoundingClientRect());
     }
-    choices.push(['top-right',right,top],['top-left',left,top],['bottom-right',right,bottom],['bottom-left',left,bottom]);
-    if (!target && !spec.placement) choices.unshift(['bottom',(left+right)/2,bottom-gap]);
-    const obstacles = [...regions.map(region=>region.bounds),...allowedNodes().filter(x=>!contains(anchor,x)).map(n=>n.getBoundingClientRect())
-      .filter(r=>r.width*r.height<bounds.width*bounds.height*.55)].filter(Boolean);
-    // Keep the card the player is inspecting readable. Its purchase/apply
-    // button is the pointer target, but its art, title and terms matter too.
+    const other=allowedNodes().filter(n=>!contains(anchor,n)).map(n=>n.getBoundingClientRect())
+      .filter(r=>r.width*r.height<bounds.width*bounds.height*.55);
     const detail=anchor?.closest('.pg-study-panel,.ap-detail') ||
       (spec.id==='choose-theme' && document.querySelector('.ap-detail:not([hidden])'));
-    if (detail) {
-      const r=detail.getBoundingClientRect(), x=(r.left+r.right-card.width)/2;
-      obstacles.push(r);
-      choices.push(['below-detail',x,r.bottom+gap],['above-detail',x,r.top-gap-card.height]);
+    if(detail)other.push(detail.getBoundingClientRect());
+    if(spec.id==='choose-theme'||spec.id==='apply-theme'){
+      for(const n of document.querySelectorAll('.ap-chapters,.ap-tabs,.ap-filter,#tabs'))other.push(n.getBoundingClientRect());
     }
-    if (spec.id==='choose-theme' || spec.id==='apply-theme') {
-      for (const node of document.querySelectorAll('.ap-chapters,.ap-tabs,.ap-filter,#tabs')) {
-        obstacles.push(node.getBoundingClientRect());
+    if(document.querySelector('.qc-screen')){
+      for(const n of document.querySelectorAll('.qc-options,.qc-foot,.qc-prompt,.qc-clock,.qc-review')){
+        if(n.getClientRects().length)other.push(n.getBoundingClientRect());
       }
     }
-    if (spec.gainLabel) {
-      // Keep the confirmation clear of the place the player was just tapping.
-      const integral=document.getElementById('integral-button');
-      if (integral) obstacles.push(integral.getBoundingClientRect());
-    }
-    if (document.querySelector('.qc-screen')) {
-      for (const node of document.querySelectorAll('.qc-options,.qc-foot,.qc-prompt,.qc-clock,.qc-review')) {
-        if (node.getClientRects().length) obstacles.push(node.getBoundingClientRect());
-      }
-    }
-    let best, score=Infinity;
-    for (const [side,x,y] of choices) {
-      const px=clamp(x,left,right), py=clamp(y,top,bottom);
-      const rectangle=box(px-gap*.4,py-gap*.4,px+card.width+gap*.4,py+card.height+gap*.4);
-      let cost=Math.abs(x-px)+Math.abs(y-py);
-      for (const obj of obstacles) {
-        const over=intersect(obj,rectangle);
-        cost+=over.width*over.height*8;
-      }
-      if (side===spec.placement) cost-=500;
-      if (cost<score) {score=cost;best=[px,py];}
-    }
-    if (best) {
-      coordinate(panel,'left',best[0]-viewport.left);
-      coordinate(panel,'top',best[1]-viewport.top);
-    }
-    placePointer(tip,panel.getBoundingClientRect(),bounds,viewport,font);
+    placeCoach(tip,panel.getBoundingClientRect(),bounds,viewport,font,protectedAreas,other);
   }
   function show(options) {
     mount();
@@ -426,6 +443,8 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     text(progress,step && count ? step+' / '+count : '');
     progress.hidden=!progress.textContent;
     const message=spec.text??spec.body;
+    finaleSchool.hidden=id!=='completed';
+    if(!finaleSchool.hidden&&!finaleSchool.hasAttribute('src'))finaleSchool.src=window.duoArt('art/map/hd-school.webp');
     text(title,spec.title); title.hidden=!spec.title;
     text(copy,message); copy.hidden=!message;
     text(scoreGain,spec.gainLabel); scoreGain.hidden=!spec.gainLabel;
@@ -441,6 +460,7 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
       if (station) treeWatch.observe(station,{subtree:true,childList:true});
     }
     if (changed) {
+      if((id==='theme-reveal'||id==='completed')&&!primary.hidden)focus(primary);
       layout();
       schedule();
     } else if (focusedAnchor!==visualTarget() || contextAnchor!==resolve(spec.context) ||

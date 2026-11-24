@@ -8376,6 +8376,52 @@ window.HonorNotices=(()=>{
   byId('tabs').addEventListener('click',e=>{const b=e.target.closest('[data-route]');if(b)route(b.dataset.route);});
   document.querySelectorAll('[data-sheet]').forEach(b=>b.addEventListener('click',()=>openSheet(b.dataset.sheet,null,b)));
   byId('close-sheet').addEventListener('click',()=>sheet==='honors'?closeSheet():window.duoBack());
+  // Older WebViews can deliver a clean down/up but omit click when rendering stalls.
+  // Activate through the normal click path so that coaching and keyboard share its guards.
+  function bindMenuTouches(){
+    if(!window.PointerEvent)return;
+    const selector='#tabs [data-route],.head-actions [data-sheet],#close-sheet';
+    const menuButton=node=>node?.closest?.(selector);
+    const slop=10;
+    let press=null,claimed=false,release=null;
+    function reset(){press=null;claimed=false;release=null;}
+    function moved(event,touch){return Math.hypot(event.clientX-touch.x,event.clientY-touch.y)>slop;}
+    document.addEventListener('pointerdown',event=>{
+      if(event.isPrimary || event.pointerType!=='touch')reset();
+      if(event.pointerType!=='touch')return;
+      if(!event.isPrimary)press=null;
+      const button=menuButton(event.target);
+      if(!button)return;
+      claimed=true;
+      if(event.isPrimary && event.button===0 && !button.disabled && !button.closest('[inert]'))
+        press={id:event.pointerId,button,x:event.clientX,y:event.clientY};
+    },{passive:true});
+    document.addEventListener('pointermove',event=>{
+      if(press && event.pointerId===press.id && moved(event,press))press=null;
+    },{passive:true});
+    document.addEventListener('pointercancel',event=>{
+      if(press && event.pointerId===press.id)press=null;
+    },{passive:true});
+    document.addEventListener('pointerup',event=>{
+      if(!press || event.pointerId!==press.id)return;
+      const tap=press;press=null;
+      if(moved(event,tap) || tap.button.disabled || tap.button.closest('[inert]') ||
+         menuButton(document.elementFromPoint(event.clientX,event.clientY))!==tap.button)return;
+      release={x:event.clientX,y:event.clientY};
+      tap.button.click();
+    },{passive:true});
+    document.addEventListener('click',event=>{
+      // Keyboard and assistive activation (detail zero) also work without pointer events.
+      if(!claimed || event.detail===0)return;
+      // A native compatibility click may be retargeted to the sheet just opened.
+      if(!menuButton(event.target) && (!release || moved(event,release)))return;
+      event.preventDefault();event.stopImmediatePropagation();
+    },true);
+    window.addEventListener('blur',reset);
+    window.addEventListener('duopause',reset);
+    document.addEventListener('visibilitychange',reset);
+  }
+  bindMenuTouches();
   eventButton.addEventListener('click',()=>{
     if(Quests.active() || Quests.hasUnlocked())openSheet('challenges',null,eventButton);
     else route('world');

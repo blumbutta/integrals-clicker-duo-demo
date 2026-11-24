@@ -160,3 +160,45 @@ body[data-training-instruction] :is(.ex-golden,.ex-gold-reward,.ex-notice) {
   #training-coach .tr-text {margin-top:.25em;line-height:1.22}
   #training-coach .tr-primary {min-height:34px;margin-top:.42em}
 }
+
+/* Leave the real laboratory visible while the player looks at their new theme. */
+#training-coach[data-step="theme-reveal"] .tr-panel {
+  left:50%;bottom:max(1em,env(safe-area-inset-bottom));transform:translateX(-50%);
+  width:max-content;max-width:min(26em,calc(100% - 1.25em));
+  padding:.55em .9em .65em;background:#102a35;text-align:center;
+}
+#training-coach[data-step="theme-reveal"] .tr-title {font-size:1.08em}
+#training-coach[data-step="theme-reveal"] .tr-primary {margin-top:.38em;padding:.3em 1.2em}
+
+/* The final page keeps the first school and the single free-play action together. */
+#training-coach[data-step="completed"] {
+  display:grid;place-items:center;
+  background:radial-gradient(ellipse at 47% 34%,#234348 0%,#102b37 48%,#091b27 100%);
+}
+#training-coach[data-step="completed"] .tr-panel {
+  position:relative;width:min(23em,calc(100% - 2em));max-width:none;
+  padding:1.2em 1.45em 1.45em;border:1px solid #b79a63;border-radius:1em;
+  display:grid;grid-template-areas:"school" "message" "play";justify-items:center;
+  text-align:center;background:linear-gradient(145deg,#21434a,#112f39 55%,#142c36);
+  box-shadow:0 .65em 2.4em #06151d85,inset 0 0 0 .16em #18343c;
+}
+#training-coach[data-step="completed"] .tr-finale-school {
+  grid-area:school;display:block;width:12em;max-width:90%;height:auto;max-height:28vh;
+  object-fit:contain;margin:0 0 .45em;pointer-events:none;
+}
+#training-coach[data-step="completed"] .tr-message {grid-area:message}
+#training-coach[data-step="completed"] .tr-title {margin:.08em 0 .16em;font-size:1.66em;line-height:1.07;color:#f8dfab}
+#training-coach[data-step="completed"] .tr-text {max-width:21em;margin:.2em 0 .55em;font-size:1em;line-height:1.4}
+#training-coach[data-step="completed"] .tr-primary {grid-area:play;min-height:2.6em;padding:.48em 1.12em;margin-top:.5em}
+@media (orientation:landscape) and (min-width:620px) {
+  #training-coach[data-step="theme-reveal"] .tr-panel {
+    left:auto;right:max(1em,env(safe-area-inset-right));transform:none;
+    max-width:min(26em,calc(49% - max(1em,env(safe-area-inset-right))));
+  }
+  #training-coach[data-step="completed"] .tr-panel {
+    width:min(35em,calc(100% - 2em));grid-template-areas:"school message" "school play";
+    grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);column-gap:1.1em;justify-items:start;
+    align-content:center;text-align:left;padding:1.45em 1.6em;
+  }
+  #training-coach[data-step="completed"] .tr-finale-school {width:100%;max-width:none;max-height:45vh;align-self:center;margin:0}
+}
