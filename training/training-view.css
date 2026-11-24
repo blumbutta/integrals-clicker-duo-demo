@@ -116,14 +116,13 @@ body[data-training-instruction] :is(.ex-golden,.ex-gold-reward,.ex-notice) {
   position:absolute;
   pointer-events:none;
   transform-origin:100% 50%;
-  filter:drop-shadow(0 1px 1px #14212d) drop-shadow(0 0 2px #0c1b24);
+  filter:drop-shadow(0 2px 2px #071018a6);
 }
-#training-coach .tr-pointer::before {
-  content:"";
-  position:absolute;
-  inset:0;
-  background:linear-gradient(#fff2c1,#efbd68);
-  clip-path:polygon(0 35%,56% 35%,56% 0,100% 50%,56% 100%,56% 65%,0 65%);
+#training-coach .tr-pointer svg {
+  display:block;
+  width:100%;
+  height:100%;
+  transform-origin:100% 50%;
 }
 #training-coach .tr-score-gain {
   position:absolute;
@@ -132,12 +131,14 @@ body[data-training-instruction] :is(.ex-golden,.ex-gold-reward,.ex-notice) {
   border-radius:1em;
   background:#25352f;
   color:#ffdf96;
-  font:700 italic 1.13em/1.05 var(--tr-type);
-  font-variant-numeric:lining-nums tabular-nums;
+  font:700 1.13em/1.05 var(--figures,var(--tr-type));
+  font-variant-numeric:oldstyle-nums;
   white-space:nowrap;
   pointer-events:none;
 }
 @media (prefers-reduced-motion:no-preference) {
+  #training-coach .tr-pointer svg { animation:tr-indicate 1.2s ease-in-out infinite }
+  @keyframes tr-indicate { 0%,100% {transform:scale(.85)} 48%,65% {transform:scale(1)} }
   #training-coach .tr-score-gain { animation:tr-credit-in .3s ease-out both }
   @keyframes tr-credit-in { from {opacity:0;transform:translateY(.28em)} to {opacity:1;transform:none} }
 }
@@ -150,6 +151,7 @@ body[data-training-instruction] :is(.ex-golden,.ex-gold-reward,.ex-notice) {
 #training-coach[data-compact="true"] .tr-text {font-size:.88em;margin-top:.18em}
 @media (orientation:landscape) and (min-width:620px) {
   #training-coach .tr-panel {width:min(20.5em,44vw)}
+  #training-coach:is([data-step="choose-theme"],[data-step="apply-theme"]) .tr-panel {width:clamp(228px,19vw,18em)}
 }
 @media (max-height:500px) {
   #training-coach {font-size:clamp(14px,2.12vw,17px)}

@@ -1,5 +1,5 @@
-/* The browser tutorial registers its coach here. The normal game never mounts it. */
-window.TrainingView = (() => {
+/* Only a new or unfinished lesson needs the coach. */
+if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
   'use strict';
   let spec, root, panel, ring, contextRing, shade, shadePath, title, copy, head, progress, skip, primary;
   let pointer, focusedAnchor, contextAnchor, resizeWatch, treeWatch, frame, scrolledAnchor;
@@ -24,20 +24,21 @@ window.TrainingView = (() => {
   function currentTarget() { return spec ? resolve(spec.target) : null; }
   function visualTarget() { return resolve(spec.highlight) || currentTarget(); }
   function allowedNodes() {
-    if (spec.target) {
-      const anchor=currentTarget();
-      return anchor && !spec.lockTarget ? [anchor] : [];
-    }
+    const anchor=currentTarget();
     const extra = Array.isArray(spec.allowed) ? spec.allowed : [spec.allowed];
-    return extra.map(resolve).filter(Boolean);
+    const nodes = [anchor, ...extra.map(resolve)];
+    return [...new Set(nodes.filter(node => node && !(spec.lockTarget && contains(anchor,node))))];
   }
   function contains(outer, inner) { return !!inner && !!outer && (outer === inner || outer.contains(inner)); }
   function permitted(target) {
-    return !spec || spec.lock === false || contains(panel, target) ||
-      allowedNodes().some(node => contains(node, target));
+    if (!spec || spec.lock === false || contains(panel, target)) return true;
+    if (spec.lockTarget && contains(currentTarget(),target)) return false;
+    return allowedNodes().some(node => contains(node, target));
   }
   function guard(event) {
     if (!spec || spec.lock === false) return;
+    if (event.type==='wheel' && ['choose-theme','apply-theme'].includes(spec.id) &&
+        event.target.closest?.('.ap-scroll-area')) return;
     // Drag surfaces can capture the pointer on press (the map does this). Only
     // finish a gesture that actually began on the current highlighted target.
     if (event.type === 'pointerup' || event.type === 'pointercancel') {
@@ -57,7 +58,7 @@ window.TrainingView = (() => {
   function focusables() {
     const focusSelector = 'button:not(:disabled),a[href],input:not(:disabled),[tabindex]:not([tabindex="-1"]),select:not(:disabled)';
     const targets = allowedNodes().flatMap(node => node.matches(focusSelector) ? [node] : [...node.querySelectorAll(focusSelector)]);
-    return [...new Set([...targets, primary, skip])].filter(node => !node.hidden && node.getClientRects().length);
+    return [...new Set([...targets, primary, skip])].filter(node => !node.hidden && node.getClientRects().length && permitted(node));
   }
   function focus(node) {
     if (node) node.focus({preventScroll:true});
@@ -66,12 +67,13 @@ window.TrainingView = (() => {
     if (!spec || spec.lock === false) return;
     if (event.key === 'Tab') {
       const list = focusables();
-      if (!list.length) return;
-      const index = list.indexOf(document.activeElement);
-      const next = event.shiftKey ? (index < 1 ? list.length - 1 : index - 1) : (index + 1) % list.length;
       event.preventDefault();
       event.stopImmediatePropagation();
-      focus(list[next]);
+      if (list.length) {
+        const index = list.indexOf(document.activeElement);
+        const next = event.shiftKey ? (index < 1 ? list.length - 1 : index - 1) : (index + 1) % list.length;
+        focus(list[next]);
+      }
     } else if (event.key === 'Escape' || event.key === 'Backspace' ||
       (['Enter',' ','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key) && !permitted(event.target))) {
       event.preventDefault();
@@ -116,6 +118,20 @@ window.TrainingView = (() => {
     contextRing.setAttribute('aria-hidden', 'true');
     pointer = element('div', 'tr-pointer', root);
     pointer.setAttribute('aria-hidden','true');
+    const arrow=document.createElementNS(svgNS,'svg');
+    arrow.setAttribute('viewBox','0 0 64 40');
+    arrow.setAttribute('focusable','false');
+    const shape='M5 12 H32 V4 Q32 2 34 3 L60 18 Q63 20 60 22 L34 37 Q32 38 32 36 V28 H5 Q3 28 3 26 V14 Q3 12 5 12 Z';
+    for (const border of [5,2]) {
+      const path=document.createElementNS(svgNS,'path');
+      path.setAttribute('d',shape);
+      path.setAttribute('stroke-linejoin','round');
+      path.setAttribute('stroke-width',border);
+      path.setAttribute('stroke',border===5 ? '#10232b' : '#fff6d5');
+      path.setAttribute('fill','#ffc050');
+      arrow.append(path);
+    }
+    pointer.append(arrow);
     pointer.hidden = true;
     scoreGain = element('span','tr-score-gain',root);
     scoreGain.setAttribute('role','status');
@@ -227,7 +243,7 @@ window.TrainingView = (() => {
     return {bounds:target,path:roundedHole(x,y,target.width,target.height,rx,ry)};
   }
   function spotlight(viewport,regions) {
-    if (spec.point) {
+    if (!spec.spotlight) {
       if (shadePath.getAttribute('d')) shadePath.setAttribute('d','');
       return;
     }
@@ -242,11 +258,12 @@ window.TrainingView = (() => {
   }
   function placePointer(target,card,bounds,viewport,font) {
     pointer.hidden=true;
-    if (!spec.point || !target?.width || !target.height) return;
-    const full=Math.max(26,Math.min(51,font*1.75));
-    const cx=(card.left+card.right)/2, cy=(card.top+card.bottom)/2;
+    if (!target?.width || !target.height) return;
+    const full=clamp(font*2.95,42,92);
+    const reference=card || bounds;
+    const cx=(reference.left+reference.right)/2, cy=(reference.top+reference.bottom)/2;
     const gap=4, edge=3;
-    const avoid=[card];
+    const avoid=card ? [card] : [];
     if (!scoreGain.hidden) {
       avoid.push(scoreGain.getBoundingClientRect());
       const balance=document.getElementById('balance');
@@ -258,9 +275,9 @@ window.TrainingView = (() => {
     // Point toward the edge of the actual control from a free strip of screen.
     // Prefer the side nearest the caption, keeping its entire box unobstructed.
     for (const length of [full,full*.72]) {
-      const thickness=length*.51;
+      const thickness=length*40/64;
       for (const [dx,dy,angle] of [[1,0,0],[-1,0,180],[0,1,90],[0,-1,-90]]) {
-        for (const ratio of [.5,.28,.72]) {
+        for (const ratio of [.5,.25,.75,.12,.88]) {
           const x=dx===1 ? target.left-gap : dx===-1 ? target.right+gap : target.left+target.width*ratio;
           const y=dy===1 ? target.top-gap : dy===-1 ? target.bottom+gap : target.top+target.height*ratio;
           const backX=x-length*dx, backY=y-length*dy;
@@ -319,6 +336,12 @@ window.TrainingView = (() => {
     spotlight(viewport,regions);
     const target=mainFrame?.bounds;
     if (target) placeScoreGain(viewport,target,gap);
+    const aim=resolve(spec.pointAt) || currentTarget();
+    const tip=aim ? clippedRect(aim,bounds)?.visible : target;
+    if (panel.hidden) {
+      placePointer(tip,null,bounds,viewport,font);
+      return;
+    }
     const card=panel.getBoundingClientRect();
     const left=bounds.left+pad, top=bounds.top+pad;
     const right=bounds.right-pad-card.width, bottom=bounds.bottom-pad-card.height;
@@ -334,13 +357,27 @@ window.TrainingView = (() => {
     if (!target && !spec.placement) choices.unshift(['bottom',(left+right)/2,bottom-gap]);
     const obstacles = [...regions.map(region=>region.bounds),...allowedNodes().filter(x=>!contains(anchor,x)).map(n=>n.getBoundingClientRect())
       .filter(r=>r.width*r.height<bounds.width*bounds.height*.55)].filter(Boolean);
+    // Keep the card the player is inspecting readable. Its purchase/apply
+    // button is the pointer target, but its art, title and terms matter too.
+    const detail=anchor?.closest('.pg-study-panel,.ap-detail') ||
+      (spec.id==='choose-theme' && document.querySelector('.ap-detail:not([hidden])'));
+    if (detail) {
+      const r=detail.getBoundingClientRect(), x=(r.left+r.right-card.width)/2;
+      obstacles.push(r);
+      choices.push(['below-detail',x,r.bottom+gap],['above-detail',x,r.top-gap-card.height]);
+    }
+    if (spec.id==='choose-theme' || spec.id==='apply-theme') {
+      for (const node of document.querySelectorAll('.ap-chapters,.ap-tabs,.ap-filter,#tabs')) {
+        obstacles.push(node.getBoundingClientRect());
+      }
+    }
     if (spec.gainLabel) {
       // Keep the confirmation clear of the place the player was just tapping.
       const integral=document.getElementById('integral-button');
       if (integral) obstacles.push(integral.getBoundingClientRect());
     }
-    if (spec.compact && !spec.paused && document.querySelector('.qc-screen')) {
-      for (const node of document.querySelectorAll('.qc-options,.qc-foot,.qc-prompt,.qc-clock')) {
+    if (document.querySelector('.qc-screen')) {
+      for (const node of document.querySelectorAll('.qc-options,.qc-foot,.qc-prompt,.qc-clock,.qc-review')) {
         if (node.getClientRects().length) obstacles.push(node.getBoundingClientRect());
       }
     }
@@ -360,26 +397,31 @@ window.TrainingView = (() => {
       coordinate(panel,'left',best[0]-viewport.left);
       coordinate(panel,'top',best[1]-viewport.top);
     }
-    const aim=spec.point && resolve(spec.pointAt);
-    const tip=aim ? clippedRect(aim,bounds)?.visible : target;
     placePointer(tip,panel.getBoundingClientRect(),bounds,viewport,font);
   }
   function show(options) {
     mount();
     const old=spec;
     const id=options.id??options.key;
-    spec={...options,id,paused:options.paused??!options.live};
+    // Only the first click and the two introductory resource purchases use a
+    // cutout. All subsequent pointers leave the real interface in view.
+    const spotlight=!options.point && ['first-tap','first-funds','buy-bit','buy-schoolchild'].includes(id);
+    spec={...options,id,spotlight,paused:options.paused??!options.live};
     const changed=!old || old.id!==id;
     if (changed) { scrolledAnchor=null; capturedPointers.clear(); }
     if (changed) root.dataset.step=id || '';
-    const pointed=String(!!spec.point), framed=String(!!(spec.point && visualTarget()?.matches('.meter')));
+    const pointed=String(!spotlight), framed=String(!spotlight && !!visualTarget()?.matches('.meter'));
     if(root.dataset.point!==pointed) root.dataset.point=pointed;
     if(root.dataset.framePoint!==framed) root.dataset.framePoint=framed;
     if (!old || old.paused!==spec.paused) {
       root.dataset.paused=String(spec.paused);
       document.body.toggleAttribute('data-training-instruction',spec.paused);
     }
-    if (!old || !!old.compact!==!!spec.compact) root.dataset.compact=String(!!spec.compact);
+    const compact=String(!!spec.compact || !spotlight);
+    if(root.dataset.compact!==compact) root.dataset.compact=compact;
+    // The question already supplies its own timer, instructions and feedback.
+    // Keep the mandatory input guard active while it owns the full screen.
+    panel.hidden=/^quiz-(play-|review-|retry$)/.test(id);
     const step=spec.step??spec.progress?.current, count=spec.count??spec.progress?.total;
     text(progress,step && count ? step+' / '+count : '');
     progress.hidden=!progress.textContent;

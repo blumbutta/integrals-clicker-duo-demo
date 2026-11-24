@@ -2,6 +2,8 @@ Integrals Clicker · Duo Max
 
 This port uses the original Integrals Clicker science-resource-00…16 portraits, science-world-stage-00…08 city paintings, and the app’s vector-rendered watch launcher. Sound for the Duo Max port: the original integrals-soundtrack and four world cues are bundled unmodified. Interaction effects are rendered from the original GameAudio.swift scores and synthesis envelopes. Laboratory Serif is a WOFF adaptation of PT Serif by ParaType; its four faces and full license are in art/fonts/. Original project credits follow for attribution and provenance. The blue background (bgBlue.jpg) and wooden trim (panelHorizontal.png) come from the original interface assets. The portrait port packages WebP adaptations of the city inhabitants and the collider, fusion and gravity animation sheets. The district highlights follow the silhouettes from the original ScienceWorldAtlas. The historical credits below also identify artwork from other versions of the game.
 
+The eight falling formulas are vector outlines drawn from the bundled Laboratory Serif Italic typeface.
+
 The nine 1122 × 1402 base maps come from the approved science-world-stage PNGs. The zoom layers for the eight districts are rendered from the higher-resolution original paintings embedded in the approved November 2026 science-world-progression/revisions scenes. Each layer uses the footprint of its corresponding construction stage in the iPhone atlas.
 
 The 17 resident panoramas are cropped details of the original Integrals Clicker science-city district paintings, bundled from its iPhone artwork.

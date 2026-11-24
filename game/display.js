@@ -1,4 +1,16 @@
 (() => {
+  // The original Android 11 WebView predates Element.replaceChildren.
+  if (!Element.prototype.replaceChildren) {
+    Object.defineProperty(Element.prototype, 'replaceChildren', {
+      configurable: true, writable: true,
+      value: function (...children) {
+        const next = this.ownerDocument.createDocumentFragment();
+        next.append(...children);
+        this.textContent = '';
+        this.appendChild(next);
+      }
+    });
+  }
   const station = document.getElementById('station');
   const tablet = matchMedia('(orientation: portrait) and (min-width: 540px) and (min-aspect-ratio: 1/2)');
   const landscape = matchMedia('(orientation: landscape)');
@@ -13,3 +25,12 @@
   tablet.addEventListener('change', layout);
   landscape.addEventListener('change', layout);
 })();
+// The map handles its own pinch. Keep browser gestures from scaling the entire game.
+if (!window.DuoLauncher) {
+  for (const event of ['gesturestart', 'gesturechange']) {
+    document.addEventListener(event, e => e.preventDefault(), {passive:false});
+  }
+  window.addEventListener('wheel', e => {
+    if (e.ctrlKey) e.preventDefault();
+  }, {passive:false});
+}

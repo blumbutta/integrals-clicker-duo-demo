@@ -2,12 +2,12 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <meta name="theme-color" content="#0b1b25">
   <title>Integrals Clicker · Дуо Макс</title>
   <style>
     *{box-sizing:border-box}
-    html,body{height:100%;margin:0}
+    html,body{height:100%;margin:0;touch-action:pan-x pan-y}
     body{height:100dvh;display:flex;flex-direction:column;background:#091824;color:#c3d4d7;font:15px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
     header{padding:5px max(10px,env(safe-area-inset-right)) 5px max(10px,env(safe-area-inset-left));display:flex;align-items:center;gap:8px;background:#0e202c;border-bottom:1px solid #32464f}
     header span{margin-inline-end:auto;font:italic bold 16px Georgia,serif;color:#edcd90}
@@ -28,9 +28,9 @@
       <option value="landscape">Горизонтально</option>
     </select>
     <a href="training/">Обучение</a>
-    <a href="prestige/?v=7c2a2d70a827">Демо престижа</a>
+    <a href="prestige/?v=e56f70e1ea62">Демо престижа</a>
   </header>
-  <main><iframe title="Integrals Clicker" src="game/index.html?v=9a4ecd8dffa8" allow="autoplay; fullscreen" allowfullscreen></iframe></main>
+  <main><iframe title="Integrals Clicker" src="game/index.html?v=d24e593a4655" allow="autoplay; fullscreen" allowfullscreen></iframe></main>
   <script>
     const sizes = {portrait: [1200, 1920], landscape: [1920, 1200]};
     const select = document.getElementById('size');

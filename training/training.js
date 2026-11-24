@@ -1,20 +1,22 @@
-/* Guided first session. Loaded only by the browser training build. */
+/* Guided first session. Existing and completed games keep their ordinary controls. */
 (() => {
   "use strict";
   const training = window.DuoTraining;
-  if (!training) return;
+  if (!training || training.currentStep) return;
   const storageKey = "integrals-clicker-duo-tutorial-v1";
   const completedKey = "trainingGuideComplete";
   const firstStep = "firstTap";
   const steps = [
     firstStep, "score", "firstFunds", "bit", "passiveIntro", "passiveWatch",
     "passiveResult", "earn", "upgrade", "testUpgrade", "upgradeResult", "school", "map", "schoolTask",
-    "prepareQuiz", "timer", "quiz", "reward", "cooldown", "team", "honors",
+    "prepareQuiz", "timer", "quiz", "reward", "cooldown", "honors",
     "honorsSeen", "gallery", "applyTheme", "home", "complete", "done"
   ];
   function loadLesson() {
     try {
       const saved = JSON.parse(localStorage.getItem(storageKey));
+      // Earlier versions sent players back to research after their first test.
+      if (saved?.phase === "team") return {...saved, phase: "honors"};
       if (saved && steps.includes(saved.phase)) return saved;
     } catch (_) {}
     return null;
@@ -78,7 +80,7 @@
   function show(id, target, title, text, options = {}) {
     const frozen = options.paused !== false;
     stopTime(frozen);
-    window.TrainingView.show({id, target, title, text, paused: frozen, ...options});
+    window.TrainingView.show({id, target, title, text, paused: frozen, point: !!lesson.questDone, ...options});
   }
   function explain(id, target, title, text, actionLabel, onAction, options = {}) {
     show(id, target, title, text, {lockTarget: true, actionLabel, onAction, ...options});
@@ -105,7 +107,7 @@
   }
   function recordUpgradeTap(gain) {
     const balance = Economy.hud().balance;
-    go("upgradeResult", {tapGain: gain, tapBalance: balance, upgradeTaught: true});
+    go("upgradeResult", {tapGain: gain, tapStart: balance - gain, tapBalance: balance, upgradeTaught: true});
     render();
   }
 
@@ -148,7 +150,7 @@
         const upgrade = earnedUpgrade();
         if (upgrade) return go("upgrade", {upgradeId: upgrade.id});
         if (!Economy.owned("abacus") && Economy.hud().balance >= 125) return go("school");
-        if (lesson.questDone && lesson.upgradeTaught) return go("team");
+        if (lesson.questDone && lesson.upgradeTaught) return go("honors");
         if (screenHome("Продолжим копить", "Вернись к интегралу.")) return;
         const pencilNext = !lesson.upgradeTaught && Economy.hud().clicks >= 25;
         const title = lesson.questDone || pencilNext ? "Следующая цель — улучшение" : "Копим на следующую покупку";
@@ -165,7 +167,7 @@
         if (navigate("research", "Улучшение доступно", "Открой «Улучшения». Покупка сделает каждое нажатие сильнее.")) return;
         const buy = control("study", upgrade.id);
         if (el(buy)) {
-          show("buy-upgrade", buy, upgrade.name, "Нажми на кнопку покупки. После этого проверим новый клик.");
+          show("buy-upgrade", buy, upgrade.name, "Купи карандаш, чтобы усилить клик. Позже здесь откроется «Командная работа». Чем больше помощников одного вида в команде, тем выше доход всей лаборатории.", {point: true});
         } else {
           show("inspect-upgrade", control("research", upgrade.id), upgrade.name, "Открой карточку доступного улучшения.");
         }
@@ -175,17 +177,13 @@
         if (screenHome("Проверим улучшение", "Вернись на главную и посмотри, сколько теперь приносит одно нажатие.")) return;
         if (Economy.hud().clicks > lesson.testClicks) return recordUpgradeTap(Economy.hud().clickPower);
         show("upgraded-tap", tapButton, "Попробуй усиленный клик", "Нажми на ∫ один раз и посмотри, как изменится счёт.", {context: meter});
-        if (lesson.tapStart !== Economy.hud().balance) {
-          lesson.tapStart = Economy.hud().balance;
-          save();
-        }
         return;
       case "upgradeResult": {
         const gain = lesson.tapGain, after = lesson.tapBalance;
         show("upgraded-result", meter, "Усиленный клик в действии",
           "На счёте было " + number(lesson.tapStart ?? after - gain) + " ∫, а теперь " + number(after) + " ∫.",
           {point: true, pointAt: "#balance", gainLabel: "+" + number(gain) + " ∫", lockTarget: true, actionLabel: "Продолжить",
-           onAction: () => go(lesson.questDone ? "team" : "earn")});
+           onAction: () => go(lesson.questDone ? "honors" : "earn")});
         return;
       }
       case "school":
@@ -211,7 +209,7 @@
         if (!el(".qc-prep")) {
           show("select-quiz", '.qc-listing[data-quest="school"]', "Домашнее задание", "Открой своё первое испытание.");
         } else {
-          show("start-quiz", ".qc-foot button", "Три вопроса, одна награда", "Начни учебную попытку. Можно ошибаться и пробовать снова — интегралы останутся у тебя.");
+          show("start-quiz", ".qc-foot button", "Три вопроса, одна награда", "Ответь верно на три вопроса, чтобы получить приз. В этой учебной попытке после ошибки можно попробовать ещё раз без потери интегралов.", {point: true});
         }
         return;
       case "timer":
@@ -226,7 +224,7 @@
           return go("prepareQuiz");
         }
         if (el(".qc-training-retry")) {
-          show("quiz-retry", ".qc-training-retry", "Попробуй ещё раз", "Прочитай разбор в задании и вернись к вопросу. За эту попытку штрафа нет.");
+          show("quiz-retry", ".qc-training-retry", "Можно попробовать ещё раз", "Твой счёт сохранён. В обычном задании после ошибки со счёта спишут половину приза или весь остаток, если его меньше. Прочитай разбор и попробуй снова.", {point: true});
         } else if (run.review) {
           show("quiz-review-" + run.index, ".qc-foot button", "Верный ответ", "Когда будешь готов, переходи к следующему вопросу.", {compact: true});
         } else {
@@ -238,7 +236,7 @@
       }
       case "reward":
         if (App.sheet !== "challenges") return go("cooldown", {questDone: true});
-        show("quiz-reward", ".qc-return", "Награда уже на счёте", "Все три ответа верны! Ты получил " + number(lesson.prize) + " ∫. Вернись на карту.");
+        show("quiz-reward", ".qc-return", "Награда уже на счёте", "За три верных ответа ты получил " + number(lesson.prize) + " ∫. Вернись на карту.", {point: true});
         return;
       case "cooldown":
         if (navigate("world", "Школа на перерыве", "Открой карту мира.")) return;
@@ -246,14 +244,10 @@
           highlightSchool("Когда вернётся задание?", "Нажми на школу и посмотри, когда откроется следующая попытка.");
           return;
         }
-        explain("school-cooldown", districtTask + " .pg-challenge-status", "Следующая попытка — через 30 минут", "У других заданий свои награды и время ожидания. В обычном испытании за ошибку или истёкшее время списывается половина приза.", "Понятно", () => {
+        explain("school-cooldown", districtTask + " .pg-challenge-status", "Школа откроется через 30 минут", "В обычном задании ошибка, выход или конец времени завершают попытку. Ты теряешь со счёта половину приза, максимум — свой остаток. У каждого задания свой таймер.", "Понятно", () => {
           Quests.setTrainingQuiz(false);
-          go(lesson.upgradeTaught ? "team" : "earn");
-        });
-        return;
-      case "team":
-        if (navigate("research", "А как усилить всю команду?", "Открой «Улучшения» ещё раз.")) return;
-        explain("team", ".pg-research .pg-head h2", "Командные улучшения", "Когда помощников станет больше, откроются командные улучшения. Они увеличивают доход всей лаборатории.", "Дальше", () => go("honors"), {point: true});
+          go(lesson.upgradeTaught ? "honors" : "earn");
+        }, {point: true});
         return;
       case "honors":
         if (App.sheet === "honors") {
@@ -261,31 +255,38 @@
           window.Honors.releaseTrainingRewards();
           return go("honorsSeen", {honorReward: Math.max(0, Economy.hud().balance - before)});
         }
-        show("honors", "#honors-btn", "Твои достижения", "Нажми на медаль в верхней панели.");
+        show("honors", "#honors-btn", "Твои достижения", "Медаль вверху открывает список достижений. Нажми на неё.", {point: true});
         return;
       case "honorsSeen":
         if (App.sheet !== "honors") return go("gallery");
         show("honors-close", "#close-sheet", "Награды приходят сами",
           (lesson.honorReward > 0 ? "За первые достижения тебе начислено " + number(lesson.honorReward) + " ∫. " : "Здесь видны твои достижения. ") +
-          "Достижения также открывают оформления. Закрой список, чтобы выбрать фон.");
+          "Закрой список, чтобы выбрать фон.", {point: true});
         return;
       case "gallery": {
         if (navigate("appearance", "Выбери свой фон", "Открой «Оформления» в нижнем меню.")) return;
-        const picked = el('.ap-card[aria-pressed="true"]:is([data-state="open"],[data-state="spark"])');
-        if (picked && el(".ap-use:not(:disabled)")) return go("applyTheme", {themeId: picked.dataset.id});
         const choices = [...document.querySelectorAll(availableThemes)];
+        const picked = choices.find(card => card.getAttribute("aria-pressed") === "true");
+        if (picked && el(".ap-use:not(:disabled)")) return go("applyTheme", {themeId: picked.dataset.id, originalTheme: Appearance.selection().themes});
         if (!choices.length) {
           explain("no-theme", ".ap-tabs", "Новые оформления", "Другие фоны откроются вместе с достижениями.", "На главную", () => go("home"));
         } else {
-          show("choose-theme", choices[0], "Попробуем новый фон", "Нажми на выделенную плитку, чтобы посмотреть оформление крупнее.");
+          show("choose-theme", choices[0], "Выбери фон", "Коснись любого понравившегося открытого фона.", {point: true, allowed: choices});
         }
         return;
       }
-      case "applyTheme":
-        if (Appearance.selection().themes === lesson.themeId) return go("home");
+      case "applyTheme": {
+        const current = Appearance.selection().themes;
+        if (current === lesson.themeId || (lesson.originalTheme && current !== lesson.originalTheme)) return go("home");
         if (!el(".ap-use:not(:disabled)")) return go("gallery");
-        show("apply-theme", ".ap-use", "Примерь оформление", "Нажми «Применить». Выбранный фон появится и на других вкладках.");
+        const selected = el('.ap-card[aria-pressed="true"]')?.dataset.id;
+        if (selected && selected !== lesson.themeId) {
+          lesson.themeId = selected;
+          save();
+        }
+        show("apply-theme", ".ap-use", "Примерь оформление", "Нажми «Применить» или посмотри другой открытый фон.", {point: true, allowed: [...document.querySelectorAll(availableThemes)]});
         return;
+      }
       case "home":
         if (screenHome("Посмотрим, как получилось", "Вернись на главный экран.")) return;
         go("complete");

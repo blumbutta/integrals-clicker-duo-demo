@@ -2,12 +2,12 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0b1c26">
   <title>Первый город · Integrals Clicker</title>
   <style>
     * { box-sizing: border-box }
-    html, body { height: 100%; margin: 0 }
+    html, body { height: 100%; margin: 0; touch-action: pan-x pan-y }
     body { height: 100dvh; display: flex; flex-direction: column; background: #071720; color: #f8e8ce; font-family: system-ui,sans-serif }
     header { min-height: 45px; padding: 4px clamp(8px,2vw,25px); display: flex; align-items: center; flex-wrap: wrap; gap: 7px; background: #0b202b; border-bottom: 1px solid #415051 }
     header strong { margin-right: auto; font: italic bold clamp(16px,2.5vw,21px)/1.15 Georgia,serif; color: #f5d799 }
@@ -55,7 +55,7 @@
     }
     function play() {
       remember();
-      frame.src = 'entry.html?v=39ee2598d4bc&run='+run;
+      frame.src = 'entry.html?v=75e2d072e64c&run='+run;
     }
     const requested = location.hash.slice(1) || history.state?.orientation;
     size.value = dimensions[requested] ? requested : 'auto';
