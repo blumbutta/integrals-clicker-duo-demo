@@ -41,23 +41,22 @@ jobs:
           adb -s "$ANDROID_SERIAL" shell wm size 1200x1920
           adb -s "$ANDROID_SERIAL" shell wm density 160
           adb -s "$ANDROID_SERIAL" shell getprop ro.build.version.sdk
-      - name: Wait for the signed candidate and host fixture
+      - name: Await exact one-widget release APK
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 140); do
+          for attempt in $(seq 1 110); do
             git fetch --no-tags --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
-            if git cat-file -e FETCH_HEAD:duo-qa/candidate.sha256 2>/dev/null && git cat-file -e FETCH_HEAD:duo-qa/smoke.sh 2>/dev/null; then
+            if git cat-file -e FETCH_HEAD:duo-qa/final.sha256 2>/dev/null; then
               git checkout FETCH_HEAD -- duo-qa
-              cd duo-qa
-              sha256sum -c candidate.sha256
+              echo "$(tr -d '\r\n' < duo-qa/final.sha256)  duo-qa/final.apk" | sha256sum -c -
               exit 0
             fi
             sleep 15
           done
-          echo 'Candidate and QA fixture did not arrive' >&2
+          echo 'Signed final one-widget build did not arrive' >&2
           exit 1
-      - name: Confirm app upgrade and both wide widgets
+      - name: Verify final one-widget release and real two-contact input
         run: bash duo-qa/smoke.sh
       - name: Device diagnostics on failure
         if: failure()

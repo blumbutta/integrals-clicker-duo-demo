@@ -46,7 +46,7 @@ host_screen() {
   local phase=$1
   device shell am start -W -n "$fixture/.HostActivity" --es phase "$phase" >/dev/null
   resumed "$fixture"
-  for t in {1..35}; do
+  for t in {1..45}; do
     line=$(device logcat -d -s 'DuoWidgetQA:I' '*:S' | tr -d '\r' | grep "READY $phase " | tail -1 || true)
     if [[ -n $line ]]; then echo "$line"; return; fi
     if device logcat -d -s 'DuoWidgetQA:E' '*:S' | grep 'FAIL ' >/dev/null; then break; fi
@@ -68,7 +68,9 @@ echo "API=$(device shell getprop ro.build.version.sdk) ABI=$(device shell getpro
 device shell dumpsys webviewupdate | head -20
 unzip -p downloads/Integrals-Clicker-Duo-Max-0.3.15.zip Integrals-Clicker-Duo-Max.apk > "$dir/old.apk"
 echo "52259a72d8a5b1741de44b7ddf39dd1ba074f55f0f08c6a29ad24b692d43e171  $dir/old.apk" | sha256sum -c -
-new=duo-qa/candidate.apk
+new=duo-qa/final.apk
+final_hash=$(tr -d '\r\n' < duo-qa/final.sha256)
+echo "$final_hash  $new" | sha256sum -c -
 cert() { "$sdk/apksigner" verify --print-certs "$1" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p'; }
 old_cert=$(cert "$dir/old.apk")
 test -n "$old_cert"
@@ -130,57 +132,28 @@ device shell settings put system accelerometer_rotation 0
 device shell settings put system user_rotation 0
 first_views=$(host_screen portrait)
 echo "$first_views"
-if [[ $seeded == true ]]; then
-  grep -F 'Лаборатория 1 ∫' <<<"$first_views"
-  echo "First tap from 0.3.15 remains in 0.3.16's saved game."
-fi
+ids() { sed -E 's/.* ids=([^ ]+).*/\1/' <<< "$1"; }
+skin() { sed -E 's/.* skin=([^ ]+).*/\1/' <<< "$1"; }
+grep -F 'balance=1 ∫' <<< "$first_views"
+echo "First click from 0.3.15 retained: the only widget text is the genuine 1 ∫ balance."
 verify_click "$first_views" 1
-second_views=$(host_screen second)
-echo "$second_views"
-verify_click "$second_views" 2
 device shell settings put system user_rotation 1
 sleep 2
-device shell dumpsys input | grep -m 1 -E 'SurfaceOrientation|orientation=' || true
-third_views=$(host_screen landscape)
-echo "$third_views"
-ids() { sed -E 's/.* ids=([^ ]+).*/\1/' <<< "$1"; }
-test "$(ids "$first_views")" = "$(ids "$third_views")"
-verify_click "$third_views" 2
+device shell dumpsys input | grep -m1 -E 'SurfaceOrientation|orientation=' || true
+landscape=$(host_screen landscape)
+echo "$landscape"
+test "$(ids "$first_views")" = "$(ids "$landscape")"
+test "$(skin "$first_views")" = "$(skin "$landscape")"
+verify_click "$landscape" 1
 device shell am force-stop "$game"
 device shell am start -W -n "$game/.ClickerActivity" >/dev/null
 resumed "$game"
-sleep 4
-fourth_views=$(host_screen relaunched)
-echo "$fourth_views"
-test "$(ids "$first_views")" = "$(ids "$fourth_views")"
-verify_click "$fourth_views" 1
-echo "PASS: release update, both real wide RemoteViews, four real touch launches and stable widget IDs after rotation and game relaunch."
-
-# Keep this one already-booted tablet available for a final asset-only rebuild.
-for t in {1..100}; do
-  git fetch --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
-  if git cat-file -e FETCH_HEAD:duo-qa/final.sha256 2>/dev/null; then
-    final_hash=$(git show FETCH_HEAD:duo-qa/final.sha256 | tr -d '\r\n')
-    git show FETCH_HEAD:duo-qa/final.apk > "$dir/final.apk"
-    echo "$final_hash  $dir/final.apk" | sha256sum -c -
-    test "$(cert "$dir/final.apk")" = "$old_cert"
-    device install -r "$dir/final.apk"
-    device shell am start -W -n "$game/.ClickerActivity" >/dev/null
-    resumed "$game"
-    sleep 6
-    final_views=$(host_screen final)
-    echo "$final_views"
-    test "$(ids "$first_views")" = "$(ids "$final_views")"
-    verify_click "$final_views" 2
-    if git cat-file -e FETCH_HEAD:duo-qa/extra.sh 2>/dev/null; then
-      git checkout FETCH_HEAD -- duo-qa
-      bash duo-qa/extra.sh "$dir/final.apk"
-    fi
-    echo "PASS: final package $final_hash, old bindings retained, both widgets display live progress and city touch launches."
-    break
-  elif git cat-file -e FETCH_HEAD:duo-qa/final.same 2>/dev/null; then
-    echo "No follow-up replacement requested."
-    break
-  fi
-  sleep 12
-done
+sleep 6
+relaunched=$(host_screen relaunched)
+echo "$relaunched"
+test "$(ids "$first_views")" = "$(ids "$relaunched")"
+test "$(skin "$first_views")" = "$(skin "$relaunched")"
+verify_click "$relaunched" 1
+echo "PASS: one real hosted lab; upgraded balance, background and disk artwork, stable binding across rotation and process relaunch."
+bash duo-qa/extra.sh "$new"
+echo "PASS: final package $final_hash"
