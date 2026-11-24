@@ -7876,9 +7876,17 @@ window.Leaderboard=(()=>{
   }
   let session=restore(),host=null,generation=0,nativePaused=false,pageHidden=false,flow=null,entries=null,me=null;
   let pollTimer=0,refreshTimer=0,busy=false,options=false,removeConfirm=false,message='',consented=false;
+  function displayName(s){
+    return typeof s?.name==='string'&&s.name.length<=100?s.name:'';
+  }
+  function updateSession(s){
+    const changed=s?.token!==session?.token || displayName(s)!==displayName(session);
+    session=s;
+    if(changed)window.dispatchEvent?.(new Event('duorankaccount'));
+  }
   function persist(s){
     if(s && window.ProgressReset?.stale())return;
-    session=s;
+    updateSession(s);
     try{if(s)localStorage.setItem(key,JSON.stringify(s));else localStorage.removeItem(key);}catch{}
   }
   function foreground(){
@@ -7894,7 +7902,7 @@ window.Leaderboard=(()=>{
     let data;
     if(typeof text==='string' && text.length<=65536){try{data=JSON.parse(text);}catch{}}
     if(!Number.isInteger(status)||status<200||status>=300)throw new RequestError(status,data||{});
-    if(!data||typeof data!=='object')throw new RequestError(0);
+    if(!data||typeof data!=='object')throw new RequestError(status);
     return data;
   }
   let sequence=Math.floor(Math.random()*100000000);
@@ -7914,17 +7922,21 @@ window.Leaderboard=(()=>{
   async function request(path,base,token='',body=null){
     if(base!==apiOrigin || !online() || !(path===paths.score ? canSync() : visible()))throw new RequestError(0);
     const payload=body===null?'':JSON.stringify(body);
-    if(window.DuoRank)return nativeCall(id=>window.DuoRank.request(id,path,payload,token,base));
+    if(window.DuoRank)return nativeCall(id=>window.DuoRank.request(id,path,payload,token,base),path===paths.poll?24000:18000);
     const headers={Accept:'application/json'};
     if(token)headers.Authorization='Bearer '+token;
     if(payload)headers['Content-Type']='application/json';
-    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),5500);controllers.add(ctrl);
+    // A successful poll can include both the token exchange and a profile lookup.
+    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),path===paths.poll?16000:5500);controllers.add(ctrl);
     try{
       const response=await fetch(apiOrigin+path,{
         method:methods[path],headers,body:payload||undefined,signal:ctrl.signal,
         credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store',redirect:'error'
       });
       return unpack(response.status,await response.text());
+    }catch(e){
+      if(e instanceof RequestError)throw e;
+      throw new RequestError(0);
     }finally{clearTimeout(timeout);controllers.delete(ctrl);}
   }
   const el=(name,cls,text)=>{const n=document.createElement(name);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
@@ -8014,7 +8026,10 @@ window.Leaderboard=(()=>{
     host.replaceChildren(root);
   }
   function consentRequired(){persist(null);entries=null;me=null;message='Для участия подтвердите вход в Яндекс ID.';}
+  const configurationError=e=>['oauth_client_configuration','oauth_configuration'].includes(e.data?.error);
+  const configurationMessage='Вход через Яндекс ID недоступен. Владельцу игры нужно проверить настройки приложения Яндекс ID на сервере.';
   function fail(e){
+    if(configurationError(e)){message=configurationMessage;return;}
     if(e.status===401){consentRequired();return;}
     message=e.status===503?'Сервис рейтинга сейчас недоступен. Попробуйте позже.':
       e.status===429?'Слишком много запросов. Попробуйте немного позже.':'Не удалось подключиться к рейтингу. Проверьте интернет и попробуйте снова.';
@@ -8038,10 +8053,10 @@ window.Leaderboard=(()=>{
     // this device is not sufficient reason to overwrite that other game.
     const stamp=fingerprint(progress);
     if(fingerprint(row)===stamp){
-      persist({...session,revision:row.revision,stamp,blocked:null});
+      persist({...session,name:row.name,revision:row.revision,stamp,blocked:null});
     }else{
       const blocked={cosmicAscensions:row.cosmicAscensions,prestige:row.prestige};
-      persist({...session,revision:row.revision,stamp:null,blocked});
+      persist({...session,name:row.name,revision:row.revision,stamp:null,blocked});
     }
   }
   async function refresh(){
@@ -8063,7 +8078,7 @@ window.Leaderboard=(()=>{
           const result=await request(paths.score,saved.origin,saved.token,{...progress,revision:saved.revision||0});
           if(!valid())return;
           if(!ownOK(result.me))throw new RequestError(0);
-          persist({...session,revision:result.me.revision,stamp,blocked:null});
+          persist({...session,name:result.me.name,revision:result.me.revision,stamp,blocked:null});
         }catch(e){
           if(!valid())return;
           if(e.status!==409||!ownOK(e.data?.me))throw e;
@@ -8076,6 +8091,7 @@ window.Leaderboard=(()=>{
         if(!valid())return;
         entries=data.entries;me=data.me;
         if(me && me.revision!==session.revision)observeRemote(me,progress);
+        else if(me && me.name!==displayName(session))persist({...session,name:me.name});
       }
     }catch(e){
       if(valid())fail(e);
@@ -8098,13 +8114,16 @@ window.Leaderboard=(()=>{
       const data=await request(paths.device,apiOrigin,'',{rules:2});
       if(!current(id)||flow!==active)return;
       if(!tokenOK(data.ticket)||typeof data.userCode!=='string'||!/^[-A-Za-z0-9]{3,32}$/.test(data.userCode)||!verificationURLs.has(data.verificationUrl))throw new RequestError(0);
-      Object.assign(active,{ticket:data.ticket,code:data.userCode,url:data.verificationUrl,until:Date.now()+1000*seconds(data.expiresIn,600),delay:1000*seconds(data.interval,5)});
+      const interval=1000*seconds(data.interval,5);
+      Object.assign(active,{ticket:data.ticket,code:data.userCode,url:data.verificationUrl,until:Date.now()+1000*seconds(data.expiresIn,600),interval,delay:interval});
       paint();schedulePoll();
     }catch(e){if(current(id)&&flow===active){stopFlow();fail(e);paint();}}
   }
   function schedulePoll(){
     clearTimeout(pollTimer);
-    if(flow?.ticket&&visible())pollTimer=setTimeout(poll,Math.max(0,Math.min(flow.delay,flow.until-Date.now())));
+    if(!flow?.ticket||flow.polling||!visible())return;
+    const remaining=flow.until-Date.now();
+    pollTimer=setTimeout(poll,Math.max(0,online()?Math.min(flow.delay,remaining):remaining));
   }
   async function openVerification(){
     const active=flow;
@@ -8120,14 +8139,31 @@ window.Leaderboard=(()=>{
       if(Date.now()>=active.until)throw new RequestError(410);
       const data=await request(paths.poll,apiOrigin,'',{ticket:active.ticket});
       if(!current(id)||flow!==active)return;
-      if(data.status==='pending'){active.delay=1000*seconds(data.interval,active.delay/1000);schedulePoll();return;}
-      if(data.status!=='authorized'||!tokenOK(data.session))throw new RequestError(0);
+      if(data.status==='pending'){
+        active.interval=1000*seconds(data.interval,active.interval/1000);active.delay=active.interval;
+        if(message){message='';paint();}
+        return;
+      }
+      if(data.status!=='authorized'||!tokenOK(data.session))throw new RequestError(200);
       persist({rules:2,autoPublish:true,origin:apiOrigin,token:data.session});stopFlow();message='';paint();refresh();
     }catch(e){
       if(!current(id)||flow!==active)return;
-      if(e.status===429){active.delay=Math.max(active.delay,10000);schedulePoll();}
-      else{stopFlow();message=e.status===403?'Вход отменён в Яндекс ID.':e.status===410?'Срок действия кода истёк. Подключитесь ещё раз.':'Не удалось завершить вход. Подключитесь ещё раз.';paint();}
-    }finally{active.polling=false;}
+      if(configurationError(e)){stopFlow();message=configurationMessage;}
+      else if(e.data?.error==='identity_unavailable'){
+        stopFlow();message='Яндекс ID подтвердил вход, но игре не удалось получить профиль. Подключитесь ещё раз, чтобы получить новый код.';
+      }else if(e.data?.error==='oauth_response'){
+        stopFlow();message='Яндекс ID вернул неожиданный ответ. Запросите новый код.';
+      }else if(e.status===0||e.status===408||e.status===429||(e.status>=500&&e.status<600)){
+        active.delay=Math.max(active.interval,Math.min(30000,active.delay*2));
+        message='Пока не удалось проверить подтверждение. Код остаётся действительным. Игра попробует снова.';
+      }else{
+        stopFlow();
+        message=e.status===403?'Вход отменён в Яндекс ID.':e.status===410?'Срок действия кода истёк. Подключитесь ещё раз.':'Сервис рейтинга вернул неожиданный ответ. Подключитесь ещё раз.';
+      }
+      paint();
+    }finally{
+      if(id===generation&&flow===active){active.polling=false;schedulePoll();}
+    }
   }
   async function accountAction(remove){
     if(!visible()||!session)return;
@@ -8177,7 +8213,7 @@ window.Leaderboard=(()=>{
   window.addEventListener('pagehide',()=>{pageHidden=true;suspend();});
   window.addEventListener('pageshow',()=>{pageHidden=false;resume();});
   window.addEventListener('offline',()=>{
-    suspend();message='Рейтинг обновится, когда появится интернет.';if(visible())paint();
+    suspend();message=flow?'Проверим подтверждение, когда появится интернет.':'Рейтинг обновится, когда появится интернет.';if(visible()){paint();schedulePoll();}
   });
   window.addEventListener('online',resume);
   window.addEventListener('duotrainingcomplete',resume);
@@ -8191,14 +8227,18 @@ window.Leaderboard=(()=>{
     // Keep this tab's last acknowledged revision; a sibling tab's newer
     // revision cannot be used as permission to overwrite it with stale data.
     if(next?.token===session?.token){
-      if(next && next.autoPublish!==session.autoPublish){session={...session,autoPublish:next.autoPublish};resume();}
+      if(next){
+        const publishChanged=next.autoPublish!==session.autoPublish;
+        updateSession({...session,name:displayName(next)||displayName(session),autoPublish:next.autoPublish});
+        if(publishChanged)resume();
+      }
       return;
     }
-    restart();setNativeVisible(false);stopFlow();session=next;entries=null;me=null;message='';
+    restart();setNativeVisible(false);stopFlow();updateSession(next);entries=null;me=null;message='';
     if(visible())paint();
     resume();
   });
-  return Object.freeze({open,close,resetLocalSession,isConnected:()=>!!session});
+  return Object.freeze({open,close,resetLocalSession,isConnected:()=>!!session,accountName:()=>displayName(session)});
 })();
 
 ;
@@ -8241,6 +8281,19 @@ window.Extras = (() => {
     });
   }
   window.addEventListener('duoavatar',updateProfileAvatars);
+  function updateProfileAccount(){
+    if(!panel || (screen!=='profile'&&screen!=='settings'))return;
+    const text=panel.querySelector('[data-account-status]');
+    if(!text)return;
+    const linked=window.Leaderboard.isConnected(),name=window.Leaderboard.accountName();
+    if(sub==='stats'){
+      text.hidden=!linked;
+      text.textContent=linked?(name?'Яндекс ID · '+name:'Яндекс ID подключён'):'';
+    }else{
+      text.textContent=linked?(name?'Подключён · '+name:'Аккаунт подключён'):'Аккаунт не подключён';
+    }
+  }
+  window.addEventListener('duorankaccount',updateProfileAccount);
   function profile(){
     statsFields=null;
     panel.innerHTML='<div class="ex-wrap ex-profile-page"><div class="ex-segments"><button data-sub="stats">Статистика</button><button data-sub="settings">Настройки</button></div><div class="ex-inner"></div></div>';
@@ -8254,8 +8307,9 @@ window.Extras = (() => {
       };
     });
     if(sub==='stats'){
-      inner.innerHTML='<div class="ex-profile-heading"><span data-current-avatar></span><h2>Статистика</h2></div><p>Ваши открытия в одном месте</p><div class="ex-totals"></div><div class="ex-grid"></div>';
+      inner.innerHTML='<div class="ex-profile-heading"><span data-current-avatar></span><h2>Статистика</h2></div><p data-account-status hidden></p><div class="ex-totals"></div><div class="ex-grid"></div>';
       updateProfileAvatars();
+      updateProfileAccount();
       labels.forEach((label,i)=>{
         const card=document.createElement('div');card.className='ex-stat';
         card.innerHTML='<span>'+label+'</span><b data-stat="'+i+'"></b>';
@@ -8267,6 +8321,12 @@ window.Extras = (() => {
       return;
     }
     inner.innerHTML='<h2>Настройки</h2><p>Ваш профиль и атмосфера игры</p><details class="ex-card"><summary class="ex-avatar-summary"><span data-current-avatar></span>Значок профиля</summary><div class="ex-avatars"></div></details><div class="ex-card"><strong>Сохранено на устройстве</strong><p>Прогресс хранится на этом устройстве.</p></div><div class="ex-card ex-switches"></div><div class="ex-card"><strong>С благодарностью авторам</strong><p>rmbk / uburuntu — оригинальные интегралы<br>Orteil — Cookie Clicker<br>PT Serif — ParaType<br>Цифры Gelasio — Eben Sorkin</p><details class="font-attribution"><summary>Лицензии шрифтов</summary><pre></pre></details></div>';
+    const account=document.createElement('div');
+    account.className='ex-card ex-account';
+    account.innerHTML='<strong>Яндекс ID</strong><p data-account-status role="status"></p><button type="button">Открыть рейтинг</button>';
+    account.querySelector('button').onclick=()=>App.openSheet('leaderboard');
+    inner.querySelector('.ex-card').before(account);
+    updateProfileAccount();
     const privacy=document.createElement('details');
     privacy.className='ex-card ex-data-note';
     privacy.innerHTML='<summary>Какие данные видны в рейтинге?</summary>' +
@@ -8682,8 +8742,8 @@ window.HonorNotices=(()=>{
     const button = settingsCard.querySelector('button');
     button.hidden = !bridge.canPin();
     const status = settingsCard.querySelector('[role="status"]');
-    if (bridge.isPlaced?.()) status.textContent = 'Виджет подключён к рабочему столу.';
-    else status.textContent = button.hidden ? manualAdd : '';
+    if (bridge.isPlaced?.()) status.textContent = 'Android подтвердил закрепление виджета.';
+    else status.textContent = button.hidden ? 'Рабочий стол не принимает запросы из игры. ' + manualAdd : '';
   }
   window.addEventListener('duoresume', updateSettings);
 
@@ -8708,11 +8768,12 @@ window.HonorNotices=(()=>{
       }).catch(error => console.warn('Предпросмотр виджета пока недоступен', error));
       updateSettings();
       const status = card.querySelector('[role="status"]');
-      card.querySelector('button').onclick = async () => {
+      card.querySelector('button').onclick = () => {
         flushCurrent();
-        await publishAppearance();
-        if (!card.isConnected) return;
-        status.textContent = bridge.pin('lab') ? 'Подтверди добавление виджета на рабочем столе.' : manualAdd;
+        const requested = bridge.pin('lab');
+        status.textContent = requested ? 'Запрос передан. Подтверди его в окне рабочего стола.' :
+          'Рабочий стол не принял запрос. ' + manualAdd;
+        publishAppearance();
       };
     }
   };
