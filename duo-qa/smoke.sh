@@ -137,6 +137,39 @@ skin() { sed -E 's/.* skin=([^ ]+).*/\1/' <<< "$1"; }
 grep -F 'balance=1 ∫' <<< "$first_views"
 echo "First click from 0.3.15 retained: the only widget text is the genuine 1 ∫ balance."
 verify_click "$first_views" 1
+capture_ui
+coach_xy=$(python3 - "$dir/view.xml" <<'PYCOACH'
+import re,sys
+from xml.etree import ElementTree as ET
+for node in ET.parse(sys.argv[1]).iter("node"):
+    if any(node.get(k) == "Начать копить" for k in ("text","content-desc")):
+        coords = list(map(int,re.findall(r"\d+",node.get("bounds",""))))
+        if len(coords) == 4:
+            print((coords[0]+coords[2])//2,(coords[1]+coords[3])//2)
+            break
+PYCOACH
+)
+if [[ -n $coach_xy ]]; then
+  read -r coach_x coach_y <<< "$coach_xy"
+  device shell input tap "$coach_x" "$coach_y"
+  sleep 1
+  capture_ui
+  next_xy=$(first_click)
+  if [[ -z $next_xy ]]; then next_xy="600 995"; fi
+  read -r next_x next_y <<< "$next_xy"
+  device shell input tap "$next_x" "$next_y"
+  device shell input tap "$next_x" "$next_y"
+  sleep 1
+  changed=$(host_screen after_taps)
+  echo "$changed"
+  grep -F 'balance=3 ∫' <<<"$changed"
+  test "$(ids "$first_views")" = "$(ids "$changed")"
+  test "$(skin "$first_views")" = "$(skin "$changed")"
+  echo "Two real additional taps updated the same widget from 1 to 3 integral units, with identical artwork."
+  verify_click "$changed" 1
+else
+  echo "No accessibility coordinates for additional clicks; retained balance confirmed."
+fi
 device shell settings put system user_rotation 1
 sleep 2
 device shell dumpsys input | grep -m1 -E 'SurfaceOrientation|orientation=' || true
