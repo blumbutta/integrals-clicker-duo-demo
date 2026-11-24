@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="review.duo.widgetcheck">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="30"/>
+    <queries><package android:name="ru.mathclicker.duo"/></queries>
+    <application android:label="Duo QA host" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false">
+        <activity android:name=".HostActivity" android:launchMode="singleTask" android:exported="true"/>
+    </application>
+</manifest>
