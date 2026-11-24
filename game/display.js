@@ -15,6 +15,18 @@
   const tablet = matchMedia('(orientation: portrait) and (min-width: 540px) and (min-aspect-ratio: 1/2)');
   const landscape = matchMedia('(orientation: landscape)');
 
+  // A long press is a game gesture. Android may also request Select All
+  // directly through its context menu or a hardware keyboard.
+  document.addEventListener('selectstart', event => event.preventDefault());
+  document.addEventListener('contextmenu', event => event.preventDefault());
+  document.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') event.preventDefault();
+  });
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) selection.removeAllRanges();
+  });
+
   function layout() {
     for (const element of [document.documentElement, station]) {
       element.toggleAttribute('data-tablet', tablet.matches);

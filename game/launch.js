@@ -51,7 +51,7 @@
       console.error(error);document.documentElement.classList.remove('duo-warm');
       card.removeAttribute('role');card.removeAttribute('aria-label');
       const retry=document.createElement('button');retry.textContent='Не удалось открыть игру. Повторить';
-      retry.onclick=()=>location.reload();card.replaceChildren(retry);retry.focus();return;
+      retry.onclick=()=>location.reload();card.replaceChildren(retry);retry.focus();bridge?.titleReady?.();return;
     }
     // WebView may have been backgrounded while its local scripts were loading.
     if(bridge?.isForeground?.()===false)window.dispatchEvent(new Event('duopause'));
@@ -73,7 +73,7 @@
     since=now;timer=setTimeout(track,remaining);
   }
   if(bridge?.isComplete?.()){enter(true);return;}
-  layout();listen(window,'resize',layout);
+  layout();requestAnimationFrame(()=>bridge?.titleReady?.());listen(window,'resize',layout);
   listen(window,'duopause',()=>{background=true;track();});
   listen(window,'duoresume',()=>{background=false;track();});
   listen(window,'pagehide',()=>{pageSuspended=true;track();});

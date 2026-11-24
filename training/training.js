@@ -154,7 +154,7 @@
         if (screenHome("Продолжим копить", "Вернись к интегралу.")) return;
         const pencilNext = !lesson.upgradeTaught && Economy.hud().clicks >= 25;
         const title = lesson.questDone || pencilNext ? "Следующая цель — улучшение" : "Копим на следующую покупку";
-        const text = lesson.questDone || pencilNext ? "Нажимай на ∫. Для «Острого карандаша» нужно 100 ∫ и 25 нажатий." :
+        const text = lesson.questDone || pencilNext ? "Накопи 100 ∫ на «Острый карандаш»." :
           lesson.upgradeTaught ? "Нажимай на ∫ или дождись автодохода. Для школьника нужно 125 ∫." :
           "Нажимай на ∫. Когда хватит на следующую покупку, ты увидишь, что можно купить.";
         show("earn-" + Number(lesson.upgradeTaught) + "-" + Number(pencilNext), tapButton, title, text, {paused: false, compact: true, context: meter});
@@ -193,7 +193,16 @@
         return;
       case "map":
         if (navigate("world", "В городе появилась школа", "Открой «Мир», чтобы найти своего первого жителя.")) return;
-        if (el(districtTask)) return go("schoolTask");
+        if (el(districtTask)) return go("schoolTask", {mapZoomSeen: true});
+        if (!lesson.mapZoomSeen) {
+          show("map-zoom", ".pg-map-overview", "Рассмотри ресурсы на карте",
+            "Разведи два пальца, чтобы приблизить карту. Сведи их, чтобы отдалить. Кнопка со стрелками вернёт общий вид.",
+            {point: true, allowed: [".wm-surface"], actionLabel: "Найти школу", onAction: () => {
+              Pages.showWorldOverview(false);
+              go("map", {mapZoomSeen: true});
+            }});
+          return;
+        }
         highlightSchool("Найди школу", "Стрелка указывает на школу. Нажми на неё, чтобы посмотреть задание.");
         return;
       case "schoolTask":
