@@ -92,7 +92,13 @@ case "${1:-}" in
    if [[ ! -e "$q/no-pin" ]];then confirm_pin;probe_phase before;probe_phase switch;probe_phase check;fi
    ;;
  verify)
+   result=0
+   bash "$0" verify-pin || result=1
+   bash "$0" swipe || result=1
+   exit "$result" ;;
+ verify-pin)
    if [[ ! -e "$q/no-pin" ]];then probe_phase check;echo 'PASS: Android launcher retained the same enabled pinned shortcut after an alias change and system reboot';fi
-   gesture ;;
+   ;;
+ swipe) gesture ;;
  *) echo "Expected prepare or verify" >&2;exit 2;;
 esac

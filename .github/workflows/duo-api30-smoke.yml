@@ -1,7 +1,7 @@
-name: Verify Duo Max 0.3.20 on Android 11
+name: Verify Duo Max 0.3.21 on Android 11
 on:
   push:
-    branches: [qa/duo-release-0320]
+    branches: [qa/duo-release-0321]
     paths: [.github/workflows/duo-api30-smoke.yml]
 permissions:
   contents: read
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 50
     env:
       ANDROID_SERIAL: emulator-5556
-      QA_BRANCH: qa/duo-release-0320
+      QA_BRANCH: qa/duo-release-0321
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -42,15 +42,32 @@ jobs:
           adb -s "$ANDROID_SERIAL" shell wm size 1200x1920
           adb -s "$ANDROID_SERIAL" shell wm density 160
           adb -s "$ANDROID_SERIAL" shell getprop ro.build.version.sdk
+      - name: Check the updated pin bridge across immediate reboot before release
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash duo-qa/native-home-gesture.sh prepare
+          old=$(adb -s "$ANDROID_SERIAL" shell cat /proc/sys/kernel/random/boot_id | tr -d '\r')
+          adb -s "$ANDROID_SERIAL" reboot
+          timeout 180 adb -s "$ANDROID_SERIAL" wait-for-device
+          timeout 240 bash -c 'until [[ $(adb -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d "\r") == 1 ]]; do sleep 2; done'
+          test "$old" != "$(adb -s "$ANDROID_SERIAL" shell cat /proc/sys/kernel/random/boot_id | tr -d '\r')"
+          adb -s "$ANDROID_SERIAL" shell input keyevent KEYCODE_WAKEUP
+          adb -s "$ANDROID_SERIAL" shell wm dismiss-keyguard
+          bash duo-qa/native-home-gesture.sh verify-pin
+          adb -s "$ANDROID_SERIAL" uninstall review.duo.pincheck
+          rm -f "$RUNNER_TEMP/duo-pin-and-gesture/no-pin"
+          adb -s "$ANDROID_SERIAL" shell wm size 1200x1920
+          adb -s "$ANDROID_SERIAL" shell wm density 160
       - name: Await exact one-widget release APK
         shell: bash
         run: |
           set -euo pipefail
           for attempt in $(seq 1 110); do
             git fetch --no-tags --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
-            if git cat-file -e FETCH_HEAD:duo-qa/release-0320.sha256 2>/dev/null; then
+            if git cat-file -e FETCH_HEAD:duo-qa/release-0321.sha256 2>/dev/null; then
               git checkout FETCH_HEAD -- duo-qa
-              cmp duo-qa/release-0320.sha256 duo-qa/final.sha256
+              cmp duo-qa/release-0321.sha256 duo-qa/final.sha256
               echo "$(tr -d '\r\n' < duo-qa/final.sha256)  duo-qa/final.apk" | sha256sum -c -
               exit 0
             fi
