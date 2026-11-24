@@ -7,6 +7,7 @@ before=$(cat "$RUNNER_TEMP/duo-widget-before-reboot")
 before_id=$(sed -nE 's/.* ids=([0-9]+) .*/\1/p' <<<"$before")
 before_values=${before#* skin=}
 test -n "$before_id"
+bash duo-qa/native-home-gesture.sh prepare
 old_boot=$(device shell cat /proc/sys/kernel/random/boot_id | tr -d '\r')
 device reboot
 timeout 180 adb -s "$ANDROID_SERIAL" wait-for-device
@@ -27,6 +28,7 @@ for attempt in {1..45}; do
     [[ "${match#* skin=}" == "$before_values" ]]
     echo "$match"
     echo 'PASS: OS reboot retained the same bound widget ID, balance, background and button.'
+    bash duo-qa/native-home-gesture.sh verify
     exit 0
   fi
   sleep 1
