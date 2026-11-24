@@ -1614,41 +1614,51 @@ i[data-icon] svg { display:block; width:100%; height:100% }
   #station .masthead .head-actions {gap:0}
   #station .masthead .head-actions .icon-button {width:max(44px,11.5vw)}
 }
-#dialog-layer.lb-open .sheet {width:100%; max-width:68rem; padding-inline:clamp(12px,4vw,80px)}
-.lb-page {display:grid; gap:clamp(10px,1.45rem,36px); color:var(--cream); padding-bottom:1rem}
-.lb-page :is(h3,p,ol) {margin:0}
-.lb-page h3 {font:italic 700 clamp(23px,1.55rem,45px)/1.15 var(--serif)}
-.lb-page p {font:400 clamp(17px,1.03rem,32px)/1.4 var(--system)}
-.lb-summary,.lb-account,.lb-list {display:grid; align-content:start; gap:.62rem; min-width:0}
-.lb-summary {border-bottom:1px solid var(--line); padding:.45rem 0 .8rem}
-.lb-total {color:var(--gold); font:700 clamp(30px,2.85rem,86px)/1.15 var(--figures); overflow-wrap:anywhere}
-.lb-page p.lb-notice,.lb-page p.lb-status {color:var(--muted)}
-.lb-actions,.lb-device-actions {display:flex; flex-wrap:wrap; gap:.5rem}
-.lb-button,.lb-page a {color:var(--cream)}
+#dialog-layer.lb-open .sheet {width:100%; max-width:66rem; padding-inline:clamp(14px,4vw,78px)}
+.lb-page {display:grid; gap:clamp(14px,1.15rem,34px); padding-block:.4rem 1rem; color:var(--cream)}
+.lb-page h3,.lb-page p,.lb-page ol {margin:0}
+.lb-page h3 {font:italic 700 clamp(25px,1.65rem,48px)/1.15 var(--serif)}
+.lb-page p {font:400 clamp(17px,1.13rem,34px)/1.42 var(--system)}
+.lb-connect,.lb-intro,.lb-instructions,.lb-personal,.lb-top,.lb-account {display:grid; align-content:start; gap:.65rem; min-width:0}
+.lb-connect {width:100%; max-width:46rem; margin:0 auto; padding-top:clamp(8px,2vh,40px); gap:clamp(14px,1.1rem,36px)}
+.lb-intro h3 {font-size:clamp(29px,2.1rem,60px); color:var(--gold)}
+.lb-intro p {max-width:63ch}
+.lb-privacy,.lb-notice {color:var(--muted)}
+.lb-actions,.lb-device-actions {display:flex; align-items:center; flex-wrap:wrap; gap:.55rem}
 .lb-button {
-  justify-self:start; width:fit-content; max-width:100%; min-height:max(46px,2.65rem); padding:.42rem .8rem;
-  border:1px solid #a99160; border-radius:.5rem; background:#233944;
-  font:700 max(17px,1rem)/1.18 var(--system); touch-action:manipulation;
+  display:inline-flex; align-items:center; justify-content:center; justify-self:start;
+  width:fit-content; max-width:100%; min-height:max(46px,2.65rem); padding:.45rem .85rem;
+  border:1px solid #a99160; border-radius:.5rem; color:var(--cream); background:#233944;
+  font:700 max(17px,1.03rem)/1.18 var(--system); text-decoration:none; touch-action:manipulation;
 }
-.lb-primary,.lb-page a.lb-primary {display:inline-flex; align-items:center; color:var(--ink); background:var(--gold); text-decoration:none}
+.lb-primary {color:var(--ink); background:var(--gold)}
 .lb-danger {color:#ffe0db; background:#753f42}
-.lb-code {color:var(--gold); font:700 clamp(28px,2rem,62px)/1.2 var(--system); letter-spacing:.13em}
-.lb-device {display:flex; align-items:center; flex-wrap:wrap; gap:clamp(12px,1rem,30px)}
-.lb-qr {display:block; width:clamp(140px,19vmin,220px); height:auto; background:white; image-rendering:pixelated}
-.lb-list ol {padding:0; list-style:none}
-.lb-row {
-  display:grid; grid-template-columns:minmax(2ch,auto) auto minmax(4ch,1fr) minmax(5ch,.9fr);
-  align-items:center; gap:clamp(6px,.6rem,18px); padding:.5rem 0; border-bottom:1px solid var(--line);
-  font:600 max(15px,1rem)/1.22 var(--system);
+.lb-device {
+  display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; justify-items:start;
+  gap:clamp(12px,2vw,46px); padding-top:.95rem; border-top:1px solid var(--line);
 }
-.lb-row .avatar-disc {--avatar-size:max(32px,2.2rem)}
-.lb-rank {color:var(--muted); font-variant-numeric:tabular-nums}
+.lb-device>.lb-notice {grid-column:1 / -1}
+.lb-code {color:var(--gold); font:700 clamp(28px,2.2rem,64px)/1.15 var(--system); letter-spacing:.09em}
+.lb-qr {display:block; width:clamp(140px,19vmin,240px); height:auto; background:white; image-rendering:pixelated}
+.lb-personal ol,.lb-top ol {padding:0; list-style:none}
+.lb-personal h3,.lb-top h3 {color:var(--cream)}
+.lb-row {
+  display:grid; grid-template-columns:minmax(2ch,auto) auto minmax(4ch,1fr) minmax(5ch,.85fr);
+  align-items:center; gap:clamp(6px,.65rem,20px); padding:.55rem clamp(7px,1vw,22px);
+  border-bottom:1px solid var(--line); font:600 max(16px,1.13rem)/1.23 var(--system);
+}
+.lb-personal .lb-row {border:1px solid var(--gold); border-radius:.55rem; background:#e8c27510}
+.lb-top .lb-mine {background:#e8c2750d}
+.lb-row .avatar-disc {--avatar-size:max(36px,2.55rem)}
+.lb-player {display:grid; gap:.12rem; min-width:0}
+.lb-prestige {color:var(--muted); font-size:.85em}
+.lb-rank {color:var(--gold); font-family:var(--figures); font-variant-numeric:tabular-nums}
 .lb-name,.lb-score {min-width:0; overflow-wrap:anywhere}
 .lb-score {text-align:right; color:var(--gold); font-family:var(--figures)}
-@media(orientation:landscape) and (min-width:700px) {
-  .lb-page {grid-template-columns:minmax(0,.82fr) minmax(0,1.18fr); column-gap:clamp(20px,3vw,62px); align-items:start}
-  .lb-summary,.lb-account,.lb-page>.lb-notice,.lb-page>.lb-button,.lb-page>.lb-status {grid-column:1}
-  .lb-list {grid-column:2; grid-row:1 / span 5}
+.lb-account {padding-top:.3rem}
+.lb-toggle {font-size:max(15px,.9rem)}
+@media(max-width:620px) {
+  .lb-device {grid-template-columns:minmax(0,1fr)}
 }
 
 /* Secondary navigation, including dialogs mounted outside the main sheet. */

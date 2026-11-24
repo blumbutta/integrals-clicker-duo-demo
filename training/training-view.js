@@ -4,7 +4,7 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
   let spec, root, panel, ring, contextRing, shade, shadePath, title, copy, head, progress, skip, primary;
   let pointer, focusedAnchor, contextAnchor, resizeWatch, treeWatch, frame, scrolledAnchor;
   const capturedPointers = new Map();
-  let scoreGain,finaleSchool;
+  let scoreGain,finaleSchool,invite,inviteQR,connect;
   const listen = (type, handler, options=true) => window.addEventListener(type, handler, options);
   const element = (tag, cls, parent) => {
     const node = document.createElement(tag);
@@ -69,7 +69,7 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
   function focusables() {
     const focusSelector = 'button:not(:disabled),a[href],input:not(:disabled),[tabindex]:not([tabindex="-1"]),select:not(:disabled)';
     const targets = allowedNodes().flatMap(node => node.matches(focusSelector) ? [node] : [...node.querySelectorAll(focusSelector)]);
-    return [...new Set([...targets, primary, skip, exitButton()])].filter(node => node && !node.hidden && node.getClientRects().length && permitted(node));
+    return [...new Set([...targets, primary, connect, skip, exitButton()])].filter(node => node && !node.hidden && node.getClientRects().length && permitted(node));
   }
   function focus(node) {
     if (node) node.focus({preventScroll:true});
@@ -163,9 +163,30 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     finaleSchool.alt='';finaleSchool.draggable=false;finaleSchool.hidden=true;
     title = element('h2','tr-title',message);
     copy = element('p','tr-text',message);
-    primary = element('button','tr-primary',panel);
+    invite = element('section','tr-invite',panel);
+    invite.hidden = true;
+    const inviteTitle = element('h3','',invite);
+    inviteTitle.id='tr-invite-title';
+    inviteTitle.textContent='Подключить Яндекс ID?';
+    invite.setAttribute('aria-labelledby',inviteTitle.id);
+    const details = element('div','tr-invite-copy',invite);
+    element('p','',details).textContent='Из Яндекса игра получит имя и уникальный для этой игры ID. Фото и почту игра не запрашивает.';
+    element('p','',details).textContent='Другим игрокам будут видны имя, игровой эмодзи, эпоха, престиж и текущий баланс в целых интегралах.';
+    element('p','tr-invite-later',details).textContent='Можно подключиться позже в разделе «Общий рейтинг».';
+    const qr = element('figure','tr-invite-qr',invite);
+    inviteQR = element('img','',qr);
+    inviteQR.alt='QR-код страницы ввода кода Яндекс ID';
+    inviteQR.draggable=false;
+    element('figcaption','',qr).textContent='Для входа понадобится код. Нажми «Да, подключить», чтобы запросить его.';
+    const actions = element('div','tr-actions',panel);
+    primary = element('button','tr-primary',actions);
     primary.type = 'button';
     primary.onclick = () => spec?.onAction?.();
+    connect = element('button','tr-connect',actions);
+    connect.hidden = true;
+    connect.type = 'button';
+    connect.textContent='Да, подключить';
+    connect.onclick = () => spec?.onConnect?.();
 
     for (const type of ['pointerdown','pointerup','pointercancel','mousedown','mouseup','touchstart','touchend','wheel','click','dblclick','contextmenu']) {
       listen(type,guard,{capture:true,passive:false});
@@ -470,6 +491,8 @@ if (window.DuoTraining && !window.TrainingView) window.TrainingView = (() => {
     const message=spec.text??spec.body;
     finaleSchool.hidden=id!=='completed';
     if(!finaleSchool.hidden&&!finaleSchool.hasAttribute('src'))finaleSchool.src=window.duoArt('art/map/hd-school.webp');
+    connect.hidden=invite.hidden=!spec.onConnect;
+    if(!invite.hidden && !inviteQR.hasAttribute('src')) inviteQR.src=window.duoArt('art/guide/yandex-device-ru.png');
     text(title,spec.title); title.hidden=!spec.title;
     text(copy,message); copy.hidden=!message;
     text(scoreGain,spec.gainLabel); scoreGain.hidden=!spec.gainLabel;

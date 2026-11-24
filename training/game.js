@@ -1067,7 +1067,12 @@ window.DuoAudio = (() => {
   window.addEventListener("pageshow", () => { if (!document.hidden) resume(); });
   function hud() { const prod=production(); return {balance:state.balance,cps:prod.cps,clickPower:prod.clickPower,clicks:state.clicks}; }
   function lifetimeWhole(){return String((lifetime>lifetimeCap?lifetimeCap:lifetime)>>fractionBits);}
-  window.Economy = {snapshot, hud, commitHonors, productionGain, lifetimeWhole, lifetimeText, progress, updateProgress, award, resetRun, markSeen, owned,
+  function rankingProgress(){
+    const current=LiveCounters.balance();
+    const score=current>=1e250?10n**250n:BigInt(Math.floor(Math.max(0,current)));
+    return {score:String(score),prestige:state.prestigeLevel,cosmicAscensions:Math.min(Number.MAX_SAFE_INTEGER,state.cosmicAscensions)};
+  }
+  window.Economy = {snapshot, hud, rankingProgress, commitHonors, productionGain, lifetimeWhole, lifetimeText, progress, updateProgress, award, resetRun, markSeen, owned,
     purchased:id => state.purchases[id] || 0, grantValue:(id,count) => catalogue.has(id) ? theoreticalPrice(catalogue.get(id),owned(id),count) : 0,
      tap, buy, study, quantity, price, save, pause, resume, setTrainingPaused, tick() { settle(); collectHonors(); return snapshot(); }};
 })();
@@ -7848,288 +7853,312 @@ window.PlayerAvatar=(()=>{
 })();
 
 ;
-// Only players who publish a score get a session. Gameplay works entirely offline.
+// Network activity belongs to the open leaderboard. The game itself stays offline.
 window.Leaderboard=(()=>{
   'use strict';
   const configURL='https://blumbutta.github.io/integrals-clicker-duo-demo/services/leaderboard.json';
   const verificationURLs=new Set(['https://oauth.yandex.ru/device','https://oauth.yandex.com/device']);
-  const key='integrals.duomax.leaderboard.v1', minute=60000;
-  const learning=()=>window.DuoTraining && window.DuoTraining.currentStep?.()!=='done';
+  const key='integrals.duomax.leaderboard.v1',refreshInterval=60000;
   const paths={list:'/v1/leaderboard',device:'/v1/auth/device',poll:'/v1/auth/poll',score:'/v1/score',logout:'/v1/logout',remove:'/v1/me'};
   const methods={'/config':'GET',[paths.list]:'GET',[paths.device]:'POST',[paths.poll]:'POST',[paths.score]:'POST',[paths.logout]:'POST',[paths.remove]:'DELETE'};
-  const scoreOK=s=>typeof s==='string' && /^(?:0|[1-9]\d{0,249}|10{250})$/.test(s);
   const tokenOK=s=>typeof s==='string' && s.length>=16 && s.length<=512 && /^[A-Za-z0-9._~-]+$/.test(s);
+  const scoreOK=s=>typeof s==='string' && /^(?:0|[1-9]\d{0,249}|10{250})$/.test(s);
   function originOK(s){
     if(typeof s!=='string')return false;
     try{const u=new URL(s);return u.origin===s && u.protocol==='https:' && !u.port && /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(u.hostname);}
     catch{return false;}
   }
   function restore(){
-    try{const s=JSON.parse(localStorage.getItem(key));return s&&originOK(s.origin)&&tokenOK(s.token)?s:null;}catch{return null;}
+    try{const s=JSON.parse(localStorage.getItem(key));return s?.rules===2&&originOK(s.origin)&&tokenOK(s.token)?s:null;}catch{return null;}
   }
-  let session=restore();
-  function persist(value){
-    if(value && window.ProgressReset?.stale())return;
-    session=value;
-    try{if(value)localStorage.setItem(key,JSON.stringify(value));else localStorage.removeItem(key);}catch{}
+  let session=restore(),host=null,generation=0,nativePaused=false,pageHidden=false,origin='',flow=null,entries=null,me=null;
+  let pollTimer=0,refreshTimer=0,busy=false,options=false,removeConfirm=false,message='',consented=false;
+  function persist(s){
+    if(s && window.ProgressReset?.stale())return;
+    session=s;
+    try{if(s)localStorage.setItem(key,JSON.stringify(s));else localStorage.removeItem(key);}catch{}
   }
-  class RequestError extends Error{constructor(status){super('Leaderboard request failed');this.status=status;}}
-  // The native WebView can deliver a response from just before a page reload.
+  function visible(){
+    return Boolean(host?.isConnected) && !document.hidden && !nativePaused && !pageHidden && !window.ProgressReset?.stale()
+      && (consented||!window.DuoTraining||window.DuoTraining.currentStep?.()==='done');
+  }
+  const current=id=>id===generation && visible();
+  class RequestError extends Error{constructor(status,body={}){super('Leaderboard request failed');this.status=status;this.data=body;}}
+  function unpack(status,text){
+    let data;
+    if(typeof text==='string' && text.length<=65536){try{data=JSON.parse(text);}catch{}}
+    if(!Number.isInteger(status)||status<200||status>=300)throw new RequestError(status,data||{});
+    if(!data||typeof data!=='object')throw new RequestError(0);
+    return data;
+  }
   let sequence=Math.floor(Math.random()*100000000);
-  const nativeCalls=new Map();
-  window.addEventListener('duorankresponse',event=>{
-    const d=event.detail,callback=nativeCalls.get(d?.id);
-    if(callback)callback(d.status,d.body);
-  });
+  const nativeCalls=new Map(),controllers=new Set();
+  window.addEventListener('duorankresponse',e=>{const d=e.detail;nativeCalls.get(d?.id)?.(d.status,d.body);});
   function nativeCall(send,timeoutMS=18000){
     return new Promise((resolve,reject)=>{
       const id=++sequence;
       function finish(status,body){
         clearTimeout(timeout);nativeCalls.delete(id);
-        if(!Number.isInteger(status)||status<200||status>=300||typeof body!=='string'||body.length>65536){reject(new RequestError(status));return;}
-        try{resolve(JSON.parse(body));}catch{reject(new RequestError(0));}
+        try{resolve(unpack(status,body));}catch(error){reject(error);}
       }
-      const timeout=setTimeout(()=>finish(0,''),timeoutMS);
-      nativeCalls.set(id,finish);
+      const timeout=setTimeout(()=>finish(0,''),timeoutMS);nativeCalls.set(id,finish);
       try{send(id);}catch{finish(0,'');}
     });
   }
-  async function request(path,origin='',token='',data=null,keepalive=false){
-    const payload=data===null?'':JSON.stringify(data);
-    if(window.DuoRank)return nativeCall(id=>window.DuoRank.request(id,path,payload,token,origin));
+  async function request(path,base='',token='',body=null){
+    if(!visible())throw new RequestError(0);
+    const payload=body===null?'':JSON.stringify(body);
+    if(window.DuoRank)return nativeCall(id=>window.DuoRank.request(id,path,payload,token,base));
     const headers={Accept:'application/json'};
     if(token)headers.Authorization='Bearer '+token;
     if(payload)headers['Content-Type']='application/json';
-    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),5500);
+    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),5500);controllers.add(ctrl);
     try{
-      const response=await fetch(path==='/config'?configURL:origin+path,{
-        method:methods[path],headers,body:payload||undefined,signal:ctrl.signal,keepalive,
+      const response=await fetch(path==='/config'?configURL:base+path,{
+        method:methods[path],headers,body:payload||undefined,signal:ctrl.signal,
         credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store',redirect:'error'
       });
-      if(!response.ok)throw new RequestError(response.status);
-      const text=await response.text();
-      if(text.length>65536)throw new RequestError(0);
-      return JSON.parse(text);
-    }finally{clearTimeout(timeout);}
+      return unpack(response.status,await response.text());
+    }finally{clearTimeout(timeout);controllers.delete(ctrl);}
   }
-  let origin='',configAt=0,configJob=null;
-  async function configure(force=false){
-    if(!force && configAt && Date.now()-configAt<5*minute)return origin;
-    if(!configJob)configJob=request('/config').then(data=>{
-      if(data.apiOrigin!=='' && !originOK(data.apiOrigin))throw new RequestError(0);
-      origin=data.apiOrigin;configAt=Date.now();
-      if(origin && session && session.origin!==origin)persist(null);
-      return origin;
-    }).finally(()=>{configJob=null;});
-    return configJob;
+  async function configure(id){
+    if(origin)return origin;
+    const data=await request('/config');
+    if(!current(id))throw new RequestError(0);
+    if(data.apiOrigin==='')throw new RequestError(503);
+    if(!originOK(data.apiOrigin))throw new RequestError(0);
+    origin=data.apiOrigin;
+    if(session && session.origin!==origin){persist(null);throw new RequestError(401);}
+    return origin;
   }
-  let host=null,view=0,entries=null,me=null,phase='',message='',confirmDelete=false,flow=null;
-  let paused=document.hidden,pollTimer=0,uploadTimer=0,lastUpload=0,uploadJob=null;
   const el=(name,cls,text)=>{const n=document.createElement(name);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-  function button(text,action,style=''){
-    const b=el('button','lb-button '+style,text);b.type='button';b.onclick=action;return b;
+  function button(text,fn,cls=''){
+    const b=el('button','lb-button '+cls,text);b.type='button';b.onclick=fn;return b;
   }
-  function rowOK(r){return r && Number.isSafeInteger(r.rank) && r.rank>0 && typeof r.name==='string' && r.name.length>0 && r.name.length<=100 && Number.isInteger(r.avatar) && r.avatar>=0 && r.avatar<PlayerAvatar.symbols.length && scoreOK(r.score);}
   const pretty=s=>s.replace(/\B(?=(\d{3})+(?!\d))/g,'\u202f');
-  const greater=(a,b)=>a.length!==b.length?a.length>b.length:a>b;
-  function row(record){
-    const li=el('li','lb-row'),avatar=el('span',''),rank=el('span','lb-rank',String(record.rank));
-    PlayerAvatar.render(avatar,record.avatar);
-    li.append(rank,avatar,el('span','lb-name',record.name),el('strong','lb-score',pretty(record.score)+' ∫'));
-    return li;
+  const roman=['0','I','II','III','IV','V','VI','VII','VIII','IX','X'];
+  function rowOK(r){
+    return r && Number.isSafeInteger(r.rank) && r.rank>0 && typeof r.name==='string' && r.name.length>0 && r.name.length<=100
+      && Number.isInteger(r.avatar) && r.avatar>=0 && r.avatar<PlayerAvatar.symbols.length && scoreOK(r.score)
+      && Number.isInteger(r.prestige) && r.prestige>=0 && r.prestige<=10 && Number.isSafeInteger(r.cosmicAscensions) && r.cosmicAscensions>=0;
+  }
+  const ownOK=r=>rowOK(r)&&Number.isSafeInteger(r.revision)&&r.revision>0;
+  function entry(record,own=false){
+    const item=el('li','lb-row'+(own?' lb-mine':'')),avatar=el('span',''),player=el('span','lb-player');
+    PlayerAvatar.render(avatar,record.avatar,record.prestige);
+    player.append(el('strong','lb-name',record.name),el('small','lb-prestige','Престиж '+roman[record.prestige]+(record.cosmicAscensions?' · Вселенная '+pretty(String(BigInt(record.cosmicAscensions)+1n)) :'')));
+    item.append(el('span','lb-rank',String(record.rank)),avatar,player,el('strong','lb-score',pretty(record.score)+' ∫'));return item;
+  }
+  function info(root,copy){const p=el('p','lb-notice',copy);p.setAttribute('role','status');root.append(p);}
+  function guest(root){
+    const content=el('section','lb-connect'),intro=el('div','lb-intro');
+    intro.append(el('h3','','Подключите Яндекс ID'),el('p','','Для общего рейтинга нужен интернет. Достаточно один раз войти в свой аккаунт на этом устройстве.'),
+      el('p','lb-privacy','Из Яндекс ID игра использует имя и уникальный для приложения ID. Игроки увидят ваше имя, игровой значок, вселенную, престиж и текущий счёт. ID нужен для привязки аккаунта.'));
+    content.append(intro);
+    if(message)info(content,message);
+    if(!flow){content.append(button('Подключить Яндекс ID',begin,'lb-primary'));root.append(content);return;}
+    const card=el('div','lb-device');
+    if(!flow.ticket){
+      info(card,'Получаем код входа…');
+      card.append(button('Отменить',cancelLogin));content.append(card);root.append(content);return;
+    }
+    const qr=el('img','lb-qr'),instructions=el('div','lb-instructions'),actions=el('div','lb-device-actions');
+    qr.src=window.duoArt('art/guide/yandex-device-'+(flow.url.includes('.ru/')?'ru':'com')+'.png');
+    qr.alt='QR-код страницы входа Яндекс ID';qr.draggable=false;
+    instructions.append(el('p','',window.DuoRank?'Откройте Яндекс на Станции или отсканируйте QR-код телефоном.':'Откройте Яндекс здесь или отсканируйте QR-код телефоном.'),
+      el('p','','На странице '+flow.url.slice(8)+' введите код'),el('strong','lb-code',flow.code));
+    if(window.DuoRank)actions.append(button('Открыть Яндекс на Станции',openVerification,'lb-primary'));
+    else{const a=el('a','lb-button lb-primary','Открыть Яндекс');a.href=flow.url;a.target='_blank';a.rel='noopener noreferrer';actions.append(a);}
+    actions.append(button('Отменить вход',cancelLogin));instructions.append(actions);
+    if(flow.externalError)info(instructions,'Браузер Станции недоступен. Откройте страницу на телефоне.');
+    card.append(qr,instructions);content.append(card);root.append(content);
+  }
+  function accountOptions(root){
+    const account=el('div','lb-account');
+    const toggle=button(options?'Скрыть настройки рейтинга':'Управление аккаунтом',()=>{options=!options;removeConfirm=false;paint();},'lb-toggle');
+    toggle.setAttribute('aria-expanded',String(options));account.append(toggle);
+    if(options){
+      const actions=el('div','lb-actions');
+      if(removeConfirm){
+        account.append(el('p','','Удалить запись из общего рейтинга? Партия на устройстве сохранится.'));
+        actions.append(button('Отмена',()=>{removeConfirm=false;paint();}),button('Удалить результат',()=>accountAction(true),'lb-danger'));
+      }else actions.append(button('Выйти из рейтинга',()=>accountAction(false)),button('Удалить мою запись',()=>{removeConfirm=true;paint();}));
+      account.append(actions);
+    }
+    root.append(account);
   }
   function paint(){
     if(!host)return;
-    const root=el('section','lb-page'),summary=el('div','lb-summary'),record=Economy.lifetimeWhole();
-    summary.append(el('h3','','Заработано за всё время'),el('strong','lb-total',pretty(record)+' ∫'),el('p','','Учитываются целые интегралы со всех престижей.'));
-    root.append(summary);
-    if(message){const note=el('p','lb-notice',message);note.setAttribute('role','status');root.append(note);}
-    if(phase==='loading'){root.append(el('p','lb-status','Загружаем рейтинг…'));}
-    else if(phase==='offline'){
-      root.append(button('Попробовать снова',()=>load(true)));
-      if(session)root.append(button('Выйти на этом устройстве',()=>{resetLocalSession();message='Вы вышли из рейтинга на этом устройстве.';paint();}));
-    }else if(phase==='ready'){
-      const account=el('div','lb-account');
-      if(session){
-        if(me)account.append(el('h3','',me.name),el('p','','Ваше место — '+me.rank+'. Рекорд в таблице — '+pretty(me.score)+' ∫.'));
-        if(confirmDelete){
-          account.append(el('p','','Удалить результат из общего рейтинга? Игровой прогресс сохранится.'));
-          const actions=el('div','lb-actions');actions.append(button('Отмена',()=>{confirmDelete=false;paint();}),button('Удалить результат',()=>accountAction(true),'lb-danger'));account.append(actions);
-        }else{
-          const actions=el('div','lb-actions');actions.append(button('Выйти из рейтинга',()=>accountAction(false)),button('Удалить мою запись',()=>{confirmDelete=true;paint();}));account.append(actions);
-        }
-      }else if(flow){
-        account.append(el('h3','','Вход с Яндекс ID'));
-        if(flow.ticket){
-          const line=el('p','',window.DuoRank?'Откройте Яндекс на Станции или отсканируйте QR-код телефоном.':'Откройте Яндекс в браузере или отсканируйте QR-код телефоном.');
-          line.append(document.createTextNode(' На странице '+flow.url.slice(8)+' введите код входа.'));
-          const device=el('div','lb-device'),qr=el('img','lb-qr');
-          qr.src=window.duoArt('art/guide/yandex-device-'+(flow.url.includes('.ru/')?'ru':'com')+'.png');
-          qr.alt='QR-код страницы входа Яндекс ID';qr.draggable=false;
-          device.append(qr,el('strong','lb-code',flow.code));account.append(line,device);
-          const actions=el('div','lb-device-actions');
-          if(window.DuoRank){
-            actions.append(button('Открыть Яндекс на Станции',openVerification,'lb-primary'));
-          }else{
-            const link=el('a','lb-button lb-primary','Открыть Яндекс');link.href=flow.url;
-            link.target='_blank';link.rel='noopener noreferrer';actions.append(link);
-          }
-          actions.append(button('Отменить вход',()=>{stopFlow();message='';paint();}));account.append(actions);
-          if(flow.externalError)account.append(el('p','lb-notice','Не удалось открыть браузер на Станции. Введите код на телефоне по ссылке или QR-коду.'));
-        }else account.append(el('p','','Получаем код…'),button('Отменить вход',()=>{stopFlow();message='';paint();}));
-      }else{
-        account.append(el('p','','После входа в общий рейтинг будут опубликованы ваш игровой значок, рекорд и автоматически выданный псевдоним. Рекорд будет обновляться во время игры.'),
-          button('Войти с Яндекс ID',begin,'lb-primary'));
+    const root=el('section','lb-page');
+    if(!session)guest(root);
+    else{
+      if(me){const personal=el('section','lb-personal'),list=el('ol','');personal.append(el('h3','','Ваше место'));list.append(entry(me,true));personal.append(list);root.append(personal);}
+      if(entries){
+        const top=el('section','lb-top'),list=el('ol','');top.append(el('h3','','Топ игроков'));
+        for(const r of entries)list.append(entry(r,me?.rank===r.rank));
+        if(entries.length)top.append(list);else top.append(el('p','','В рейтинге пока нет результатов.'));
+        root.append(top);
       }
-      root.append(account);
-      const list=el('section','lb-list');list.append(el('h3','','Топ игроков'));
-      if(entries?.length){const ol=el('ol','');for(const item of entries)ol.append(row(item));list.append(ol);}
-      else list.append(el('p','',entries?'В рейтинге пока нет участников.':'Загружаем результаты…'));
-      root.append(list);
+      if(message)info(root,message);
+      else if(!entries)info(root,'Загружаем рейтинг…');
+      if(message && !busy)root.append(button('Попробовать снова',()=>refresh(true)));
+      accountOptions(root);
     }
     host.replaceChildren(root);
   }
-  async function fetchTable(id){
-    const saved=session;
-    const data=await request(paths.list,origin,saved?.token||'');
-    if(id!==view || saved?.token!==session?.token)return;
-    if(!Array.isArray(data.entries)||data.entries.length>50||!data.entries.every(rowOK)||(data.me!=null&&!rowOK(data.me)))throw new RequestError(0);
-    entries=data.entries;me=data.me||null;phase='ready';paint();
+  function consentRequired(){persist(null);entries=null;me=null;message='Для участия подтвердите вход в Яндекс ID.';}
+  function fail(e){
+    if(e.status===401){consentRequired();return;}
+    message=e.status===503?'Сервис рейтинга сейчас недоступен. Попробуйте позже.':
+      e.status===429?'Слишком много запросов. Попробуйте немного позже.':'Не удалось подключиться к рейтингу. Проверьте интернет и попробуйте снова.';
   }
-  async function load(force=false){
-    const id=++view;
-    stopFlow();phase='loading';message='';paint();
+  async function table(saved){
+    const data=await request(paths.list,saved.origin,saved.token);
+    if(!Array.isArray(data.entries)||data.entries.length>50||!data.entries.every(rowOK)||(data.me!==null&&!ownOK(data.me)))throw new RequestError(0);
+    return data;
+  }
+  function timer(){
+    clearTimeout(refreshTimer);
+    if(visible()&&session)refreshTimer=setTimeout(refresh,refreshInterval);
+  }
+  const fingerprint=r=>[r.cosmicAscensions,r.prestige,r.score,r.avatar].join('/');
+  const compareGeneration=(a,b)=>a.cosmicAscensions===b.cosmicAscensions?a.prestige-b.prestige:a.cosmicAscensions-b.cosmicAscensions;
+  async function refresh(retry=false){
+    if(!visible()||!session||busy)return;
+    if(retry)origin='';
+    const id=generation,saved=session;
+    const valid=()=>current(id)&&session?.token===saved.token;
+    busy=true;message='';
+    if(!entries)paint();
     try{
-      if(!await configure(force)){
-        if(id===view){phase='offline';message='Сервис общего рейтинга ещё не подключён. Ваш результат сохраняется в игре.';paint();}return;
+      await configure(id);
+      if(!valid())return;
+      // Read the server revision first. Opening a separate device must not
+      // overwrite a newer score just because it holds an older local game.
+      let data=await table(saved);
+      if(!valid())return;
+      const progress={...Economy.rankingProgress(),avatar:PlayerAvatar.index};
+      const stamp=fingerprint(progress),remote=data.me,epoch=remote?compareGeneration(progress,remote):1;
+      const changed=saved.revision===remote?.revision && saved.stamp!==stamp;
+      const write=!remote || epoch>0 || (epoch===0 && changed);
+      if(write){
+        try{
+          const result=await request(paths.score,saved.origin,saved.token,{...progress,revision:remote?.revision||0});
+          if(!valid())return;
+          if(!ownOK(result.me))throw new RequestError(0);
+          persist({...saved,revision:result.me.revision,stamp});
+        }catch(e){
+          if(e.status!==409)throw e;
+          if(!valid())return;
+          // A newer observation won the race. Adopt it, without retrying the discarded snapshot.
+        }
+        data=await table(saved);
+        if(!valid())return;
       }
-      if(id!==view)return;
-      await fetchTable(id);
-      if(id===view && session)scheduleUpload();
+      entries=data.entries;me=data.me;
+      if(me)persist({...saved,revision:me.revision,stamp});
     }catch(e){
-      if(id!==view)return;
-      if(e.status===401 && session){persist(null);await load();return;}
-      phase='offline';message='Не удалось загрузить общий рейтинг. Попробуйте ещё раз позже.';paint();
+      if(current(id))fail(e);
+    }finally{
+      if(current(id)){busy=false;paint();timer();}
     }
   }
-  function open(panel){close();host=panel;load();}
   function stopFlow(){clearTimeout(pollTimer);pollTimer=0;flow=null;}
-  function close(){++view;host=null;stopFlow();entries=null;me=null;message='';confirmDelete=false;}
-  function flowError(e){
-    stopFlow();
-    message=e.status===403?'Вход отменён в Яндекс ID.':e.status===410?'Срок действия кода истёк. Запросите новый код.':'Не удалось завершить вход. Попробуйте снова.';
-    paint();
-  }
-  function seconds(value,fallback,min,max){return Number.isFinite(value)?Math.min(max,Math.max(min,value)):fallback;}
+  function cancelLogin(){stopFlow();message='';paint();}
+  function seconds(n,fallback){return Number.isFinite(n)?Math.max(1,Math.min(3600,n)):fallback;}
   async function begin(){
-    if(flow||!host||session)return;
-    const active={origin};flow=active;message='';paint();
+    if(flow||!visible()||session)return;
+    const id=generation,active={};flow=active;message='';paint();
     try{
-      const data=await request(paths.device,active.origin,'',{});
-      if(flow!==active)return;
+      active.origin=await configure(id);
+      if(!current(id)||flow!==active)return;
+      const data=await request(paths.device,active.origin,'',{rules:2});
+      if(!current(id)||flow!==active)return;
       if(!tokenOK(data.ticket)||typeof data.userCode!=='string'||!/^[-A-Za-z0-9]{3,32}$/.test(data.userCode)||!verificationURLs.has(data.verificationUrl))throw new RequestError(0);
-      Object.assign(active,{ticket:data.ticket,code:data.userCode,url:data.verificationUrl,until:Date.now()+1000*seconds(data.expiresIn,600,1,3600),delay:1000*seconds(data.interval,5,1,3600)});
+      Object.assign(active,{ticket:data.ticket,code:data.userCode,url:data.verificationUrl,until:Date.now()+1000*seconds(data.expiresIn,600),delay:1000*seconds(data.interval,5)});
       paint();schedulePoll();
-    }catch(e){if(flow===active)flowError(e);}
+    }catch(e){if(current(id)&&flow===active){stopFlow();fail(e);paint();}}
   }
   function schedulePoll(){
     clearTimeout(pollTimer);
-    if(flow?.ticket && !paused&&!document.hidden&&host)pollTimer=setTimeout(poll,flow.delay);
+    if(flow?.ticket&&visible())pollTimer=setTimeout(poll,Math.max(0,Math.min(flow.delay,flow.until-Date.now())));
   }
   async function openVerification(){
     const active=flow;
-    if(!active || !verificationURLs.has(active.url))return;
-    try{
-      const result=await nativeCall(id=>window.DuoRank.openVerification(active.url,id),4000);
-      if(result.opened!==true)throw new RequestError(0);
-    }catch{
-      if(flow===active){active.externalError=true;paint();}
-    }
+    if(!visible()||!active||!verificationURLs.has(active.url))return;
+    try{const r=await nativeCall(id=>window.DuoRank.openVerification(active.url,id),4000);if(r.opened!==true)throw new RequestError(0);}
+    catch{if(visible() && flow===active){active.externalError=true;paint();}}
   }
   async function poll(){
-    const active=flow;
-    if(!active||paused||document.hidden||!host||active.polling)return;
-    if(Date.now()>=active.until){flowError(new RequestError(410));return;}
+    const active=flow,id=generation;
+    if(!active||active.polling||!visible())return;
     active.polling=true;
     try{
+      if(Date.now()>=active.until)throw new RequestError(410);
       const data=await request(paths.poll,active.origin,'',{ticket:active.ticket});
-      if(flow!==active)return;
-      if(data.status==='pending'){active.delay=1000*seconds(data.interval,active.delay/1000,1,3600);schedulePoll();return;}
+      if(!current(id)||flow!==active)return;
+      if(data.status==='pending'){active.delay=1000*seconds(data.interval,active.delay/1000);schedulePoll();return;}
       if(data.status!=='authorized'||!tokenOK(data.session))throw new RequestError(0);
-      persist({origin:active.origin,token:data.session});stopFlow();lastUpload=0;message='Вы вошли в рейтинг.';paint();
-      if(!paused && !document.hidden)upload();else scheduleUpload();
+      persist({rules:2,origin:active.origin,token:data.session});stopFlow();message='';paint();refresh();
     }catch(e){
-      if(flow!==active)return;
-      if(e.status===429){active.delay=Math.max(active.delay,10000);schedulePoll();}else flowError(e);
+      if(!current(id)||flow!==active)return;
+      if(e.status===429){active.delay=Math.max(active.delay,10000);schedulePoll();}
+      else{stopFlow();message=e.status===403?'Вход отменён в Яндекс ID.':e.status===410?'Срок действия кода истёк. Подключитесь ещё раз.':'Не удалось завершить вход. Подключитесь ещё раз.';paint();}
     }finally{active.polling=false;}
   }
   async function accountAction(remove){
-    if(!session||phase!=='ready')return;
-    const saved=session,id=view;clearTimeout(uploadTimer);
-    phase='loading';message='';paint();
+    if(!visible()||!session)return;
+    const id=restart(),saved=session;
+    busy=true;message='';
     try{
+      await configure(id);
+      if(!current(id)||session?.token!==saved.token)return;
       await request(remove?paths.remove:paths.logout,saved.origin,saved.token,remove?null:{});
-      if(session?.token===saved.token)persist(null);
-      if(id===view){await load();if(id+1===view){message=remove?'Ваша запись удалена.':'Вы вышли из рейтинга.';paint();}}
+      if(session?.token===saved.token)resetLocalSession();
     }catch(e){
-      if(e.status===401 && session?.token===saved.token)persist(null);
-      if(id!==view)return;
-      if(!session){await load();return;}
-      phase='ready';message='Не удалось связаться с сервисом. Попробуйте ещё раз.';paint();scheduleUpload();
-    }finally{confirmDelete=false;}
+      if(!current(id))return;
+      if(!remove){resetLocalSession();return;}
+      fail(e);
+    }finally{if(current(id)){busy=false;options=false;removeConfirm=false;paint();timer();}}
   }
-  function scheduleUpload(){
-    clearTimeout(uploadTimer);
-    if(session && !learning() && !paused && !document.hidden)uploadTimer=setTimeout(upload,Math.max(1000,lastUpload+minute-Date.now()));
+  function restart(){
+    ++generation;busy=false;clearTimeout(pollTimer);clearTimeout(refreshTimer);
+    for(const ctrl of controllers)ctrl.abort();
+    for(const finish of nativeCalls.values())finish(0,'');
+    return generation;
   }
+  function setNativeVisible(value){window.DuoRank?.setVisible?.(value);}
   function resetLocalSession(){
-    const saved=session;
-    stopFlow();clearTimeout(uploadTimer);persist(null);me=null;confirmDelete=false;
-    if(saved)configure().then(verified=>{
-      if(verified===saved.origin)return request(paths.logout,verified,saved.token,{},true);
-    }).catch(()=>{});
+    restart();stopFlow();persist(null);entries=null;me=null;message='';options=false;removeConfirm=false;
+    if(host)paint();
   }
-  async function upload(keepalive=false){
-    if(!session || uploadJob || learning() || (!keepalive&&(paused||document.hidden)))return;
-    if(Date.now()-lastUpload<(keepalive?10000:minute)){scheduleUpload();return;}
-    lastUpload=Date.now();
-    const saved=session;
-    uploadJob=(async()=>{
-      try{
-        if(!await configure()||session?.token!==saved.token||origin!==saved.origin||window.ProgressReset?.stale())return;
-        const score=Economy.lifetimeWhole(),avatar=PlayerAvatar.index;
-        if(scoreOK(saved.score) && !greater(score,saved.score) && saved.avatar===avatar)return;
-        const data=await request(paths.score,saved.origin,saved.token,{score,avatar},keepalive);
-        if(session?.token!==saved.token||!rowOK(data.me))return;
-        persist({...saved,score:data.me.score,avatar:data.me.avatar});
-        if(host&&phase==='ready'){me=data.me;paint();await fetchTable(view);}
-      }catch(e){
-        if(e.status===401 && session?.token===saved.token){persist(null);if(host)load();}
-        else if(host && phase==='ready'){message='Не удалось обновить рекорд. Игра повторит попытку.';paint();}
-      }
-    })();
-    try{await uploadJob;}finally{uploadJob=null;scheduleUpload();}
+  function open(panel,args){
+    close();host=panel;consented=args?.connect===true;session=restore();setNativeVisible(visible());paint();
+    if(session)refresh();else if(consented)begin();
+  }
+  function close(){
+    restart();setNativeVisible(false);host=null;stopFlow();entries=null;me=null;origin='';message='';options=false;removeConfirm=false;consented=false;
   }
   function suspend(){
-    paused=true;clearTimeout(uploadTimer);clearTimeout(pollTimer);
-    if(session)upload(true);
+    setNativeVisible(false);restart();
+    if(flow){flow.polling=false;if(!flow.ticket)stopFlow();}
   }
   function resume(){
-    paused=document.hidden;if(paused)return;
-    scheduleUpload();schedulePoll();
+    if(!visible())return;
+    setNativeVisible(true);
+    if(flow)schedulePoll();else if(session)refresh();else paint();
   }
   document.addEventListener('visibilitychange',()=>document.hidden?suspend():resume());
-  window.addEventListener('duopause',suspend);window.addEventListener('pagehide',suspend);
-  window.addEventListener('duoresume',resume);window.addEventListener('pageshow',resume);
-  window.addEventListener('duotrainingcomplete',scheduleUpload);
+  window.addEventListener('duopause',()=>{nativePaused=true;suspend();});
+  window.addEventListener('duoresume',()=>{nativePaused=false;resume();});
+  window.addEventListener('pagehide',()=>{pageHidden=true;suspend();});
+  window.addEventListener('pageshow',()=>{pageHidden=false;resume();});
   window.addEventListener('storage',e=>{
     if(e.key!==key)return;
     const previous=session;session=restore();
-    if(previous?.token!==session?.token && host)load();
-    scheduleUpload();
+    if(host && previous?.token!==session?.token){restart();stopFlow();entries=null;me=null;origin='';message='';paint();if(session)refresh();}
   });
-  if(session)scheduleUpload();
-  return Object.freeze({open,close,resetLocalSession});
+  return Object.freeze({open,close,resetLocalSession,isConnected:()=>!!session});
 })();
 
 ;
@@ -8201,9 +8230,9 @@ window.Extras = (() => {
     const privacy=document.createElement('details');
     privacy.className='ex-card ex-data-note';
     privacy.innerHTML='<summary>Какие данные видны в рейтинге?</summary>' +
-      '<p>Участие добровольное. Другим игрокам видны твой игровой псевдоним, значок и рекорд по заработанным интегралам за всё время.</p>' +
-      '<p>При входе Яндекс подтверждает, что это твой аккаунт. Сервер игры сохраняет защищённую метку аккаунта, чтобы узнавать тебя на разных устройствах. Фото, имя, почта и телефон для рейтинга не используются.</p>' +
-      '<p>В разделе «Рейтинг» можно выйти из аккаунта или удалить свою запись для всех устройств. Основная партия хранится на этом устройстве.</p>';
+      '<p>Ты сам выбираешь, участвовать ли в рейтинге. Из Яндекс ID игра сохраняет имя и защищённую метку твоего аккаунта. Яндекс выдаёт разрешение на имя вместе с другими полями профиля. Игра их пропускает.</p>' +
+      '<p>Участникам видны твоё имя, игровой значок, престиж и текущий баланс интегралов. После перехода в новую вселенную её номер тоже учитывается. Если прогресс совпадает, выше окажется тот, чей результат сервер получил раньше.</p>' +
+      '<p>Результат обновляется, пока открыт «Рейтинг» и есть интернет. В этом же разделе можно выйти из аккаунта или удалить свою запись на всех устройствах. Партия сохраняется на устройстве.</p>';
     inner.querySelector('.ex-switches').after(privacy);
     window.ProgressReset?.addSettings(inner);
     window.HomeWidgets?.addSettings(inner);
@@ -8339,7 +8368,7 @@ window.Extras = (() => {
     close();panel=container;screen=id;
     if(id==='profile'||id==='settings'){sub=id==='settings'||args?.profileTab==='settings'?'settings':'stats';profile()}
     else if(id==='help')Guide.render(panel,()=>App.closeSheet());
-    else if(id==='leaderboard')Leaderboard.open(panel);
+    else if(id==='leaderboard')Leaderboard.open(panel,args);
     else if(id==='challenges')Quests.render(panel,typeof args==='string'?args:args?.districtID);
     else if(id==='honors')Honors.render(panel);
     else if(id==='daily')wheel();

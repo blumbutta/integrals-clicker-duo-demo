@@ -99,6 +99,7 @@ body[data-training-instruction] :is(.ex-golden,.ex-gold-reward,.ex-notice) {
 }
 #training-coach .tr-panel button:focus-visible {outline:2px solid white;outline-offset:2px}
 #training-coach .tr-panel button:active {transform:translateY(1px)}
+#training-coach .tr-actions {display:contents}
 #training-coach .tr-ring, #training-coach .tr-context-ring {
   position:absolute;
   box-sizing:border-box;
@@ -175,15 +176,15 @@ body[data-training-instruction] :is(.ex-golden,.ex-gold-reward,.ex-notice) {
 #training-coach[data-step="theme-reveal"] .tr-title {font-size:1.08em}
 #training-coach[data-step="theme-reveal"] .tr-primary {margin-top:.38em;padding:.3em 1.2em}
 
-/* The final page keeps the first school and the single free-play action together. */
+/* The final card keeps the school, account choice and both actions in one reading order. */
 #training-coach[data-step="completed"] {
   display:grid;place-items:center;
   background:radial-gradient(ellipse at 47% 34%,#234348 0%,#102b37 48%,#091b27 100%);
 }
 #training-coach[data-step="completed"] .tr-panel {
-  position:relative;width:min(23em,calc(100% - 2em));max-width:none;
+  position:relative;width:min(31em,calc(100% - 2em));max-width:none;
   padding:1.2em 1.45em 1.45em;border:1px solid #b79a63;border-radius:1em;
-  display:grid;grid-template-areas:"school" "message" "play";justify-items:center;
+  display:grid;grid-template-areas:"school" "message" "invite" "play";justify-items:center;
   text-align:center;background:linear-gradient(145deg,#21434a,#112f39 55%,#142c36);
   box-shadow:0 .65em 2.4em #06151d85,inset 0 0 0 .16em #18343c;
 }
@@ -194,16 +195,36 @@ body[data-training-instruction] :is(.ex-golden,.ex-gold-reward,.ex-notice) {
 #training-coach[data-step="completed"] .tr-message {grid-area:message}
 #training-coach[data-step="completed"] .tr-title {margin:.08em 0 .16em;font-size:1.66em;line-height:1.07;color:#f8dfab}
 #training-coach[data-step="completed"] .tr-text {max-width:21em;margin:.2em 0 .55em;font-size:1em;line-height:1.4}
-#training-coach[data-step="completed"] .tr-primary {grid-area:play;min-height:2.6em;padding:.48em 1.12em;margin-top:.5em}
+#training-coach .tr-invite {
+  grid-area:invite; width:100%; display:grid; grid-template-columns:minmax(0,1fr) minmax(7em,26%);
+  grid-template-areas:"ask ask" "details qr"; gap:.65em 1em;
+  margin-top:.55em; padding-top:.8em; border-top:1px solid #9a8455; text-align:left;
+}
+#training-coach .tr-invite h3 {grid-area:ask; margin:0; font:italic 700 1.26em/1.18 var(--tr-type); color:#f8dfab}
+#training-coach .tr-invite-copy {grid-area:details;min-width:0}
+#training-coach .tr-invite-copy p {margin:0 0 .55em;font:400 .86em/1.32 var(--tr-type)}
+#training-coach .tr-invite-copy .tr-invite-later {color:#d6e3e3}
+#training-coach .tr-invite-qr {grid-area:qr;display:flex;flex-direction:column;align-items:center;align-self:center;margin:0;text-align:center}
+#training-coach .tr-invite-qr img {display:block;width:min(100%,6em);height:auto;border-radius:.24em;image-rendering:pixelated}
+#training-coach .tr-invite-qr figcaption {margin-top:.45em;font:400 .69em/1.25 var(--tr-type);color:#e4ded0}
+#training-coach[data-step="completed"] .tr-actions {grid-area:play;display:flex;flex-wrap:wrap;justify-content:center;gap:.55em;margin-top:.7em}
+#training-coach[data-step="completed"] .tr-actions button {min-height:max(44px,2.6em);padding:.48em 1.12em;margin:0}
+#training-coach .tr-connect {background:var(--tr-gold);border:1px solid #f8d993;color:#192a2c;font-size:.92em}
+#training-coach .tr-invite:not([hidden]) + .tr-actions .tr-primary {background:#1b3740;border-color:#92adb1;color:var(--tr-cream)}
 @media (orientation:landscape) and (min-width:620px) {
   #training-coach[data-step="theme-reveal"] .tr-panel {
     left:auto;right:max(1em,env(safe-area-inset-right));transform:none;
     max-width:min(26em,calc(49% - max(1em,env(safe-area-inset-right))));
   }
   #training-coach[data-step="completed"] .tr-panel {
-    width:min(35em,calc(100% - 2em));grid-template-areas:"school message" "school play";
-    grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);column-gap:1.1em;justify-items:start;
-    align-content:center;text-align:left;padding:1.45em 1.6em;
+    width:min(49em,calc(100% - 2em));grid-template-areas:"school message" "school invite" "school play";
+    grid-template-columns:minmax(0,.65fr) minmax(0,1.35fr);column-gap:1.3em;justify-items:start;
+    text-align:left;padding:1.45em 1.6em;
   }
   #training-coach[data-step="completed"] .tr-finale-school {width:100%;max-width:none;max-height:45vh;align-self:center;margin:0}
+}
+@media (max-width:480px) {
+  #training-coach[data-step="completed"] .tr-panel {padding:.85em 1em}
+  #training-coach[data-step="completed"] .tr-finale-school {max-height:16vh;margin:0}
+  #training-coach .tr-invite {grid-template-columns:minmax(0,1fr) 6.3em;column-gap:.75em}
 }

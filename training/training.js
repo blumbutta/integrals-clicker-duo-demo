@@ -75,8 +75,12 @@
     document.body.classList.remove("duo-training-active");
     if (wasInTraining) window.dispatchEvent(new Event("duotrainingcomplete"));
   }
-  function finish() {
-    if (lesson.phase === "complete") leaveTraining();
+  function finish(connect = false) {
+    if (lesson.phase !== "complete" || window.ProgressReset?.stale()) return;
+    leaveTraining();
+    if (App.activeRoute !== "home" || App.sheet) App.route("home");
+    if (connect) App.openSheet("leaderboard", {connect: true}, el("#leaderboard"));
+    else el(tapButton)?.focus({preventScroll: true});
   }
   function hasPrestige(s = Economy.snapshot()) {
     return s.prestigeLevel > 0 || s.highestPrestige > 0 || s.cosmicAscensions > 0;
@@ -342,17 +346,20 @@
       case "ranking":
         if (App.activeRoute !== "home" || App.sheet) App.route("home");
         explain("global-ranking", "#leaderboard", "Глобальный рейтинг",
-          "Здесь можно сравнить, сколько интегралов игроки заработали за всё время. Если захочешь участвовать, войди через Яндекс ID.",
+          "Здесь видны эпоха, престиж и текущий баланс игроков в целых интегралах. Участвовать можно через Яндекс ID.",
           "Дальше", () => go("complete", {rankingSeen: true}), {point: true});
         return;
-      case "complete":
+      case "complete": {
         // An unfinished save from before the reveal should still show its chosen theme.
         if (!lesson.themeAcknowledged) return go("home");
         if (!lesson.rankingSeen) return go("ranking");
+        const invite = !window.Leaderboard?.isConnected?.();
         explain("completed", null, "Обучение пройдено",
           "Школа открыта, а бит уже приносит интегралы. Приглашай новых жителей, чтобы город рос.",
-          "Играть самостоятельно", finish, {point: true});
+          invite ? "Позже" : "Играть самостоятельно", () => finish(),
+          {point: true, onConnect: invite ? () => finish(true) : null});
         return;
+      }
     }
   }
 
