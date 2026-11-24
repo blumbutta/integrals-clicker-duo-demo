@@ -17,11 +17,14 @@ resumed() {
   return 1
 }
 capture_ui() {
-  if timeout 18 adb -s "$ANDROID_SERIAL" shell uiautomator dump "/sdcard/duo-qa.xml" >/dev/null; then
-    device exec-out cat /sdcard/duo-qa.xml > "$dir/view.xml"
-  else
-    printf '<hierarchy/>' > "$dir/view.xml"
-  fi
+  for attempt in {1..3}; do
+    device shell rm -f /sdcard/duo-qa.xml
+    timeout 15 adb -s "$ANDROID_SERIAL" shell uiautomator dump "/sdcard/duo-qa.xml" >/dev/null || true
+    device exec-out cat /sdcard/duo-qa.xml > "$dir/view.xml" 2>/dev/null || true
+    if grep -q '</hierarchy>' "$dir/view.xml" && grep -q 'ru.mathclicker.duo' "$dir/view.xml"; then return; fi
+    sleep 1
+  done
+  printf '<hierarchy/>' > "$dir/view.xml"
 }
 first_click() {
   python3 - "$dir/view.xml" <<'PY'
@@ -78,12 +81,11 @@ resumed "$game"
 sleep 6
 capture_ui
 xy=$(first_click)
-if [[ -n $xy ]]; then
-  read -r x y <<< "$xy"
-  device shell input tap "$x" "$y"
-  sleep 1
-  capture_ui
-fi
+if [[ -z $xy ]]; then xy="600 995"; fi
+read -r x y <<< "$xy"
+device shell input tap "$x" "$y"
+sleep 1
+capture_ui
 seeded=false
 if grep -q 'Счёт пополнился' "$dir/view.xml"; then
   seeded=true
