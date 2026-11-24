@@ -139,7 +139,7 @@ verify_click "$fourth_views" 1
 echo "PASS: release update, both real wide RemoteViews, four real touch launches and stable widget IDs after rotation and game relaunch."
 
 # Keep this one already-booted tablet available for a final asset-only rebuild.
-for t in {1..40}; do
+for t in {1..100}; do
   git fetch --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
   if git cat-file -e FETCH_HEAD:duo-qa/final.sha256 2>/dev/null; then
     final_hash=$(git show FETCH_HEAD:duo-qa/final.sha256 | tr -d '\r\n')
