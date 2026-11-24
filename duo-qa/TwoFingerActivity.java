@@ -130,10 +130,19 @@ public final class TwoFingerActivity extends Activity {
                 +"var school=document.querySelector('.wm-target[data-index=\"0\"]'),building=school?school.getBoundingClientRect():r;"
                 +"var x=Math.max(r.left+r.width*.26,Math.min(r.right-r.width*.26,building.left+building.width*.5));"
                 +"var y="+(map?"Math.max(r.top+r.height*.23,Math.min(r.bottom-r.height*.20,building.top+building.height*.5))":"r.top+r.height*.24")+";"
-                +"return ["+viewport()+",x,y,r.width*.055,"+(map?"new DOMMatrix(getComputedStyle(document.querySelector('.wm-board')).transform).a":"0")+"];})()";
+                +"var span=r.width*.055, targets=[document.elementFromPoint(x-span,y),document.elementFromPoint(x+span,y)];"
+                +"var debug={rect:[r.left,r.top,r.width,r.height],hits:targets.map(function(n){return n?n.tagName+'.'+n.className:'null'}),"
+                +"owned:targets.every(function(n){return el.contains(n)}),inset:CSS.supports('inset','0'),ua:navigator.userAgent};"
+                +(map?"window.qaPinchTrace=[];['pointerdown','pointermove','pointerup','pointercancel'].forEach(function(k){el.addEventListener(k,function(e){if(window.qaPinchTrace.length<32)window.qaPinchTrace.push([k,e.pointerId,e.button,e.clientX,e.clientY]);},{capture:true,passive:true});});":"")
+                +"return ["+viewport()+",x,y,span,"+(map?"new DOMMatrix(getComputedStyle(document.querySelector('.wm-board')).transform).a":"0")+",debug,"
+                +(map?"document.querySelector('.wm-ground').getBoundingClientRect().width":"0")+"];})()";
             web.evaluateJavascript(geometry,result->{
                 try {
                     JSONArray g=new JSONArray(result), before=g.getJSONArray(0);
+                    Log.i("DuoTouchQA",route+" pinch geometry "+g.getJSONObject(5));
+                    JSONArray rect=g.getJSONObject(5).getJSONArray("rect");
+                    if(rect.getDouble(2)<=0 || rect.getDouble(3)<=0 || !g.getJSONObject(5).getBoolean("owned"))
+                        throw new Exception(route+" does not own two tappable points: "+g);
                     float px=web.getWidth()/(float)before.getDouble(0);
                     float x=(float)g.getDouble(1)*px,y=(float)g.getDouble(2)*px,span=(float)g.getDouble(3)*px;
                     float[][] p={{x-span,y},{x+span,y}};
@@ -157,14 +166,15 @@ public final class TwoFingerActivity extends Activity {
                     handler.postDelayed(()->{p[0][0]+=span*.28f;motion(MotionEvent.ACTION_MOVE,new int[]{0},p);},420);
                     handler.postDelayed(()->motion(MotionEvent.ACTION_UP,new int[]{0},p),465);
                     final double baseline=g.getDouble(4);
-                    handler.postDelayed(()->finishPinch(map,before,baseline),850);
+                    final double groundWidth=g.getDouble(6);
+                    handler.postDelayed(()->finishPinch(map,before,baseline,groundWidth),850);
                 }catch(Exception e){fail(e);}
             });
         },400));
     }
-    private void finishPinch(boolean map,JSONArray before,double baseline) {
+    private void finishPinch(boolean map,JSONArray before,double baseline,double groundWidth) {
         String check="["+viewport()+",App.activeRoute,App.sheet,document.querySelector('.pg-pane[data-detail]')!==null,"
-            +(map?"new DOMMatrix(getComputedStyle(document.querySelector('.wm-board')).transform).a":"0")+"]";
+            +(map?"new DOMMatrix(getComputedStyle(document.querySelector('.wm-board')).transform).a,document.querySelector('.wm-ground').getBoundingClientRect().width,window.qaPinchTrace":"0,0,[]")+"]";
         web.evaluateJavascript(check,result->{
             try{
                 JSONArray r=new JSONArray(result);
@@ -173,7 +183,9 @@ public final class TwoFingerActivity extends Activity {
                     throw new Exception("Pinch activated a different control: "+result);
                 if(!map){pinch(true);return;}
                 double ratio=r.getDouble(4)/baseline;
-                if(!(ratio>1.15))throw new Exception("World map did not zoom: before="+baseline+" after="+r.getDouble(4));
+                if(!(ratio>1.15 && groundWidth>0 && r.getDouble(5)/groundWidth>1.15))
+                    throw new Exception("World map did not zoom: board="+baseline+" -> "+r.getDouble(4)
+                        +", visible ground width="+groundWidth+" -> "+r.getDouble(5)+", OS pointer events="+r.getJSONArray(6));
                 verifyMapTap(ratio);
             }catch(Exception e){fail(e);}
         });
