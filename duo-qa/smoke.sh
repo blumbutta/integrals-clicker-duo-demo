@@ -137,3 +137,28 @@ echo "$fourth_views"
 test "$(ids "$first_views")" = "$(ids "$fourth_views")"
 verify_click "$fourth_views" 1
 echo "PASS: release update, both real wide RemoteViews, four real touch launches and stable widget IDs after rotation and game relaunch."
+
+# Keep this one already-booted tablet available for a final asset-only rebuild.
+for t in {1..40}; do
+  git fetch --quiet --depth=1 origin "refs/heads/$QA_BRANCH"
+  if git cat-file -e FETCH_HEAD:duo-qa/final.sha256 2>/dev/null; then
+    final_hash=$(git show FETCH_HEAD:duo-qa/final.sha256 | tr -d '\r\n')
+    git show FETCH_HEAD:duo-qa/final.apk > "$dir/final.apk"
+    echo "$final_hash  $dir/final.apk" | sha256sum -c -
+    test "$(cert "$dir/final.apk")" = "$old_cert"
+    device install -r "$dir/final.apk"
+    device shell am start -W -n "$game/.ClickerActivity" >/dev/null
+    resumed "$game"
+    sleep 6
+    final_views=$(host_screen final)
+    echo "$final_views"
+    test "$(ids "$first_views")" = "$(ids "$final_views")"
+    verify_click "$final_views" 2
+    echo "PASS: final package $final_hash, old bindings retained, both widgets display live progress and city touch launches."
+    break
+  elif git cat-file -e FETCH_HEAD:duo-qa/final.same 2>/dev/null; then
+    echo "No follow-up replacement requested."
+    break
+  fi
+  sleep 12
+done
