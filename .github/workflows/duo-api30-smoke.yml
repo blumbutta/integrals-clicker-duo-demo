@@ -57,7 +57,7 @@ jobs:
           done
           echo 'Candidate and QA fixture did not arrive' >&2
           exit 1
-      - name: Verify install, update and both hosted widgets
+      - name: Verify saved balance, install and both hosted widgets
         run: bash duo-qa/smoke.sh
       - name: Device diagnostics on failure
         if: failure()

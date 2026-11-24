@@ -107,8 +107,20 @@ resumed "$game"
 sleep 8
 if [[ $seeded == true ]]; then
   capture_ui
-  grep -q 'Счёт пополнился' "$dir/view.xml"
-  echo "Same saved tutorial milestone visible after 0.3.15 -> 0.3.16 upgrade."
+  if grep -q 'Счёт пополнился' "$dir/view.xml"; then
+    echo "Same saved tutorial milestone visible after 0.3.15 -> 0.3.16 upgrade."
+  else
+    echo "Checking the saved balance via its widget instead of tutorial text. Current UI:"
+    python3 - "$dir/view.xml" <<'PYUI'
+from xml.etree import ElementTree as ET
+import sys
+for node in ET.parse(sys.argv[1]).iter("node"):
+    for key in ("text","content-desc"):
+        if node.get(key):
+            print(node.get(key)[:140])
+PYUI
+    device logcat -d -s 'chromium:I' 'AndroidRuntime:E' '*:S' | tail -40 || true
+  fi
 fi
 device install "$dir/host.apk"
 device shell appwidget grantbind --package "$fixture" --user 0
@@ -116,6 +128,10 @@ device shell settings put system accelerometer_rotation 0
 device shell settings put system user_rotation 0
 first_views=$(host_screen portrait)
 echo "$first_views"
+if [[ $seeded == true ]]; then
+  grep -F 'Лаборатория 1 ∫' <<<"$first_views"
+  echo "First tap from 0.3.15 remains in 0.3.16's saved game."
+fi
 verify_click "$first_views" 1
 second_views=$(host_screen second)
 echo "$second_views"
