@@ -5,6 +5,7 @@ sdk="$ANDROID_HOME/build-tools/35.0.0"
 dir="$RUNNER_TEMP/duo-widget"
 mkdir -p "$dir"
 device() { adb -s "$ANDROID_SERIAL" "$@"; }
+bash duo-qa/same-avd-power-cycle.sh
 game=ru.mathclicker.duo
 fixture=review.duo.widgetcheck
 resumed() {

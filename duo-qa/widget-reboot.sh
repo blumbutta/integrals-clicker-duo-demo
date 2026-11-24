@@ -28,6 +28,18 @@ for attempt in {1..45}; do
     [[ "${match#* skin=}" == "$before_values" ]]
     echo "$match"
     echo 'PASS: OS reboot retained the same bound widget ID, balance, background and button.'
+    bash duo-qa/native-home-gesture.sh verify-pin
+    bash duo-qa/same-avd-power-cycle.sh
+    device shell am start -W -n review.duo.widgetcheck/.HostActivity --es phase powercycle
+    for retry in {1..45}; do
+      cold=$(device logcat -d -s 'DuoWidgetQA:I' '*:S' | tr -d '\r' | grep 'READY powercycle ' | tail -1 || true)
+      if [[ -n "$cold" ]]; then break; fi
+      sleep 1
+    done
+    [[ "$cold" == *" ids=$before_id "* ]]
+    [[ "${cold#* skin=}" == "$before_values" ]]
+    echo "$cold"
+    echo 'PASS: the same widget also survives power-off and a cold boot on the retained data disk.'
     bash duo-qa/native-home-gesture.sh verify
     exit 0
   fi
