@@ -85,7 +85,7 @@
     <button id="exit-confirm" type="button">Выйти</button>
   </div>
 </dialog>
-<template id="game-modules"><script defer src="game.js?v=b9fc3835d669"></script></template>
+<template id="game-modules"><script defer src="game.js?v=3c66e389adbb"></script></template>
 <script id="new-game-training">// Select modules before launch.js opens the ordinary game's inert template.
 (() => {
   "use strict";
@@ -163,7 +163,7 @@ if (!window.DuoTraining) return;
 
   const sheet = document.createElement("link");
   sheet.rel = "stylesheet"; sheet.href = "../training/training-view.css?v=271c95166a5f"; document.head.append(sheet);
-  const scripts = ["../training/game.js?v=1cf674f4c250", "../training/training-view.js?v=27cc686f9f1d", "../training/training.js?v=ea85fdb17aa3"].map(src => {
+  const scripts = ["../training/game.js?v=dbc5eaa95089", "../training/training-view.js?v=27cc686f9f1d", "../training/training.js?v=ea85fdb17aa3"].map(src => {
     const script = document.createElement("script");
     script.defer = true; script.src = src;
     return script;

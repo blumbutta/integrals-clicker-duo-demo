@@ -1330,7 +1330,7 @@ window.ExtraModel = (() => {
       };
       image.onload=()=>{
         if(visible && !visible()){
-          image.onload=image.onerror=null;resolve(false);return;
+          sheet.suspended=true;image.onload=image.onerror=null;resolve(false);return;
         }
         if(image.decode)image.decode().then(finish,finish);else finish();
       };
@@ -1339,7 +1339,7 @@ window.ExtraModel = (() => {
     });
     return sheet;
   }
-  // Retain at most two early sheets between visits (6.2 MiB decoded).
+  // Retain at most two early sheets between visits (1.6 MiB decoded).
   const earlySheets=new Map();
   function warm(pairs){
     const names=kinds.slice(0,4)
@@ -1348,45 +1348,58 @@ window.ExtraModel = (() => {
     for(const name of earlySheets.keys())if(!names.includes(name))earlySheets.delete(name);
     for(const name of names){
       if(earlySheets.has(name))continue;
-      const picture=loadSheet(name);
+      const picture=loadSheet("sprites-small/"+name);
       earlySheets.set(name,picture);
       picture.ready.then(ok=>{if(!ok && earlySheets.get(name)===picture)earlySheets.delete(name);});
     }
   }
   function create(onImageLoad,visible) {
-    const sheets=new Map(), actors=new Map(), preferences=window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sheets=new Map(),fullSheets=new Map(), actors=new Map(), preferences=window.matchMedia("(prefers-reduced-motion: reduce)");
     let signature=null,openMask=-1, tables=[],crowd=[],closed=false, reduced=preferences.matches;
     let elapsed=0,nextSpeech=7, bubble=null, lastPhrase=-1;
     const seed=Math.floor(Math.random()*100001), offsets=kinds.map(()=>Math.random());
     let inFlight=0;
     function dropSheet(name){
       sheets.get(name)?.bitmap?.close();
-      sheets.delete(name);
+      sheets.delete(name);fullSheets.delete(name);
+    }
+    function fullSheet(name,forCapture=false){
+      let source=fullSheets.get(name);
+      if(!source || source.suspended){
+        source=loadSheet(name,forCapture?null:visible);
+        fullSheets.set(name,source);
+      }
+      return source;
     }
     function sheet(name,k){
       if(sheets.has(name))return sheets.get(name);
-      const original=earlySheets.get(name)||loadSheet(name,visible);
-      if(!onImageLoad){sheets.set(name,original);return original;}
+      if(!onImageLoad){const source=fullSheet(name,true);sheets.set(name,source);return source;}
+      const original=earlySheets.get(name)||loadSheet("sprites-small/"+name,visible);
       const entry={image:original.image,bitmap:null,decoded:false};
       sheets.set(name,entry);inFlight++;
       original.ready.then(async ok=>{
         if(closed || sheets.get(name)!==entry)return;
         // The network read may finish after the player switches tabs. Wait for
         // an actual draw on return before starting any new decoding work.
-        if(visible && !visible()){dropSheet(name);return;}
-        if(!ok)return;
+        if(original.suspended || (visible && !visible())){dropSheet(name);return;}
+        if(!ok){
+          // A missing mini still has its original. Try it once per scene.
+          const fallback=fullSheet(name);
+          if(await fallback.ready){
+            if(closed || sheets.get(name)!==entry)return;
+            entry.image=fallback.image;entry.decoded=true;
+          }else if(fallback.suspended && sheets.get(name)===entry)dropSheet(name);
+          return;
+        }
         const image=original.image;
         // An overview sprite covers only a few display pixels. Use a small
         // decoded atlas for it; retain the original art for very close zooms.
         if(window.createImageBitmap){
-          const width=Math.ceil(image.naturalWidth/k.cols/2)*k.cols;
-          const height=Math.ceil(image.naturalHeight/k.rows/2)*k.rows;
           try{
-            const bitmap=await createImageBitmap(image,
-              {resizeWidth:width,resizeHeight:height,resizeQuality:"medium"});
+            const bitmap=await createImageBitmap(image);
             if(closed || sheets.get(name)!==entry){bitmap.close();return;}
             entry.bitmap=bitmap;
-          }catch(_){} // WebViews without bitmap resizing draw the original.
+          }catch(_){} // The prepared image is also directly drawable.
         }
         entry.decoded=true;
       }).finally(()=>{inFlight--;if(!closed)onImageLoad();});
@@ -1468,7 +1481,7 @@ window.ExtraModel = (() => {
       return crowd.filter(a=>a.phase!=="inside" && actorOpacity(a)>0).map(a=>{
         const k=a.kind, boarding=k.shuttle&&(a.phase==="boarding"||a.phase==="arrived");
         return {x:a.x,y:a.y,face:a.face,kind:k,opacity:actorOpacity(a),
-          frame:actorFrame(a,boarding),image:sheet(k.sheet+(boarding?"-stop":""),k).image};
+          frame:actorFrame(a,boarding),image:fullSheet(k.sheet+(boarding?"-stop":""),true).image};
       }).sort((a,b)=>a.y-b.y);
     }
     function draw(ctx,dt,time,options={}) {
@@ -1490,12 +1503,19 @@ window.ExtraModel = (() => {
         const picture=sheets.get(name) || ((earlySheets.has(name)||inFlight===0) ? sheet(name,k) : null);
         if(!picture?.decoded)continue;
         const bitmap=picture.bitmap;
-        const useBitmap=bitmap && (!options.pixelScale || options.pixelScale*k.w<=bitmap.width/k.cols);
-        const img=useBitmap?bitmap:picture.image;
+        const mini=bitmap||picture.image;
+        let img=mini,sw=(bitmap?bitmap.width:mini.naturalWidth)/k.cols,sh=(bitmap?bitmap.height:mini.naturalHeight)/k.rows;
+        if(options.pixelScale*k.w>sw || options.pixelScale*k.h>sh){
+          let full=fullSheets.get(name);
+          if((!full || full.suspended) && !inFlight && options.settled!==false){
+            full=fullSheet(name);inFlight++;
+            full.ready.finally(()=>{inFlight--;if(!closed)onImageLoad?.();});
+          }
+          if(full?.decoded){img=full.image;sw=img.naturalWidth/k.cols;sh=img.naturalHeight/k.rows;}
+        }
         const alpha=actorOpacity(a);
         const s=.90+.10*alpha;
         const frame=actorFrame(a,boarding);
-        const sw=(useBitmap?img.width:img.naturalWidth)/k.cols,sh=(useBitmap?img.height:img.naturalHeight)/k.rows;
         ctx.save();ctx.translate(a.x,a.y);ctx.scale(s,s);ctx.globalAlpha*=alpha;
         ctx.fillStyle="rgba(0,0,0,.24)";ctx.beginPath();ctx.ellipse(1,1,5.5,2,0,0,2*Math.PI);ctx.fill();
         if(a.face<0)ctx.scale(-1,1);
@@ -1741,10 +1761,39 @@ window.DuoWorldMap = (() => {
     machineSheets.delete(spec);
     if(sheet.source?.close)sheet.source.close();
     else if(sheet.source instanceof HTMLCanvasElement)sheet.source.width=sheet.source.height=0;
+    sheet.rows?.forEach(image=>image.close?.());
     sheet.source=null;
+  }
+  function colliderRow(spec,sheet,row,onReady){
+    const available=sheet.rows[row];
+    if(available || sheet.busy || sheet.failed.has(row) || !canBakeMotion() || liveCameraMoving?.())return available;
+    sheet.busy=true;
+    const url=window.duoArt("art/map/collider-motion-"+row+".webp");
+    (async()=>{
+      let image;
+      if(window.createImageBitmap){
+        try{
+          const res=await fetch(url);
+          if(!res.ok)throw Error("Missing collider strip");
+          const data=await res.blob();
+          if(machineSheets.get(spec)===sheet && canBakeMotion())image=await createImageBitmap(data);
+        }catch(_){} // An embedded preview can prohibit fetching its local assets.
+      }
+      if(machineSheets.get(spec)!==sheet || !canBakeMotion()){image?.close?.();return;}
+      if(!image){
+        const pic=preparePicture(url,"low");
+        if(await pic.ready)image=pic.image;
+      }
+      if(machineSheets.get(spec)!==sheet){image?.close?.();return;}
+      if(image)sheet.rows[row]=image;else sheet.failed.add(row);
+    })().finally(()=>{sheet.busy=false;onReady();});
   }
   function motionSheet(spec){
     if(machineSheets.has(spec))return machineSheets.get(spec);
+    if(spec.id==="collider"){
+      const sheet={rows:[],busy:false,failed:new Set(),lastSource:null,lastColumn:0,ready:Promise.resolve()};
+      machineSheets.set(spec,sheet);return sheet;
+    }
     const sheet={source:null,ready:null},picture=preparePicture(window.duoArt("art/map/"+spec.id+"-motion.webp"),"low",false);
     machineSheets.set(spec,sheet);
     sheet.ready=picture.ready.then(ok=>ok&&new Promise(resolve=>{
@@ -1846,12 +1895,27 @@ window.DuoWorldMap = (() => {
       ctx.globalAlpha=1;
       fx.forEach(({spec:d,strength,sheet})=>{
         if(!visible(d.x,d.y,d.w,d.h))return;
-        const motion=sheet.source;
-        if(!motion)return;
+        if(!sheet.rows && !sheet.source)return;
         let f=reduced.matches?(d.id==="collider"?20:13.5):elapsed*9*(1+.6*strength)%72;
         const first=Math.floor(f),blend=f-first,alpha=.56+.44*strength;
-        const draw=(n,a)=>{ctx.globalAlpha=a;ctx.drawImage(motion,n%8*d.cw,Math.floor(n/8)*d.ch,d.cw,d.ch,d.x,d.y,d.w,d.h);};
-        draw(first,alpha);if(blend>.01)draw((first+1)%72,alpha*blend);
+        const draw=(source,n,a)=>{
+          ctx.globalAlpha=a;
+          ctx.drawImage(source,n%8*d.cw,Math.floor(n/8)*d.ch,d.cw,d.ch,d.x,d.y,d.w,d.h);
+        };
+        const next=(first+1)%72;
+        if(sheet.rows){
+          const row=Math.floor(first/8),source=colliderRow(d,sheet,row,redraw);
+          if(source){sheet.lastSource=source;sheet.lastColumn=first%8;}
+          // With a slow or missing strip, hold the previously displayed frame.
+          // Blend only when both neighboring frames are available.
+          if(sheet.lastSource)draw(sheet.lastSource,sheet.lastColumn,alpha);
+          const following=sheet.rows[Math.floor(next/8)];
+          if(source && following && blend>.01)draw(following,next%8,alpha*blend);
+          if(!reduced.matches && first%8>=4)colliderRow(d,sheet,(row+1)%9,redraw);
+        }else{
+          draw(sheet.source,first,alpha);
+          if(blend>.01)draw(sheet.source,next,alpha*blend);
+        }
         ctx.globalAlpha=1;
       });
       // The rotating lanes and the stationary disk share the same ground projection.
@@ -1860,7 +1924,7 @@ window.DuoWorldMap = (() => {
         drawBitRings(ctx,rings,elapsed);
         ctx.restore();
       }
-      residents.draw(ctx,delta,elapsed,{focused:focus!==null,bounds,pixelScale:px*scale});ctx.globalAlpha=1;
+      residents.draw(ctx,delta,elapsed,{focused:focus!==null,bounds,pixelScale:px*scale,settled:!tween&&!pointers.size&&!wheelTimer});ctx.globalAlpha=1;
       if(!reduced.matches){ctx.font="italic 16px Georgia, serif";ctx.textAlign="center";groups.forEach(g=>{for(let i=0;i<g.tier;i++)passage(ctx,g,i,elapsed);});}
       ctx.restore();ctx.globalAlpha=1;
     }
