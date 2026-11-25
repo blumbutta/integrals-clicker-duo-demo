@@ -405,6 +405,13 @@ window.DuoAudio = (() => {
     }
     return true;
   }
+  // Opening the device for the first AudioContext can stall the input thread.
+  // Prepare it during an idle interval; resume and playback stay gesture-gated.
+  const prepareContext=()=>{
+    if(!context && prefs.sound && foreground && !document.hidden)ensureContext();
+  };
+  if(window.requestIdleCallback)window.requestIdleCallback(prepareContext);
+  else setTimeout(prepareContext,0);
   function stopNode(node){
     if(!node)return;
     try{node.stop()}catch(_){}
@@ -1312,7 +1319,7 @@ window.ExtraModel = (() => {
     }
   }
   const phrases=["Мысль уже в пути!","Почти посчитали!","Ещё один интеграл!","А если через замену?","Идея пришла!","Сходимость — это важно.","Проверим ещё раз!","Бесконечность рядом.","Работаем в паре!","Красивое решение!","Кофе. Формула. Победа.","Сегодня всё сходится!","Передаю в центр!","Делюсь открытием!","Нашёл короткий путь!","Уравнение согласно."];
-  function loadSheet(name){
+  function loadSheet(name,visible){
     const image=new Image(), sheet={image,decoded:false};
     image.decoding="async";
     sheet.ready=new Promise(resolve=>{
@@ -1321,7 +1328,12 @@ window.ExtraModel = (() => {
         image.onload=null;image.onerror=null;
         resolve(sheet.decoded);
       };
-      image.onload=()=>image.decode?image.decode().then(finish,finish):finish();
+      image.onload=()=>{
+        if(visible && !visible()){
+          image.onload=image.onerror=null;resolve(false);return;
+        }
+        if(image.decode)image.decode().then(finish,finish);else finish();
+      };
       image.onerror=finish;
       image.src=window.duoArt("art/map/"+name+".webp");
     });
@@ -1341,20 +1353,44 @@ window.ExtraModel = (() => {
       picture.ready.then(ok=>{if(!ok && earlySheets.get(name)===picture)earlySheets.delete(name);});
     }
   }
-  function create(onImageLoad) {
+  function create(onImageLoad,visible) {
     const sheets=new Map(), actors=new Map(), preferences=window.matchMedia("(prefers-reduced-motion: reduce)");
     let signature=null,openMask=-1, tables=[],crowd=[],closed=false, reduced=preferences.matches;
     let elapsed=0,nextSpeech=7, bubble=null, lastPhrase=-1;
     const seed=Math.floor(Math.random()*100001), offsets=kinds.map(()=>Math.random());
-    function sheet(name) {
-      if(!sheets.has(name)) {
-        const picture=earlySheets.get(name)||loadSheet(name);
-        sheets.set(name,picture);
-        if(!picture.decoded && onImageLoad)picture.ready.then(ok=>{
-          if(ok && !closed && sheets.get(name)===picture)onImageLoad();
-        });
-      }
-      return sheets.get(name);
+    let inFlight=0;
+    function dropSheet(name){
+      sheets.get(name)?.bitmap?.close();
+      sheets.delete(name);
+    }
+    function sheet(name,k){
+      if(sheets.has(name))return sheets.get(name);
+      const original=earlySheets.get(name)||loadSheet(name,visible);
+      if(!onImageLoad){sheets.set(name,original);return original;}
+      const entry={image:original.image,bitmap:null,decoded:false};
+      sheets.set(name,entry);inFlight++;
+      original.ready.then(async ok=>{
+        if(closed || sheets.get(name)!==entry)return;
+        // The network read may finish after the player switches tabs. Wait for
+        // an actual draw on return before starting any new decoding work.
+        if(visible && !visible()){dropSheet(name);return;}
+        if(!ok)return;
+        const image=original.image;
+        // An overview sprite covers only a few display pixels. Use a small
+        // decoded atlas for it; retain the original art for very close zooms.
+        if(window.createImageBitmap){
+          const width=Math.ceil(image.naturalWidth/k.cols/2)*k.cols;
+          const height=Math.ceil(image.naturalHeight/k.rows/2)*k.rows;
+          try{
+            const bitmap=await createImageBitmap(image,
+              {resizeWidth:width,resizeHeight:height,resizeQuality:"medium"});
+            if(closed || sheets.get(name)!==entry){bitmap.close();return;}
+            entry.bitmap=bitmap;
+          }catch(_){} // WebViews without bitmap resizing draw the original.
+        }
+        entry.decoded=true;
+      }).finally(()=>{inFlight--;if(!closed)onImageLoad();});
+      return entry;
     }
     function start(a,path,onRoad) {
       if(!path){a.phase="inside";a.timer=0;a.wait=2;return;}
@@ -1380,8 +1416,14 @@ window.ExtraModel = (() => {
       const keep=new Set(),keepSheets=new Set(),q=quotas(counts);
       kinds.forEach((k,i)=>{
         if(!q[i])return;
-        keepSheets.add(k.sheet);sheet(k.sheet);
-        if(k.shuttle){keepSheets.add(k.sheet+"-stop");sheet(k.sheet+"-stop");}
+        keepSheets.add(k.sheet);
+        if(k.shuttle)keepSheets.add(k.sheet+"-stop");
+        // The live map requests only visible sprites, at most one cold sheet
+        // at a time. Standalone captures don't run a frame loop.
+        if(!onImageLoad){
+          sheet(k.sheet);
+          if(k.shuttle)sheet(k.sheet+"-stop");
+        }
         for(let j=0;j<q[i];j++) {
           const key=k.id+"-"+j; keep.add(key);
           let a=actors.get(key);
@@ -1398,7 +1440,7 @@ window.ExtraModel = (() => {
         }
       });
       for(const key of actors.keys())if(!keep.has(key))actors.delete(key);
-      for(const name of sheets.keys())if(!keepSheets.has(name))sheets.delete(name);
+      for(const name of sheets.keys())if(!keepSheets.has(name))dropSheet(name);
       crowd=Array.from(actors.values());
       if(reduced || !crowd.length)bubble=null;
     }
@@ -1426,7 +1468,7 @@ window.ExtraModel = (() => {
       return crowd.filter(a=>a.phase!=="inside" && actorOpacity(a)>0).map(a=>{
         const k=a.kind, boarding=k.shuttle&&(a.phase==="boarding"||a.phase==="arrived");
         return {x:a.x,y:a.y,face:a.face,kind:k,opacity:actorOpacity(a),
-          frame:actorFrame(a,boarding),image:sheets.get(k.sheet+(boarding?"-stop":""))?.image};
+          frame:actorFrame(a,boarding),image:sheet(k.sheet+(boarding?"-stop":""),k).image};
       }).sort((a,b)=>a.y-b.y);
     }
     function draw(ctx,dt,time,options={}) {
@@ -1444,13 +1486,16 @@ window.ExtraModel = (() => {
       for(const a of crowd) {
         if(a.phase==="inside"||!visible(a))continue;
         const k=a.kind, boarding=k.shuttle&&(a.phase==="boarding"||a.phase==="arrived");
-        const picture=sheets.get(k.sheet+(boarding?"-stop":""));
+        const name=k.sheet+(boarding?"-stop":"");
+        const picture=sheets.get(name) || ((earlySheets.has(name)||inFlight===0) ? sheet(name,k) : null);
         if(!picture?.decoded)continue;
-        const img=picture.image;
+        const bitmap=picture.bitmap;
+        const useBitmap=bitmap && (!options.pixelScale || options.pixelScale*k.w<=bitmap.width/k.cols);
+        const img=useBitmap?bitmap:picture.image;
         const alpha=actorOpacity(a);
         const s=.90+.10*alpha;
         const frame=actorFrame(a,boarding);
-        const sw=img.naturalWidth/k.cols,sh=img.naturalHeight/k.rows;
+        const sw=(useBitmap?img.width:img.naturalWidth)/k.cols,sh=(useBitmap?img.height:img.naturalHeight)/k.rows;
         ctx.save();ctx.translate(a.x,a.y);ctx.scale(s,s);ctx.globalAlpha*=alpha;
         ctx.fillStyle="rgba(0,0,0,.24)";ctx.beginPath();ctx.ellipse(1,1,5.5,2,0,0,2*Math.PI);ctx.fill();
         if(a.face<0)ctx.scale(-1,1);
@@ -1476,7 +1521,7 @@ window.ExtraModel = (() => {
       ctx.font="italic 17px Georgia,serif";ctx.fillStyle="#f2e8c2";ctx.textAlign="center";ctx.textBaseline="middle";
       ctx.fillText(phrases[bubble.phrase],0,0,213);ctx.restore();
     }
-    function close(){closed=true;sheets.clear();actors.clear();crowd=[];tables=[];bubble=null;}
+    function close(){closed=true;for(const name of sheets.keys())dropSheet(name);actors.clear();crowd=[];tables=[];bubble=null;}
     return {sync,draw,capture,close};
   }
   window.MapResidents={create,warm};
@@ -1515,7 +1560,7 @@ window.DuoWorldMap = (() => {
   // Retain the current city's decoded pictures across tab changes. Fetching the
   // WebP alone still leaves the first visible frame waiting for a full decode.
   let cachedAtlas=null;
-  function preparePicture(url,priority){
+  function preparePicture(url,priority,decode=true){
     const image=new Image(),picture={image,decoded:false,failed:false};
     image.draggable=false;image.decoding="async";image.fetchPriority=priority;
     picture.ready=new Promise(resolve=>{
@@ -1524,7 +1569,7 @@ window.DuoWorldMap = (() => {
         picture.failed=!picture.decoded;
         image.onload=null;image.onerror=null;resolve(picture.decoded);
       };
-      image.onload=()=>image.decode?image.decode().then(finish,finish):finish();
+      image.onload=()=>decode && image.decode?image.decode().then(finish,finish):finish();
       image.onerror=finish;
       image.src=url;
     });
@@ -1650,17 +1695,30 @@ window.DuoWorldMap = (() => {
     c.width=c.height=side*2;
     const g=c.getContext("2d");
     g.scale(2,2);g.translate(side/2,side/2);
-    g.textAlign="center";g.textBaseline="middle";
-    g.font="bold "+Math.min(9,tau*radius/amount*1.22)+"px monospace";g.fillStyle=colors[i];g.shadowColor="#11232e";g.shadowBlur=1.4;
-    for(let j=0;j<amount;j++){g.save();g.rotate(-j*tau/amount);g.fillText((j+i)%2,0,-radius);g.restore();}
-    return {c,side};
+    const glyphSize=16,atlas=document.createElement("canvas");
+    atlas.width=glyphSize*4;atlas.height=glyphSize*2;
+    const ink=atlas.getContext("2d");ink.scale(2,2);
+    ink.textAlign="center";ink.textBaseline="middle";
+    ink.font="bold "+Math.min(9,tau*radius/amount*1.22)+"px monospace";
+    ink.fillStyle=colors[i];ink.shadowColor="#11232e";ink.shadowBlur=1.4;
+    for(let digit=0;digit<2;digit++)ink.fillText(String(digit),(digit+.5)*glyphSize,glyphSize/2);
+    for(let j=0;j<amount;j++){
+      g.save();g.rotate(-j*tau/amount);
+      g.drawImage(atlas,(j+i)%2*glyphSize*2,0,glyphSize*2,glyphSize*2,
+        -glyphSize/2,-radius-glyphSize/2,glyphSize,glyphSize);
+      g.restore();
+    }
+    return {c,side,amount};
   }
   let cachedBits=-1,cachedRings=[];
   function bitRings(bits) {
     if(bits===cachedBits)return cachedRings;
     const extra=Math.max(0,bits-1250);
     cachedBits=bits;
-    cachedRings=colors.map((_,i)=>makeRing(Math.min(250,Math.max(0,bits-i*250))+Math.floor(extra/5)+(i<extra%5?1:0),i));
+    cachedRings=colors.map((_,i)=>{
+      const amount=Math.min(250,Math.max(0,bits-i*250))+Math.floor(extra/5)+(i<extra%5?1:0);
+      return cachedRings[i]?.amount===amount?cachedRings[i]:makeRing(amount,i);
+    });
     return cachedRings;
   }
   function drawBitRings(ctx,rings,time) {
@@ -1670,11 +1728,13 @@ window.DuoWorldMap = (() => {
       ctx.drawImage(r.c,-r.side/2,-r.side/2,r.side,r.side);ctx.restore();
     }
   }
-  let liveCity=null,liveCameraMoving=null;
+  let liveCity=null,liveCameraMoving=null,liveRenderAllowed=null;
   // Only the three purchased installations can have an animation sheet. Keep
   // their original 72 frames as pixels; cropping WebP directly in every frame
   // can unpack the entire 2592 × 1647 collider sheet for each blend sample.
   const machineSheets=new Map();
+  const canBakeMotion=()=>liveRenderAllowed?.() && window.App?.activeRoute==="world" && !window.App.sheet;
+  function resumeMotionSheets(){for(const sheet of machineSheets.values())sheet.resume?.();}
   function forgetMotion(spec){
     const sheet=machineSheets.get(spec);
     if(!sheet)return;
@@ -1685,15 +1745,18 @@ window.DuoWorldMap = (() => {
   }
   function motionSheet(spec){
     if(machineSheets.has(spec))return machineSheets.get(spec);
-    const sheet={source:null,ready:null},picture=preparePicture(window.duoArt("art/map/"+spec.id+"-motion.webp"),"low");
+    const sheet={source:null,ready:null},picture=preparePicture(window.duoArt("art/map/"+spec.id+"-motion.webp"),"low",false);
     machineSheets.set(spec,sheet);
     sheet.ready=picture.ready.then(ok=>ok&&new Promise(resolve=>{
       function queue(){
+        sheet.resume=null;
+        if(!canBakeMotion()){sheet.resume=queue;return;}
         if(window.requestIdleCallback)window.requestIdleCallback(prepare,{timeout:450});
         else setTimeout(prepare,48);
       }
       async function prepare(){
         if(machineSheets.get(spec)!==sheet){resolve();return;}
+        if(!canBakeMotion()){sheet.resume=queue;return;}
         if(liveCameraMoving?.()){setTimeout(queue,120);return;}
         let pixels=null;
         if(window.createImageBitmap){
@@ -1701,6 +1764,7 @@ window.DuoWorldMap = (() => {
         }
         if(machineSheets.get(spec)!==sheet){pixels?.close();resolve();return;}
         if(!pixels){
+          if(!canBakeMotion()){sheet.resume=queue;return;}
           const canvas=document.createElement("canvas");
           canvas.width=picture.image.naturalWidth;canvas.height=picture.image.naturalHeight;
           const context=canvas.getContext("2d");
@@ -1736,15 +1800,29 @@ window.DuoWorldMap = (() => {
     hubDisk.firstChild.src=window.duoArt("art/formula.svg");
     let px=1,w=0,h=0,fit=1,zoom=1,cx=W/2,cy=H/2,scale=1,ox=0,oy=0,focus=null,inset=0;
     let stage=-1,groupKey="",groups=[],bitCount=-1,rings=[],fx=[],closed=false,paused=false;
-    let detailSources=[],physicalDensity=1,landscape=false;
+    let detailSources=[],physicalDensity=1,landscape=false,parked=false;
     const detailImages=new Map(),machineBases=new Map(),machineLayer=root.querySelector(".wm-machines");
     let raf=0,prev=0,elapsed=0,dirty=true,tween=null;
     let cameraPending=false,detailsPending=false,decodingDetails=0,gestureBounds=null,wheelTimer=0;
     const pointers=new Map(),cleanup=[];
-    const residents=window.MapResidents.create(redraw);
-    const captureCity=()=>({people:residents.capture(),rings,time:elapsed});
+    const sceneVisible=()=>!closed&&!parked&&!paused&&!document.hidden;
+    const residents=window.MapResidents.create(redraw,sceneVisible);
+    let pendingActors=null,staticFrameShown=false;
+    function prepareActors(){
+      if(!pendingActors)return;
+      const {snapshot,bits,bought}=pendingActors;
+      pendingActors=null;
+      if(bits!==bitCount){bitCount=bits;rings=bitRings(bits);}
+      syncMachines(bought);
+      residents.sync(snapshot);
+    }
+    const captureCity=()=>{
+      prepareActors();
+      return {people:residents.capture(),rings,time:elapsed};
+    };
     liveCity=captureCity;
-    liveCameraMoving=()=>!!(tween||pointers.size||wheelTimer);
+    const cameraMoving=()=>!!(tween||pointers.size||wheelTimer);
+    liveCameraMoving=cameraMoving;liveRenderAllowed=sceneVisible;
     function listen(target,event,fn,opts){target.addEventListener(event,fn,opts);cleanup.push(()=>target.removeEventListener(event,fn,opts));}
     function redraw(){dirty=true;if(!closed&&!paused&&!raf&&!document.hidden)raf=requestAnimationFrame(frame);}
     function paint(){
@@ -1782,7 +1860,7 @@ window.DuoWorldMap = (() => {
         drawBitRings(ctx,rings,elapsed);
         ctx.restore();
       }
-      residents.draw(ctx,delta,elapsed,{focused:focus!==null,bounds});ctx.globalAlpha=1;
+      residents.draw(ctx,delta,elapsed,{focused:focus!==null,bounds,pixelScale:px*scale});ctx.globalAlpha=1;
       if(!reduced.matches){ctx.font="italic 16px Georgia, serif";ctx.textAlign="center";groups.forEach(g=>{for(let i=0;i<g.tier;i++)passage(ctx,g,i,elapsed);});}
       ctx.restore();ctx.globalAlpha=1;
     }
@@ -1892,7 +1970,7 @@ window.DuoWorldMap = (() => {
       }
       // While the camera moves, transform what's already painted. Decoding and
       // attaching textures for intermediate viewports interrupted the first zoom.
-      if(detailsPending&&!tween&&!pointers.size&&!wheelTimer)updateDetails();
+      if(w && h && detailsPending&&!tween&&!pointers.size&&!wheelTimer)updateDetails();
     }
     const districtPanel=root.closest(".pg-pane")?.querySelector(".pg-overlay");
     function resize() {
@@ -1928,6 +2006,16 @@ window.DuoWorldMap = (() => {
         if(t===1)tween=null;
       }
       presentCamera();
+      // ResizeObserver positions the static city and its hit targets on the first
+      // layout. Let that frame reach the screen before painting the actor canvas.
+      if(!w || !h || stage<0)return;
+      if(!staticFrameShown){
+        staticFrameShown=true;
+        raf=requestAnimationFrame(frame);
+        return;
+      }
+      if(dirty)resumeMotionSheets();
+      prepareActors();
       if(dirty || (!reduced.matches&&(!prev||ts-prev>=1000/30-.7))){
         delta=reduced.matches||!prev?0:Math.max(0,Math.min(.1,(ts-prev)/1000));elapsed+=delta;prev=ts;dirty=false;paint();
       }
@@ -2036,7 +2124,7 @@ window.DuoWorldMap = (() => {
       loadFull(renew);
     }
     function retryVisibleAtlas() {
-      if(closed||document.hidden||wanted<0||!cachedAtlas?.full.failed)return;
+      if(closed||parked||document.hidden||wanted<0||!cachedAtlas?.full.failed)return;
       loadAtlas(wanted,true);
     }
     function sync(s) {
@@ -2070,12 +2158,8 @@ window.DuoWorldMap = (() => {
         else {halos.replaceChildren();Promise.all(lights.map(light=>light.ready)).then(paintLights);}
       }
       groups=unlocked;
-      const bits=get("autoclick");if(bits!==bitCount){
-        bitCount=bits;rings=bitRings(bits);
-      }
-      syncMachines(bought);
-      syncAppearance();
-      residents.sync(s);redraw();
+      pendingActors={snapshot:s,bits:get("autoclick"),bought};
+      syncAppearance();redraw();
     }
     function point(e,r){return {x:e.clientX-r.left,y:e.clientY-r.top};}
     function touchPoint(e){
@@ -2115,7 +2199,7 @@ window.DuoWorldMap = (() => {
         if(x>=a&&x<=a+c&&y>=b&&y<=b+d){onDistrict(index);break;}}
     }
     listen(surface,"pointerup",finish);listen(surface,"pointercancel",finish);listen(surface,"lostpointercapture",finish);
-    listen(window,"duoappearancechange",syncAppearance);
+    listen(window,"duoappearancechange",()=>{if(!parked)syncAppearance();});
     listen(surface,"wheel",e=>{
       if(focus!==null)return;
       e.preventDefault();tween=null;clearTimeout(wheelTimer);
@@ -2126,12 +2210,29 @@ window.DuoWorldMap = (() => {
     function sleep(value){if(!!value===paused)return;paused=!!value;if(paused){cancelAnimationFrame(raf);raf=0;prev=0;}else redraw();}
     listen(window,"online",retryVisibleAtlas);
     listen(document,"visibilitychange",()=>{retryVisibleAtlas();prev=0;if(document.hidden){cancelAnimationFrame(raf);raf=0;}else redraw();});
-    const obs=new ResizeObserver(resize);obs.observe(surface);if(districtPanel)obs.observe(districtPanel);resize();
-    return {sync,select,reset,restoreViewport,sleep, close(){
+    const obs=new ResizeObserver(()=>{if(!parked)resize();});
+    function observeSize(){obs.observe(surface);if(districtPanel)obs.observe(districtPanel);}
+    observeSize();
+    function park(){
+      // If a stage is still loading, close normally so its pending callbacks
+      // cannot change a different city while the player is on another page.
+      if(stage!==wanted || ground.dataset.quality!=="full")return false;
+      parked=true;sleep(true);obs.disconnect();
+      clearTimeout(wheelTimer);wheelTimer=0;pointers.clear();gestureBounds=null;
+      tween=null;beforeDistrict=null;focus=null;inset=0;zoom=1;cx=W/2;cy=H/2;
+      if(liveCity===captureCity){liveCity=null;liveCameraMoving=null;liveRenderAllowed=null;}
+      return true;
+    }
+    function attach(){
+      parked=false;staticFrameShown=false;liveCity=captureCity;liveCameraMoving=cameraMoving;liveRenderAllowed=sceneVisible;
+      observeSize();geometry();presentCamera();syncAppearance();
+      // The page decides whether the game is in the foreground before waking it.
+    }
+    return {sync,select,reset,restoreViewport,sleep,park,attach,close(){
       closed=true;clearTimeout(retryTimer);clearTimeout(previewTimer);clearTimeout(wheelTimer);
       for(const [part,picture] of detailImages)releaseDetail(part,picture);
       detailImages.clear();terrain.remove();halos.replaceChildren();
-      if(liveCity===captureCity){liveCity=null;liveCameraMoving=null;}
+      if(liveCity===captureCity){liveCity=null;liveCameraMoving=null;liveRenderAllowed=null;}
       cancelAnimationFrame(raf);obs.disconnect();cleanup.forEach(fn=>fn());residents.close();
     }};
   }
@@ -3214,7 +3315,7 @@ window.DuoResidents = (() => {
     ["Энергетическая станция","architect","nanoforge",794,649,246,125]
   ];
   const districtIDs = ["school","university","academy","research","computing","science-city","accelerator","energy"];
-  let map=null, mapNativePaused=false, seenObserver=null, seenTimers=new Map(), worldSignature="", residentsTab="lab";
+  let map=null, mapNativePaused=false, seenObserver=null, seenTimers=new Map(), worldPairs=null, residentsTab="lab";
   const fmt=IntegralNumbers.exact, catalog=IntegralNumbers.catalog, rate=IntegralNumbers.rate;
   const smallGain=new Intl.NumberFormat("ru-RU",{maximumSignificantDigits:2});
   function art(type, i) { return window.duoArt("art/" + type + "-" + String(i).padStart(2, "0") + ".webp"); }
@@ -3257,9 +3358,9 @@ window.DuoResidents = (() => {
     if(!text)balance.textContent=amount;
     else if(text.data!==amount)text.data=amount;
   }
-  function resourceImage(s,r,expose=true) {
+  function resourceImage(s,r,expose=true,lazy=false) {
     const i=s.resources.findIndex(v=>v.id===r.id);
-    return expose && i>=0 ? '<img class="pg-portrait" alt="" src="'+art("resource",i)+'">' : '<span class="pg-unknown" aria-hidden="true">?</span>';
+    return expose && i>=0 ? '<img class="pg-portrait" alt="" decoding="async"'+(lazy?' loading="lazy"':'')+' src="'+art("resource",i)+'">' : '<span class="pg-unknown" aria-hidden="true">?</span>';
   }
   function buyInfo(r,s) {
     const limit=r.maximumCount-r.owned;
@@ -3289,9 +3390,9 @@ window.DuoResidents = (() => {
       const color=r.discovered?["#284052","#244637","#2b365e","#60482b","#173f4a","#3b3158","#45284d","#293f66","#273651","#512f45","#205257"][index%11]:"#25313a";
       return '<article class="pg-resource '+(b.allowed?"pg-ready":"")+'" data-row="'+r.id+'" style="--resource-color:'+color+'">'+
         '<button type="button" class="pg-buy" '+purchaseAttrs(r,b)+' aria-label="Купить '+esc(name)+'" aria-describedby="resource-facts-'+r.id+' resource-price-'+r.id+'"></button>'+
-        '<div class="pg-resource-heading"><strong>'+esc(r.discovered?r.name:"???")+'</strong><button class="pg-info" '+idAttr("resource",r.id)+' aria-label="Описание: '+esc(name)+'">ⓘ</button></div>'+
+        '<div class="pg-resource-heading"><strong>'+esc(r.discovered?r.name:"???")+'</strong><button class="pg-info" '+idAttr("resource",r.id)+' aria-label="Описание: '+esc(name)+'"><svg aria-hidden="true" focusable="false" width="1em" height="1em" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="8"/><path d="M10 9v5"/><circle cx="10" cy="6.5" r=".8" fill="currentColor" stroke="none"/></svg></button></div>'+
         '<div class="pg-resource-body">'+
-        '<span class="pg-art-box">'+resourceImage(s,r,r.discovered)+(r.unseen?'<b class="pg-new">!</b>':'')+'</span>'+
+        '<span class="pg-art-box">'+resourceImage(s,r,r.discovered,index>=4)+(r.unseen?'<b class="pg-new">!</b>':'')+'</span>'+
         '<span class="pg-resource-copy"><small>'+esc(description)+'</small></span>'+
         '<span class="pg-resource-facts" id="resource-facts-'+r.id+'"><span>'+fmt(r.owned)+' в работе</span><b>'+resourceQuantityLabel(r,b)+'</b></span>'+
         '<em class="pg-resource-price" id="resource-price-'+r.id+'">'+resourcePrice(r,b)+'</em></div></article>';
@@ -3461,13 +3562,14 @@ window.DuoResidents = (() => {
       '<nav class="pg-places" aria-label="Районы города"><div class="pg-places-head"><h3>Районы города</h3><span class="pg-places-count"></span></div>'+
       '<div class="pg-place-scroll"><div class="pg-place-list">'+places+'</div><div class="pg-place-start"><p class="pg-place-empty">Пригласите жителя из раздела «Ресурсы», чтобы открыть первый район.</p>'+
       '<button class="nav-control" data-page-action="show-resources">К ресурсам</button></div></div></nav>';
-    map=DuoWorldMap.create(list.firstElementChild,(i)=>openDetail("district",String(i)));worldSignature="";
+    map=DuoWorldMap.create(list.firstElementChild,(i)=>openDetail("district",String(i)));worldPairs=null;
   }
   function updateWorld(s){
     if(!map)buildWorld();
-    const key=s.resources.map(r=>r.owned+":"+r.purchasedThisRun).join(",")+(document.getElementById("integral-button")?.dataset.skin||"")+(window.Appearance?.selection?.().themes||"");
-    if(key!==worldSignature){
-      map.sync(s);worldSignature=key;
+    // Economy keeps the same production snapshot while only the balance changes.
+    // Its pairs array is replaced on purchases, upgrades, prestige and rollback.
+    if(s.pairs!==worldPairs){
+      map.sync(s);worldPairs=s.pairs;
       const places=list.querySelector(".pg-places"),open=new Set(s.pairs.filter(p=>p.unlocked).map(p=>p.id));
       const count=open.size+" из "+DuoWorldMap.districts.length;
       copyChanged(list.querySelector(".pg-city-footer b"),count);
@@ -3861,10 +3963,29 @@ window.DuoResidents = (() => {
     }
     refresh();
   }
+  let parkedWorld=null,worldExpiry=0;
+  function discardParkedWorld(){
+    clearTimeout(worldExpiry);
+    if(parkedWorld){parkedWorld.map.close();parkedWorld=null;}
+  }
+  window.addEventListener("duopause",discardParkedWorld);
+  document.addEventListener("visibilitychange",()=>{if(document.hidden)discardParkedWorld();});
   function render(name, container, snapshot){
     clearTimeout(districtTimer);
     if(selected?.type==="residents")DuoResidents.disconnect();
-    if(map)map.close();map=null;clearSeen();
+    if(map){
+      if(!document.hidden && !mapNativePaused && map.park()){
+        list.removeAttribute("inert");pane.querySelector(".pg-head").removeAttribute("inert");
+        delete pane.dataset.detail;delete details.dataset.kind;delete details.dataset.manyQuests;
+        details.hidden=true;details.replaceChildren();
+        copyChanged(pane.querySelector("h2"),"Научный город");
+        pane.remove();
+        parkedWorld={map,pane,list,details};
+        worldExpiry=setTimeout(discardParkedWorld,60000);
+      }else map.close();
+      map=null;
+    }
+    clearSeen();
     if(pane)pane.removeEventListener("click",handle);
     if(pane && section==="resources"){
       list.removeAttribute("inert");
@@ -3878,6 +3999,16 @@ window.DuoResidents = (() => {
     selected=null;signature=null;detailSignature=null;pane=null;balance=null;
     if(!container || !["resources","research","world"].includes(name))return;
     section=name;
+    if(name==="world" && parkedWorld){
+      clearTimeout(worldExpiry);
+      ({map,pane,list,details}=parkedWorld);parkedWorld=null;
+      container.replaceChildren(pane);
+      pane.addEventListener("click",handle);map.attach();
+      const districtList=list.querySelector(".pg-place-scroll");
+      districtList.scrollTop=0;
+      refresh(snapshot);
+      return;
+    }
     const title={resources:"Ресурсы",research:"Улучшения",world:"Научный город"}[section];
     container.innerHTML='<section class="pg-pane pg-'+name+'"><div class="pg-head'+(name==="world"?'':' pg-catalog-head')+'"><h2>'+title+'</h2>'+
       (name==="world"?'<button class="pg-citizens" data-page-action="residents">'+icon("team")+'Жители</button>':'<span class="pg-balance"></span>')+'</div><div class="pg-list"></div>'+
@@ -6634,6 +6765,7 @@ function decodeThumbnail(image,src){
     image.onload=resolve;image.onerror=reject;
   });
 }
+let lastGallerySize=null;
 let thumbnailObserver,stopThumbnails,galleryResize,refreshGallery,closeGalleryPreview,stopGalleryLayout;
 function unmount(){
   refreshGallery=null;closeGalleryPreview=null;stopGalleryLayout?.();stopGalleryLayout=null;
@@ -6648,7 +6780,7 @@ function render(root,options={}){
   const wide=matchMedia('(orientation: landscape)');
   let pinned=false;
   const shortcut=window.DuoShortcut;
-  const canPinShortcut=!!shortcut?.supported?.();
+  let canPinShortcut;
   const frame=node('section','ap-collection'),tabs=node('div','ap-tabs'),body=node('div','ap-browser'),detail=node('article','ap-detail');
   const panel=node('div','ap-preview'),copy=node('div','ap-detail-copy'),name=node('h3'),caption=node('p','ap-description');
   const condition=node('p','ap-condition'),action=button('ap-use','',applySelection);
@@ -6672,7 +6804,7 @@ function render(root,options={}){
   grid.id='ap-gallery-grid';scrollArea.append(grid,track);
   const measureScroll=bindGalleryScrollbar(grid,track);
   filterbar.append(current,filters);library.append(filterbar,scrollArea);
-  copy.append(name,caption,condition);detail.append(panel,copy,action,close);body.append(library,detail);frame.append(tabs,chapters,body);root.replaceChildren(frame);
+  copy.append(name,caption,condition);detail.append(panel,copy,action,close);body.append(library,detail);frame.append(tabs,chapters,body);
   const tabButtons=new Map(),cards=new Map();
   const activeID=()=>kind==='icons'?currentIcon():selected[kind];
   const opened=item=>!item.requiredAchievementID||earned.has(item.requiredAchievementID);
@@ -6702,14 +6834,19 @@ function render(root,options={}){
     const naturalHeight=((w-gutter)/cols-2)*5/6;
     const artHeight=Math.round(wide.matches?Math.min(naturalHeight,Math.max(42,h*.48)):naturalHeight);
     const labelSize=wide.matches?Math.min(23,Math.max(13,rem)):parseFloat(css.fontSize);
-    grid.style.setProperty('--ap-columns',String(cols));
-    grid.style.setProperty('--ap-tile-art-height',artHeight+'px');
     const tileHeight=Math.ceil(artHeight+labelSize*2.4+rem*.82+2);
-    galleryColumns=cols;rowPitch=tileHeight+gap;firstRowTop=parseFloat(css.paddingTop)||0;
-    grid.style.setProperty('--ap-tile-height',tileHeight+'px');
+    lastGallerySize={viewportWidth:innerWidth,viewportHeight:innerHeight,w,h,rem,cols,artHeight,
+      tileHeight,rowPitch:tileHeight+gap,firstRowTop:parseFloat(css.paddingTop)||0};
+    applySize(lastGallerySize);
     measureScroll();
   }
-  measureTiles();
+  function applySize(size){
+    measuredWidth=size.w;measuredHeight=size.h;measuredScale=size.rem;
+    galleryColumns=size.cols;rowPitch=size.rowPitch;firstRowTop=size.firstRowTop;
+    grid.style.setProperty('--ap-columns',String(size.cols));
+    grid.style.setProperty('--ap-tile-art-height',size.artHeight+'px');
+    grid.style.setProperty('--ap-tile-height',size.tileHeight+'px');
+  }
   if(window.ResizeObserver){
     galleryResize=new ResizeObserver(measureTiles);galleryResize.observe(grid);
   }
@@ -6796,7 +6933,9 @@ function render(root,options={}){
     earned=window.Honors?.earnedIDs()||new Set();
     appliedID=activeID();target=appliedID;grid.dataset.kind=kind;updateCurrent();
     for(const [id,b] of tabButtons)b.setAttribute('aria-pressed',String(kind===id));
-    updateChapters();updateFilters();showGrid();ChapterRails.reveal(chapters);
+    const firstVisit=!frame.parentNode;
+    updateChapters();updateFilters();showGrid();
+    if(!firstVisit||chapter!=='beginning')ChapterRails.reveal(chapters);
   }
   function status(item){
     if(item.id===appliedID)return ['check','Выбрано'];
@@ -6827,16 +6966,33 @@ function render(root,options={}){
   function showGrid(){
     stopThumbnails?.();
     thumbnailObserver?.disconnect();thumbnailObserver=null;
-    const requested=new Map(), timers=new Set();
-    let mounted=true;
+    const requested=new Map(), timers=new Set(),deferredImages=new Set();
+    let mounted=true,canDecode=false;
+    // Show the atlas and previously decoded art in the first frame. Starting
+    // every HD decode on pointer activation also competes with that frame.
+    const firstFrame=requestAnimationFrame(()=>{
+      const timer=setTimeout(()=>{
+        timers.delete(timer);canDecode=true;
+        upgrade([...deferredImages]);deferredImages.clear();
+      },0);
+      timers.add(timer);
+    });
     function release(image){
+      deferredImages.delete(image);
       if(!requested.delete(image))return;
       image.parentNode?.classList.remove('ap-full');
       delete image.dataset.decoded;
       image.removeAttribute('src');
     }
     function upgrade(images){
-      const batch=images.filter(image=>!requested.has(image));
+      const batch=[];
+      for(const image of images){
+        if(requested.has(image))continue;
+        if(image.dataset.decoded&&image.complete&&image.naturalWidth){
+          requested.set(image,image);image.parentNode.classList.add('ap-full');
+        }else if(canDecode)batch.push(image);
+        else deferredImages.add(image);
+      }
       if(!batch.length)return;
       const ready=[];
       let remaining=batch.length,expired=false;
@@ -6860,17 +7016,16 @@ function render(root,options={}){
           if(--remaining===0){clearTimeout(deadline);timers.delete(deadline);reveal();}
           else if(expired)reveal();
         };
-        if(image.dataset.decoded&&image.complete&&image.naturalWidth)settled(true);
-        else decodeThumbnail(image,window.duoArt(image.dataset.path)).then(()=>settled(true),()=>settled(false));
+        decodeThumbnail(image,window.duoArt(image.dataset.path)).then(()=>settled(true),()=>settled(false));
       }
     }
     // All rows use the dimensions set by measureTiles(). Slicing the ordered
     // cards avoids a layout read per thumbnail when entering or leaving a tab.
-    function imagesInRange(margin){
+    function imagesInRange(margin,scrollTop=grid.scrollTop,height=grid.clientHeight){
       if(!rowPitch)return [];
-      const top=grid.scrollTop-firstRowTop;
+      const top=scrollTop-firstRowTop;
       const first=Math.max(0,Math.floor((top-margin)/rowPitch))*galleryColumns;
-      const end=Math.ceil((top+grid.clientHeight+margin)/rowPitch)*galleryColumns;
+      const end=Math.ceil((top+height+margin)/rowPitch)*galleryColumns;
       return Array.from(cards.values()).slice(first,end).map(card=>card.querySelector('.ap-thumb img'));
     }
     function near(){
@@ -6890,7 +7045,7 @@ function render(root,options={}){
       },{root:grid,rootMargin:'480px 0px'});
     }else grid.addEventListener('scroll',near,{passive:true});
     stopThumbnails=()=>{
-      mounted=false;grid.removeEventListener('scroll',near);
+      mounted=false;cancelAnimationFrame(firstFrame);deferredImages.clear();grid.removeEventListener('scroll',near);
       previousThumbnails.clear();
       for(const image of imagesInRange(0)){
         if(!image.dataset.decoded)continue;
@@ -6915,15 +7070,27 @@ function render(root,options={}){
       const empty=filter==='new'?'В этой главе пока нет новых оформлений.':filter==='locked'?'Все оформления главы уже открыты.':'В этой главе пока нет открытых оформлений.';
       section.append(node('p','ap-empty',empty));
     }
-    grid.replaceChildren(frag);grid.scrollTop=0;measureScroll();
-    upgrade(imagesInRange(0));
-    if(thumbnailObserver)cards.forEach(card=>thumbnailObserver.observe(card));else near();
+    grid.replaceChildren(frag);
     if(!detail.hidden){
       const inspecting=byId.get(target);
       if(inspecting&&(wide.matches||cards.has(target)||filter==='new')){
         activeButton=cards.get(target);activeButton?.setAttribute('aria-pressed','true');
       }else dismissPreview();
     }else if(wide.matches)showEquipped();
+    // Mount the populated destination once. The empty shell and its hidden
+    // preview do not need intermediate layouts.
+    if(!frame.parentNode){
+      const sameViewport=window.ResizeObserver && lastGallerySize
+        && lastGallerySize.viewportWidth===innerWidth && lastGallerySize.viewportHeight===innerHeight;
+      if(sameViewport)applySize(lastGallerySize);
+      root.replaceChildren(frame);
+      if(!sameViewport)measureTiles();
+    }else{
+      grid.scrollTop=0;
+      measureScroll();
+    }
+    upgrade(imagesInRange(0,0,measuredHeight));
+    if(thumbnailObserver)cards.forEach(card=>thumbnailObserver.observe(card));else near();
   }
   function showEquipped(){
     const equipped=byId.get(appliedID);
@@ -6973,6 +7140,9 @@ function render(root,options={}){
     if(locked||state==='check')action.append(badgeIcon(locked?'lock':'check'));
     action.append(node('span','',locked?'Закрыто':state==='check'?'Выбрано':'Применить'));
     action.disabled=locked||state==='check';
+    // On Android this goes through the launcher service. Only the selected
+    // launcher icon can offer a pinned shortcut.
+    if(kind==='icons'&&state==='check'&&canPinShortcut===undefined)canPinShortcut=!!shortcut?.supported?.();
     if(kind==='icons'&&state==='check'&&canPinShortcut){
       const placed=shortcut.isPinned();
       action.textContent=placed?'Ярлык закреплён':'Закрепить ярлык игры';
@@ -9617,7 +9787,15 @@ window.HonorNotices=(()=>{
   // Older WebViews can deliver a clean down/up but omit click when rendering stalls.
   // Activate through the normal click path so that coaching and keyboard share its guards.
   function bindMenuTouches(){
-    if(!window.PointerEvent)return;
+    if(!window.PointerEvent){
+      tabs.addEventListener('touchstart',event=>{
+        const tab=event.target.closest('[data-route]');
+        if(event.touches.length!==1 || !tab || tab.disabled || tab.closest('[inert]'))return;
+        event.preventDefault();
+        tab.click();
+      },{passive:false});
+      return;
+    }
     const selector='#tabs [data-route],.head-actions button,#close-sheet';
     const menuButton=node=>node?.closest?.(selector);
     const slop=10;
@@ -9631,8 +9809,15 @@ window.HonorNotices=(()=>{
       const button=menuButton(event.target);
       if(!button)return;
       claimed=true;
-      if(event.isPrimary && event.button===0 && !button.disabled && !button.closest('[inert]'))
+      if(!event.isPrimary || event.button!==0 || button.disabled || button.closest('[inert]'))return;
+      // Both navigation bars are fixed. Start mounting the destination while
+      // the finger is down; exit and dialog controls still activate on release.
+      if(tabs.contains(button) || button.hasAttribute('data-sheet')){
+        release={x:event.clientX,y:event.clientY};
+        button.click();
+      }else{
         press={id:event.pointerId,button,x:event.clientX,y:event.clientY};
+      }
     },{passive:true});
     document.addEventListener('pointermove',event=>{
       if(press && event.pointerId===press.id && moved(event,press))press=null;
@@ -9650,7 +9835,7 @@ window.HonorNotices=(()=>{
     },{passive:true});
     document.addEventListener('click',event=>{
       // Keyboard and assistive activation (detail zero) also work without pointer events.
-      if(!claimed || event.detail===0)return;
+      if(!claimed || (event.detail===0 && !event.pointerType))return;
       // A native compatibility click may be retargeted to the sheet just opened.
       if(!menuButton(event.target) && (!release || moved(event,release)))return;
       event.preventDefault();event.stopImmediatePropagation();

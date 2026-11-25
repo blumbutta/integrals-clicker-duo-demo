@@ -487,8 +487,8 @@ i[data-icon] svg { display:block; width:100%; height:100% }
   align-content:start; align-items:stretch; gap:.65rem;
 }
 #station[data-tablet] .pg-resources .pg-resource {
-  min-width:0; min-height:8rem; height:auto; margin:0; contain:none;
-  content-visibility:visible; contain-intrinsic-size:none;
+  min-width:0; min-height:8rem; height:auto; margin:0;
+  content-visibility:auto; contain-intrinsic-block-size:auto 11rem;
 }
 #station[data-tablet] .pg-resources .pg-resource-heading strong,
 #station[data-tablet] .pg-resources .pg-blackhole strong {font-size:1.49rem;line-height:1.16}
@@ -1994,8 +1994,8 @@ body.duo-launching {background:#060f16}
   flex-direction: column;
   min-width: 0;
   margin: 0;
-  contain: none;
-  content-visibility: visible;
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 9.5rem;
 }
 #station[data-landscape] .pg-resource-heading {
   padding: .35rem .55rem 0 1rem;
