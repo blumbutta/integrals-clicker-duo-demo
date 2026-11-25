@@ -7888,6 +7888,7 @@ window.Leaderboard=(()=>{
   const apiOrigin='https://153.51.163.172';
   const verificationURLs=new Set(['https://oauth.yandex.ru/device','https://oauth.yandex.com/device']);
   const key='integrals.duomax.leaderboard.v1',refreshInterval=10000;
+  const pendingKey=key+'.pending',resetKey='integrals.duomax.reset-generation.v1';
   const paths={list:'/v2/leaderboard',device:'/v1/auth/device',poll:'/v1/auth/poll',score:'/v2/score',logout:'/v1/logout',remove:'/v1/me'};
   const methods={[paths.list]:'GET',[paths.device]:'POST',[paths.poll]:'POST',[paths.score]:'POST',[paths.logout]:'POST',[paths.remove]:'DELETE'};
   const tokenOK=s=>typeof s==='string' && s.length>=16 && s.length<=512 && /^[A-Za-z0-9._~-]+$/.test(s);
@@ -7909,7 +7910,31 @@ window.Leaderboard=(()=>{
     }catch{}
     return null;
   }
-  let session=restore(),host=null,generation=0,nativePaused=false,pageHidden=false,flow=null,entries=null,me=null;
+  // The verification page opens outside the game. A browser can reload the
+  // original tab before it receives the result of an already confirmed code.
+  function pendingFlow(){
+    try{
+      const data=JSON.parse(sessionStorage.getItem(pendingKey));
+      if(data && data.origin===apiOrigin && data.reset===localStorage.getItem(resetKey) &&
+          tokenOK(data.ticket) && typeof data.code==='string' && /^[-A-Za-z0-9]{3,32}$/.test(data.code) &&
+          verificationURLs.has(data.url) && Number.isSafeInteger(data.until) && data.until>Date.now() &&
+          data.until<=Date.now()+3600000 && Number.isSafeInteger(data.interval) && data.interval>=1000 && data.interval<=3600000){
+        return {ticket:data.ticket,code:data.code,url:data.url,until:data.until,
+          interval:data.interval,delay:data.interval,reopen:data.reopen===true};
+      }
+      sessionStorage.removeItem(pendingKey);
+    }catch{}
+    return null;
+  }
+  let session=restore(),host=null,generation=0,nativePaused=false,pageHidden=false;
+  let flow=window.DuoRank||session?null:pendingFlow(),entries=null,me=null;
+  function rememberFlow(reopen){
+    if(window.DuoRank||!flow?.ticket)return;
+    flow.reopen=reopen;
+    const {ticket,code,url,until,interval}=flow;
+    try{sessionStorage.setItem(pendingKey,JSON.stringify({origin:apiOrigin,reset:localStorage.getItem(resetKey),
+      ticket,code,url,until,interval,reopen}));}catch{}
+  }
   let pollTimer=0,refreshTimer=0,busy=false,message='',consented=false;
   let accountRequests=0,removingToken=null;
   function displayName(s){
@@ -7968,7 +7993,8 @@ window.Leaderboard=(()=>{
     if(token)headers.Authorization='Bearer '+token;
     if(payload)headers['Content-Type']='application/json';
     // A successful poll can include both the token exchange and a profile lookup.
-    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),path===paths.poll?16000:5500);
+    const authRequest=path===paths.device||path===paths.poll;
+    const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),authRequest?16000:5500);
     if(!accountRequest)controllers.add(ctrl);
     try{
       const response=await fetch(apiOrigin+path,{
@@ -8022,6 +8048,7 @@ window.Leaderboard=(()=>{
     qr.alt='QR-код страницы входа Яндекс ID';qr.draggable=false;
     instructions.append(el('p','',window.DuoRank?'Откройте Яндекс на Станции или отсканируйте QR-код телефоном.':'Откройте Яндекс здесь или отсканируйте QR-код телефоном.'),
       el('p','','На странице '+flow.url.slice(8)+' введите код'),el('strong','lb-code',flow.code));
+    if(!window.DuoRank)instructions.append(el('p','','После подтверждения вернитесь в эту вкладку игры. Рейтинг откроется автоматически.'));
     if(window.DuoRank)actions.append(button('Открыть Яндекс на Станции',openVerification,'lb-primary'));
     else{const a=el('a','lb-button lb-primary','Открыть Яндекс');a.href=flow.url;a.target='_blank';a.rel='noopener noreferrer';actions.append(a);}
     actions.append(button('Отменить вход',cancelLogin));instructions.append(actions);
@@ -8178,7 +8205,10 @@ window.Leaderboard=(()=>{
       }
     }
   }
-  function stopFlow(){clearTimeout(pollTimer);pollTimer=0;flow=null;}
+  function stopFlow(){
+    clearTimeout(pollTimer);pollTimer=0;flow=null;
+    if(!window.DuoRank)try{sessionStorage.removeItem(pendingKey);}catch{}
+  }
   function cancelLogin(){stopFlow();message='';paint();}
   function seconds(n,fallback){return Number.isFinite(n)?Math.max(1,Math.min(3600,n)):fallback;}
   async function begin(){
@@ -8190,8 +8220,14 @@ window.Leaderboard=(()=>{
       if(!tokenOK(data.ticket)||typeof data.userCode!=='string'||!/^[-A-Za-z0-9]{3,32}$/.test(data.userCode)||!verificationURLs.has(data.verificationUrl))throw new RequestError(0);
       const interval=1000*seconds(data.interval,5);
       Object.assign(active,{ticket:data.ticket,code:data.userCode,url:data.verificationUrl,until:Date.now()+1000*seconds(data.expiresIn,600),interval,delay:interval});
+      rememberFlow(true);
       paint();schedulePoll();
-    }catch(e){if(current(id)&&flow===active){stopFlow();fail(e);paint();}}
+    }catch(e){if(current(id)&&flow===active){
+      stopFlow();
+      if(e.data?.error==='timeout')message='Сервер не успел выдать код Яндекс ID. Попробуйте подключиться ещё раз.';
+      else fail(e);
+      paint();
+    }}
   }
   function schedulePoll(){
     clearTimeout(pollTimer);
@@ -8296,11 +8332,15 @@ window.Leaderboard=(()=>{
     if(host)paint();
   }
   function open(panel,args){
-    close();host=panel;consented=args?.connect===true;setNativeVisible(visible());paint();
-    if(session)refresh();else if(consented)begin();
+    close();host=panel;consented=args?.connect===true;
+    if(flow?.until<=Date.now())stopFlow();
+    setNativeVisible(visible());rememberFlow(true);paint();
+    if(session)refresh();else if(flow)schedulePoll();else if(consented)begin();
   }
   function close(){
-    restart();setNativeVisible(false);host=null;stopFlow();entries=null;me=null;message='';consented=false;rankingRouteMissing=null;
+    restart();setNativeVisible(false);host=null;
+    if(!window.DuoRank&&flow?.until>Date.now()){flow.polling=false;rememberFlow(false);}else stopFlow();
+    entries=null;me=null;message='';consented=false;rankingRouteMissing=null;
     setNativeVisible(canSync());timer();
   }
   function suspend(){
@@ -8314,7 +8354,12 @@ window.Leaderboard=(()=>{
   }
   // The splash screen loads game modules after pageshow and the native resume event.
   // By this point the economy, saved account and tutorial have all been restored.
-  window.addEventListener('duolaunchcomplete',resume);
+  window.addEventListener('duolaunchcomplete',()=>{
+    if(flow?.reopen && flow.until>Date.now() && !session && !window.App?.sheet &&
+        (!window.DuoTraining||window.DuoTraining.currentStep?.()==='done')){
+      window.App?.openSheet('leaderboard');
+    }else resume();
+  });
   document.addEventListener('visibilitychange',()=>document.hidden?suspend():resume());
   window.addEventListener('duopause',()=>{nativePaused=true;suspend();});
   window.addEventListener('duoresume',()=>{nativePaused=false;resume();});
