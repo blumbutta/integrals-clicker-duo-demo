@@ -1300,6 +1300,35 @@ window.ExtraModel = (() => {
     }
   }
   const phrases=["Мысль уже в пути!","Почти посчитали!","Ещё один интеграл!","А если через замену?","Идея пришла!","Сходимость — это важно.","Проверим ещё раз!","Бесконечность рядом.","Работаем в паре!","Красивое решение!","Кофе. Формула. Победа.","Сегодня всё сходится!","Передаю в центр!","Делюсь открытием!","Нашёл короткий путь!","Уравнение согласно."];
+  function loadSheet(name){
+    const image=new Image(), sheet={image,decoded:false};
+    image.decoding="async";
+    sheet.ready=new Promise(resolve=>{
+      const finish=()=>{
+        sheet.decoded=image.complete && image.naturalWidth>0;
+        image.onload=null;image.onerror=null;
+        resolve(sheet.decoded);
+      };
+      image.onload=()=>image.decode?image.decode().then(finish,finish):finish();
+      image.onerror=finish;
+      image.src=window.duoArt("art/map/"+name+".webp");
+    });
+    return sheet;
+  }
+  // Retain at most two early sheets between visits (6.2 MiB decoded).
+  const earlySheets=new Map();
+  function warm(pairs){
+    const names=kinds.slice(0,4)
+      .filter(k=>pairs.some(p=>p.id===districts[k.district] && p.unlocked) && Economy.owned(k.id)>0)
+      .slice(0,2).map(k=>k.sheet);
+    for(const name of earlySheets.keys())if(!names.includes(name))earlySheets.delete(name);
+    for(const name of names){
+      if(earlySheets.has(name))continue;
+      const picture=loadSheet(name);
+      earlySheets.set(name,picture);
+      picture.ready.then(ok=>{if(!ok && earlySheets.get(name)===picture)earlySheets.delete(name);});
+    }
+  }
   function create(onImageLoad) {
     const sheets=new Map(), actors=new Map(), preferences=window.matchMedia("(prefers-reduced-motion: reduce)");
     let signature=null,openMask=-1, tables=[],crowd=[],closed=false, reduced=preferences.matches;
@@ -1307,9 +1336,11 @@ window.ExtraModel = (() => {
     const seed=Math.floor(Math.random()*100001), offsets=kinds.map(()=>Math.random());
     function sheet(name) {
       if(!sheets.has(name)) {
-        const img=new Image();
-        if(typeof onImageLoad==="function")img.onload=()=>{if(!closed)onImageLoad();};
-        img.src=window.duoArt("art/map/"+name+".webp"); sheets.set(name,img);
+        const picture=earlySheets.get(name)||loadSheet(name);
+        sheets.set(name,picture);
+        if(!picture.decoded && onImageLoad)picture.ready.then(ok=>{
+          if(ok && !closed && sheets.get(name)===picture)onImageLoad();
+        });
       }
       return sheets.get(name);
     }
@@ -1383,7 +1414,7 @@ window.ExtraModel = (() => {
       return crowd.filter(a=>a.phase!=="inside" && actorOpacity(a)>0).map(a=>{
         const k=a.kind, boarding=k.shuttle&&(a.phase==="boarding"||a.phase==="arrived");
         return {x:a.x,y:a.y,face:a.face,kind:k,opacity:actorOpacity(a),
-          frame:actorFrame(a,boarding),image:sheets.get(k.sheet+(boarding?"-stop":""))};
+          frame:actorFrame(a,boarding),image:sheets.get(k.sheet+(boarding?"-stop":""))?.image};
       }).sort((a,b)=>a.y-b.y);
     }
     function draw(ctx,dt,time,options={}) {
@@ -1401,8 +1432,9 @@ window.ExtraModel = (() => {
       for(const a of crowd) {
         if(a.phase==="inside"||!visible(a))continue;
         const k=a.kind, boarding=k.shuttle&&(a.phase==="boarding"||a.phase==="arrived");
-        const img=sheets.get(k.sheet+(boarding?"-stop":""));
-        if(!img?.complete||!img.naturalWidth)continue;
+        const picture=sheets.get(k.sheet+(boarding?"-stop":""));
+        if(!picture?.decoded)continue;
+        const img=picture.image;
         const alpha=actorOpacity(a);
         const s=.90+.10*alpha;
         const frame=actorFrame(a,boarding);
@@ -1432,10 +1464,10 @@ window.ExtraModel = (() => {
       ctx.font="italic 17px Georgia,serif";ctx.fillStyle="#f2e8c2";ctx.textAlign="center";ctx.textBaseline="middle";
       ctx.fillText(phrases[bubble.phrase],0,0,213);ctx.restore();
     }
-    function close(){closed=true;for(const img of sheets.values())img.onload=null;sheets.clear();actors.clear();crowd=[];tables=[];bubble=null;}
+    function close(){closed=true;sheets.clear();actors.clear();crowd=[];tables=[];bubble=null;}
     return {sync,draw,capture,close};
   }
-  window.MapResidents={create};
+  window.MapResidents={create,warm};
 })();
 
 ;
@@ -1492,20 +1524,75 @@ window.DuoWorldMap = (() => {
     }
     return cachedAtlas;
   }
+  // Visible district paintings belong to the map. Keep a small LRU of detached
+  // paintings as well, so closing or reversing the camera needn't decode them again.
+  const spareDetails=new Map(),sparePixelLimit=6*1024*1024;
+  let sparePixels=0;
+  function detailPixels(part){return part.w*part.h*part.density*part.density;}
+  function takeDetail(part){
+    const picture=spareDetails.get(part);
+    if(picture){
+      spareDetails.delete(part);
+      sparePixels-=detailPixels(part);
+      if(!picture.failed)return picture;
+    }
+    const next=preparePicture(window.duoArt(part.file),"low");
+    next.image.alt="";
+    // Preserve the painting's native pixels on its compositor layer.
+    Object.assign(next.image.style,{left:part.x+"px",top:part.y+"px",width:part.w*part.density+"px",
+      height:part.h*part.density+"px",transform:"scale("+1/part.density+")",zIndex:String(part.stage)});
+    return next;
+  }
+  function releaseDetail(part,picture){
+    picture.image.remove();
+    if(picture.failed||spareDetails.has(part))return;
+    spareDetails.set(part,picture);
+    sparePixels+=detailPixels(part);
+    while(sparePixels>sparePixelLimit){
+      const oldest=spareDetails.keys().next().value;
+      spareDetails.delete(oldest);
+      sparePixels-=detailPixels(oldest);
+    }
+  }
+  function warmFirstDetail(atlas){
+    if(atlas.index<1||atlas.detailWarmScheduled)return;
+    atlas.detailWarmScheduled=true;
+    atlas.full.ready.then(ok=>{
+      if(!ok||cachedAtlas!==atlas)return;
+      const idle=()=>{
+        const first=window.DuoWorldDetails?.[0];
+        if(first&&cachedAtlas===atlas&&!document.hidden&&!liveCity&&!spareDetails.has(first)){
+          releaseDetail(first,takeDetail(first));
+        }
+      };
+      if(window.requestIdleCallback)window.requestIdleCallback(idle);
+      else setTimeout(idle,160);
+    });
+  }
+  function previewURL(index){
+    return window.duoArt("art/map/districts-"+String(index).padStart(2,"0")+".webp");
+  }
   function warmAtlas(){
     if(!window.Economy||document.hidden)return;
-    const pairs=Economy.snapshot().pairs;
+    const {pairs,resources}=Economy.snapshot();
     let n=0;
     districts.forEach((d,i)=>{if(pairs.some(p=>p.id===d.id&&p.unlocked))n=i+1;});
     const atlas=atlasFor(n);
+    warmFirstDetail(atlas);
+    if(n && innerWidth>innerHeight && !atlas.previews)atlas.previews=preparePicture(previewURL(n),"low");
+    window.MapResidents?.warm(pairs);
     for(const pair of pairs)if(pair.unlocked)districtHalo(atlas,pair.id);
+    for(const spec of installations){
+      const resource=resources.find(item=>item.id===spec.resource);
+      if((resource?.purchasedThisRun??resource?.owned??0)>=3)motionSheet(spec);
+      else forgetMotion(spec);
+    }
   }
   function districtHalo(atlas,id){
     if(!atlas.halos.has(id))atlas.halos.set(id,preparePicture(window.duoArt("art/map/glow-"+id+".webp"),"low"));
     return atlas.halos.get(id);
   }
   window.addEventListener("duolaunchcomplete",warmAtlas,{once:true});
-  document.addEventListener("click",e=>{if(e.target.closest?.('[data-page-action="buy"]'))warmAtlas();});
   const W=1122,H=1402,hub=[552,520],tau=2*Math.PI;
   const districts=[{"id":"school","name":"Школа","rect":[119,157,254,230],"door":[281,384],"glow":[71,101,349,331]},{"id":"university","name":"Университет","rect":[462,139,318,216],"door":[585,350],"glow":[416,84,411,316]},{"id":"academy","name":"Академия наук","rect":[806,120,249,289],"door":[895,402],"glow":[746,67,365,389]},{"id":"research","name":"Исследовательский центр","rect":[794,446,269,179],"door":[908,621],"glow":[746,398,362,274]},{"id":"computing","name":"Вычислительный центр","rect":[108,409,230,184],"door":[275,594],"glow":[58,363,326,285]},{"id":"science-city","name":"Наукоград","rect":[129,635,408,251],"door":[349,855],"glow":[79,578,505,369]},{"id":"accelerator","name":"Ускорительный комплекс","rect":[608,948,402,197],"door":[897,1142],"glow":[558,898,501,308]},{"id":"energy","name":"Энергетическая станция","rect":[794,649,246,125],"door":[921,768],"glow":[750,598,339,207]}];
   const installations=[{"id":"collider","resource":"oracle","x":634.0,"y":945.0,"w":294.0,"h":166.0,"cw":324,"ch":183},{"id":"fusion","resource":"architect","x":813.193906754,"y":666.392601047,"w":71.35466094026,"h":47.522919009433004,"cw":79,"ch":53},{"id":"gravity","resource":"nanoforge","x":958.344309141,"y":659.008561838,"w":84.311165163623,"h":73.083054731638,"cw":93,"ch":81}];
@@ -1571,7 +1658,48 @@ window.DuoWorldMap = (() => {
       ctx.drawImage(r.c,-r.side/2,-r.side/2,r.side,r.side);ctx.restore();
     }
   }
-  let liveCity=null;
+  let liveCity=null,liveCameraMoving=null;
+  // Only the three purchased installations can have an animation sheet. Keep
+  // their original 72 frames as pixels; cropping WebP directly in every frame
+  // can unpack the entire 2592 × 1647 collider sheet for each blend sample.
+  const machineSheets=new Map();
+  function forgetMotion(spec){
+    const sheet=machineSheets.get(spec);
+    if(!sheet)return;
+    machineSheets.delete(spec);
+    if(sheet.source?.close)sheet.source.close();
+    else if(sheet.source instanceof HTMLCanvasElement)sheet.source.width=sheet.source.height=0;
+    sheet.source=null;
+  }
+  function motionSheet(spec){
+    if(machineSheets.has(spec))return machineSheets.get(spec);
+    const sheet={source:null,ready:null},picture=preparePicture(window.duoArt("art/map/"+spec.id+"-motion.webp"),"low");
+    machineSheets.set(spec,sheet);
+    sheet.ready=picture.ready.then(ok=>ok&&new Promise(resolve=>{
+      function queue(){
+        if(window.requestIdleCallback)window.requestIdleCallback(prepare,{timeout:450});
+        else setTimeout(prepare,48);
+      }
+      async function prepare(){
+        if(machineSheets.get(spec)!==sheet){resolve();return;}
+        if(liveCameraMoving?.()){setTimeout(queue,120);return;}
+        let pixels=null;
+        if(window.createImageBitmap){
+          try{pixels=await createImageBitmap(picture.image);}catch(_){}
+        }
+        if(machineSheets.get(spec)!==sheet){pixels?.close();resolve();return;}
+        if(!pixels){
+          const canvas=document.createElement("canvas");
+          canvas.width=picture.image.naturalWidth;canvas.height=picture.image.naturalHeight;
+          const context=canvas.getContext("2d");
+          if(context){context.drawImage(picture.image,0,0);pixels=canvas;}
+        }
+        sheet.source=pixels;resolve();
+      }
+      queue();
+    }));
+    return sheet;
+  }
   function captureCollapse(snapshot) {
     if(liveCity)return liveCity();
     const residents=MapResidents.create();
@@ -1586,7 +1714,7 @@ window.DuoWorldMap = (() => {
     const surface=root.firstChild, board=root.querySelector(".wm-board"), ground=root.querySelector(".wm-ground"),
       detailLayer=root.querySelector(".wm-details"),
       halos=root.querySelector(".wm-halos"),hits=root.querySelector(".wm-hits"),canvas=root.querySelector("canvas"),ctx=canvas.getContext("2d");
-    let terrain=root.querySelector(".wm-terrain"),latest=null,wanted=-1,retryTimer=0,attempt=0;
+    let terrain=root.querySelector(".wm-terrain"),latest=null,wanted=-1,retryTimer=0,previewTimer=0,attempt=0;
     function setOverlaysVisible(visible){
       for(const layer of [board,canvas,machineLayer,hits])layer.style.visibility=visible?"":"hidden";
     }
@@ -1599,18 +1727,14 @@ window.DuoWorldMap = (() => {
     let detailSources=[],physicalDensity=1,landscape=false;
     const detailImages=new Map(),machineBases=new Map(),machineLayer=root.querySelector(".wm-machines");
     let raf=0,prev=0,elapsed=0,dirty=true,tween=null;
-    let cameraPending=false,detailsPending=false,decodingDetails=0,gestureBounds=null;
-    const pointers=new Map(),images=new Map(), cleanup=[];
+    let cameraPending=false,detailsPending=false,decodingDetails=0,gestureBounds=null,wheelTimer=0;
+    const pointers=new Map(),cleanup=[];
     const residents=window.MapResidents.create(redraw);
     const captureCity=()=>({people:residents.capture(),rings,time:elapsed});
     liveCity=captureCity;
+    liveCameraMoving=()=>!!(tween||pointers.size||wheelTimer);
     function listen(target,event,fn,opts){target.addEventListener(event,fn,opts);cleanup.push(()=>target.removeEventListener(event,fn,opts));}
     function redraw(){dirty=true;if(!closed&&!paused&&!raf&&!document.hidden)raf=requestAnimationFrame(frame);}
-    function img(path){
-      let im=images.get(path);
-      if(!im){im=new Image();im.onload=redraw;im.src=window.duoArt(path);images.set(path,im);}
-      return im.complete && im.naturalWidth?im:null;
-    }
     function paint(){
       if(!ctx||!w||!h)return;
       const bounds={left:-ox/scale,top:-oy/scale,right:(w-ox)/scale,bottom:(h-oy)/scale};
@@ -1630,9 +1754,9 @@ window.DuoWorldMap = (() => {
         ctx.fillRect(W*(.18+(i*7%73)/100),H*(.012+(i*13%49)/1000),i%4===0?2.2:1.4,i%4===0?2.2:1.4);
       }
       ctx.globalAlpha=1;
-      fx.forEach(({spec:d,strength})=>{
+      fx.forEach(({spec:d,strength,sheet})=>{
         if(!visible(d.x,d.y,d.w,d.h))return;
-        const motion=img("art/map/"+d.id+"-motion.webp");
+        const motion=sheet.source;
         if(!motion)return;
         let f=reduced.matches?(d.id==="collider"?20:13.5):elapsed*9*(1+.6*strength)%72;
         const first=Math.floor(f),blend=f-first,alpha=.56+.44*strength;
@@ -1660,35 +1784,43 @@ window.DuoWorldMap = (() => {
     }
     function updateDetails(){
       detailsPending=false;
-      const needed=scale*physicalDensity>.9;
-      detailLayer.hidden=!needed;
+      // The portrait overview uses the complete 1122px atlas. A 1200px panel
+      // enlarges it just 7%; reserve the district originals for closer views.
+      const needed=scale*physicalDensity>(zoom<=1.001?1.1:.9);
+      if(!needed)detailLayer.hidden=true;
       const left=-ox/scale,top=-oy/scale,right=(w-ox)/scale,bottom=(h-oy)/scale;
       const margin=64/scale,retainMargin=Math.max(w,h)*.32/scale;
+      const additions=[];
+      let settled=true;
       for(const part of detailSources){
-        const cached=detailImages.get(part);
+        let picture=detailImages.get(part);
         const distance=Math.max(left-part.x-part.w,part.x-right,top-part.y-part.h,part.y-bottom);
-        if(cached){
-          // Retain nearby decoded images across small reversals and overview/detail switches.
-          if(distance>retainMargin){cached.image.remove();detailImages.delete(part);}
+        if(!needed||distance>margin){
+          if(picture&&(!needed||distance>retainMargin)){
+            releaseDetail(part,picture);detailImages.delete(part);
+          }
           continue;
         }
-        if(!needed||distance>margin||decodingDetails>=2)continue;
-        // Keep the current terrain painted while the local HD texture decodes.
-        const picture=preparePicture(window.duoArt(part.file),"auto");
-        const tile=picture.image;
-        detailImages.set(part,picture);
-        decodingDetails++;
-        tile.alt="";
-        // Give the image its original pixel dimensions on its own layer. Camera
-        // movement changes only the parent transform and never rescales a cached overview.
-        Object.assign(tile.style,{left:part.x+"px",top:part.y+"px",width:part.w*part.density+"px",
-          height:part.h*part.density+"px",transform:"scale("+1/part.density+")",zIndex:String(part.stage)});
-        picture.ready.then(ok=>{
-          decodingDetails--;
-          if(closed)return;
-          if(ok&&detailImages.get(part)===picture)detailLayer.append(tile);
-          detailsPending=true;redraw();
-        });
+        if(!picture){
+          if(decodingDetails>=2){settled=false;continue;}
+          picture=takeDetail(part);
+          detailImages.set(part,picture);
+          if(!picture.decoded&&!picture.failed){
+            decodingDetails++;
+            picture.ready.then(()=>{
+              decodingDetails--;
+              if(!closed){detailsPending=true;redraw();}
+            });
+          }
+        }
+        if(!picture.decoded&&!picture.failed)settled=false;
+        if(picture.decoded&&picture.image.parentNode!==detailLayer)additions.push(picture.image);
+      }
+      // Commit the visible set in one paint. The complete base atlas remains
+      // underneath, including if an individual high-resolution painting fails.
+      if(needed&&settled){
+        if(additions.length)detailLayer.append(...additions);
+        if(detailLayer.hidden)detailLayer.hidden=false;
       }
     }
     function syncMachines(bought){
@@ -1699,16 +1831,19 @@ window.DuoWorldMap = (() => {
         const amount=bought(spec.resource),existing=machineBases.get(spec);
         if(amount<3){
           if(existing){existing.remove();machineBases.delete(spec);}
+          forgetMotion(spec);
           continue;
         }
+        const sheet=motionSheet(spec);
         if(!existing){
           const base=new Image();base.alt="";base.draggable=false;
           Object.assign(base.style,{left:spec.x+"px",top:spec.y+"px",width:spec.w+"px",height:spec.h+"px"});
           base.src=window.duoArt("art/map/"+spec.id+"-base.webp");
           machineLayer.append(base);machineBases.set(spec,base);
+          sheet.ready.then(()=>{if(!closed)redraw();});
         }
         const strength=Math.log1p(4*(Math.min(amount,100)-3)/97)/Math.log(5);
-        fx.push({spec,strength});
+        fx.push({spec,strength,sheet});
       }
     }
     function zoomLimit(x,y,manual){
@@ -1743,7 +1878,9 @@ window.DuoWorldMap = (() => {
         ground.style.transform=board.style.transform=machineLayer.style.transform=hits.style.transform=matrix;
         cameraPending=false;detailsPending=true;
       }
-      if(detailsPending)updateDetails();
+      // While the camera moves, transform what's already painted. Decoding and
+      // attaching textures for intermediate viewports interrupted the first zoom.
+      if(detailsPending&&!tween&&!pointers.size&&!wheelTimer)updateDetails();
     }
     const districtPanel=root.closest(".pg-pane")?.querySelector(".pg-overlay");
     function resize() {
@@ -1829,25 +1966,33 @@ window.DuoWorldMap = (() => {
       stage=index;
       ground.dataset.paintedStage=String(index);
       detailSources=window.DuoWorldDetails.filter(part=>part.stage<=stage);
-      for(const [part,picture] of detailImages)if(part.stage>stage){picture.image.remove();detailImages.delete(part);}
+      for(const [part,picture] of detailImages)if(part.stage>stage){releaseDetail(part,picture);detailImages.delete(part);}
       detailsPending=true;presentCamera();
       sync(latest);
       setOverlaysVisible(true);
     }
     function loadAtlas(index,renew=false) {
-      wanted=index;attempt=0;clearTimeout(retryTimer);
+      wanted=index;attempt=0;clearTimeout(retryTimer);clearTimeout(previewTimer);
       const atlas=atlasFor(index);
       const current=()=>!closed && wanted===index && cachedAtlas===atlas;
+      const lights=latest.pairs.filter(pair=>pair.unlocked).map(pair=>districtHalo(atlas,pair.id));
+      let lightsReady=lights.every(light=>light.decoded||light.failed),allowPreview=false;
       if(stage<0)setOverlaysVisible(false);
       surface.setAttribute("aria-busy","true");
       function display(picture,quality){
         if(!current() || !picture.decoded)return;
+        if(!allowPreview&&(!lightsReady||quality==="preview"))return;
         if(quality==="preview" && stage===index && ground.dataset.quality==="full")return;
+        if(quality==="full")clearTimeout(previewTimer);
         const next=picture.image;
         next.className="wm-terrain"+(quality==="preview"?" wm-preview":"");
         next.alt="Карта научного города";next.dataset.stage=String(index);
         if(next!==terrain){terrain.replaceWith(next);terrain=next;}
         revealStage(index,quality);
+      }
+      function displayReady(){
+        if(atlas.full.decoded)display(atlas.full,"full");
+        else if(atlas.mini.decoded)display(atlas.mini,"preview");
       }
       function loadFull(retry){
         if(retry){
@@ -1861,16 +2006,20 @@ window.DuoWorldMap = (() => {
         full.ready.then(ok=>{
           if(!current() || atlas.full!==full)return;
           if(ok){display(full,"full");return;}
+          allowPreview=true;displayReady();
           if(document.hidden || attempt>=3)return;
           clearTimeout(retryTimer);
           retryTimer=setTimeout(()=>{if(current() && !document.hidden)loadFull(true);},1000*2**attempt);
         });
       }
-      // Commit exactly one terrain and its current buildings together. Keep the
-      // previous city painted until the replacement can actually be displayed.
+      // A local full atlas and its lights usually finish within a few frames.
+      // Present them together; retain the poster for a slow or failed download.
+      if(!atlas.full.decoded||!lightsReady){
+        previewTimer=setTimeout(()=>{allowPreview=true;displayReady();},140);
+      }
+      if(!lightsReady)Promise.all(lights.map(light=>light.ready)).then(()=>{lightsReady=true;displayReady();});
       if(!atlas.full.decoded){
-        if(atlas.mini.decoded)display(atlas.mini,"preview");
-        else atlas.mini.ready.then(()=>display(atlas.mini,"preview"));
+        if(!atlas.mini.decoded)atlas.mini.ready.then(displayReady);
       }
       loadFull(renew);
     }
@@ -1947,22 +2096,34 @@ window.DuoWorldMap = (() => {
     function finish(e){
       if(!pointers.delete(e.pointerId))return;
       const bounds=gestureBounds;
-      if(!pointers.size)gestureBounds=null;
+      if(!pointers.size){gestureBounds=null;detailsPending=true;redraw();}
       if(moved||e.type!=="pointerup")return;
       const p=point(e,bounds||surface.getBoundingClientRect()),x=(p.x-ox)/scale,y=(p.y-oy)/scale;
       for(let k=groups.length-1;k>=0;k--){const index=groups[k].index,[a,b,c,d]=districts[index].rect;
         if(x>=a&&x<=a+c&&y>=b&&y<=b+d){onDistrict(index);break;}}
     }
-    listen(surface,"pointerup",finish);listen(surface,"pointercancel",finish);
+    listen(surface,"pointerup",finish);listen(surface,"pointercancel",finish);listen(surface,"lostpointercapture",finish);
     listen(window,"duoappearancechange",syncAppearance);
-    listen(surface,"wheel",e=>{if(focus!==null)return;e.preventDefault();tween=null;const p=point(e,surface.getBoundingClientRect());zoomAt(Math.exp(-e.deltaY*.002),p,p);},{passive:false});
+    listen(surface,"wheel",e=>{
+      if(focus!==null)return;
+      e.preventDefault();tween=null;clearTimeout(wheelTimer);
+      wheelTimer=setTimeout(()=>{wheelTimer=0;detailsPending=true;redraw();},100);
+      const p=point(e,surface.getBoundingClientRect());
+      zoomAt(Math.exp(-e.deltaY*.002),p,p);
+    },{passive:false});
     function sleep(value){if(!!value===paused)return;paused=!!value;if(paused){cancelAnimationFrame(raf);raf=0;prev=0;}else redraw();}
     listen(window,"online",retryVisibleAtlas);
     listen(document,"visibilitychange",()=>{retryVisibleAtlas();prev=0;if(document.hidden){cancelAnimationFrame(raf);raf=0;}else redraw();});
     const obs=new ResizeObserver(resize);obs.observe(surface);if(districtPanel)obs.observe(districtPanel);resize();
-    return {sync,select,reset,restoreViewport,sleep, close(){closed=true;clearTimeout(retryTimer);terrain.remove();halos.replaceChildren();if(liveCity===captureCity)liveCity=null;cancelAnimationFrame(raf);obs.disconnect();cleanup.forEach(fn=>fn());residents.close();images.clear();}};
+    return {sync,select,reset,restoreViewport,sleep, close(){
+      closed=true;clearTimeout(retryTimer);clearTimeout(previewTimer);clearTimeout(wheelTimer);
+      for(const [part,picture] of detailImages)releaseDetail(part,picture);
+      detailImages.clear();terrain.remove();halos.replaceChildren();
+      if(liveCity===captureCity){liveCity=null;liveCameraMoving=null;}
+      cancelAnimationFrame(raf);obs.disconnect();cleanup.forEach(fn=>fn());residents.close();
+    }};
   }
-  return {create,districts,size:[W,H],captureCollapse,drawBitRings};
+  return {create,districts,size:[W,H],captureCollapse,drawBitRings,warm:warmAtlas,previewURL};
 })();
 
 ;
@@ -3046,7 +3207,7 @@ window.DuoResidents = (() => {
   const smallGain=new Intl.NumberFormat("ru-RU",{maximumSignificantDigits:2});
   function art(type, i) { return window.duoArt("art/" + type + "-" + String(i).padStart(2, "0") + ".webp"); }
   function esc(s) { return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-  let resourceEntries=[], prestigeEntry=null;
+  let resourceEntries=[], prestigeEntry=null, resourceList=null;
   const purchaseModes=[1,10,25,0], quantityKey="integrals.duomax.resource-quantity.v1";
   function resourceQuantity(value) {
     if(value==null||value==="")return 1;
@@ -3145,10 +3306,10 @@ window.DuoResidents = (() => {
       qty:row.querySelector(".pg-resource-facts b"), cost:row.querySelector(".pg-resource-price"),
       discovered:r.discovered, staticKey:null, dynamicKey:null, badge:r.unseen};
   }
-  function updateResources(s){
+  function updateResources(s, reopening){
     const resources=s.resources,last=resources[resources.length-1];
     const prestigeState=s.prestigeDiscovered?s.prestigeLevel:blackHoleRequirement(last);
-    let watch=false;
+    let watch=reopening;
     if(!resourceEntries.length) {
       list.innerHTML=resources.map((r,i)=>resourceRow(s,r,i)).join("")+prestigeRow(s,last);
       resourceEntries=resources.map((r,i)=>cacheEntry(list.children[i],r));
@@ -3281,12 +3442,7 @@ window.DuoResidents = (() => {
   }
   function buildWorld(){
     const places=DuoWorldMap.districts.map((district,index)=>{
-      const [x,y,w,h]=district.rect, [atlasWidth,atlasHeight]=DuoWorldMap.size;
-      // Frame the same painted building as the map in a 4:3 thumbnail.
-      const width=Math.max(w,h*4/3)*1.16,height=width*3/4;
-      const left=-(x+(w-width)/2)/width*100,top=-(y+(h-height)/2)/height*100;
-      const crop='width:'+(atlasWidth/width*100)+'%;height:'+(atlasHeight/height*100)+'%;left:'+left+'%;top:'+top+'%';
-      return '<button hidden class="pg-place" '+idAttr("district",index)+'><span aria-hidden="true" class="pg-place-image"><img alt="" draggable="false" loading="lazy" style="'+crop+'"></span><strong>'+
+      return '<button hidden class="pg-place" '+idAttr("district",index)+'><span aria-hidden="true" class="pg-place-image"></span><strong>'+
         esc(district.name)+'</strong><b class="pg-chevron" aria-hidden="true">›</b></button>';
     }).join("");
     list.innerHTML='<div class="pg-map-view"></div><div class="pg-city-footer"><strong>Открыто мест <b></b></strong><button class="pg-map-overview nav-control" aria-label="Показать всю карту" data-page-action="overview">'+mapIcon('M4 20 20 4M4 13v7h7M13 4h7v7')+'</button></div>'+
@@ -3306,14 +3462,20 @@ window.DuoResidents = (() => {
       copyChanged(places.querySelector(".pg-places-count"),count);
       places.querySelector(".pg-place-start").hidden=open.size>0;
       places.querySelector(".pg-place-list").hidden=open.size===0;
-      for(const button of places.querySelectorAll(".pg-place")){
-        button.hidden=!open.has(DuoWorldMap.districts[Number(button.dataset.key)].id);
+      const buttons=places.querySelectorAll(".pg-place");
+      const stage=DuoWorldMap.districts.reduce((last,d,i)=>open.has(d.id)?i+1:last,0);
+      const stageChanged=places.dataset.stage!==String(stage);
+      for(const button of buttons){
+        const index=Number(button.dataset.key);
+        button.hidden=!open.has(DuoWorldMap.districts[index].id);
+        if(stageChanged){
+          button.style.setProperty("--district-position",(stage>1?100*index/(stage-1):0)+"%");
+        }
       }
-      const stage=list.querySelector(".wm-terrain").dataset.stage;
-      if(places.dataset.stage!==stage){
-        places.dataset.stage=stage;
-        const atlas=list.querySelector(".wm-terrain").src;
-        for(const image of places.querySelectorAll(".pg-place-image img"))image.src=atlas;
+      if(stageChanged){
+        places.dataset.stage=String(stage);
+        places.style.setProperty("--district-strip",stage?'url("'+DuoWorldMap.previewURL(stage)+'")':"none");
+        places.style.setProperty("--district-width",100*stage+"%");
       }
     }
     pauseWorld();
@@ -3409,7 +3571,8 @@ window.DuoResidents = (() => {
     return '<div class="pg-dialog" role="dialog" aria-modal="true" aria-labelledby="pg-dialog-title"><div class="pg-dialog-header"><h3 id="pg-dialog-title">'+esc(title)+'</h3>'+
       '<button class="pg-close nav-control" data-page-action="close" aria-label="Закрыть">'+closeGlyph+'</button></div>'+body+'</div>';
   }
-  let researchGroups=new Map();
+  const researchGroups=new Map();
+  let researchList=null;
   function childKey(node){
     return node.nodeType===1 && node.dataset?.pageAction ? node.dataset.pageAction+":"+(node.dataset.key||"") : null;
   }
@@ -3462,7 +3625,7 @@ window.DuoResidents = (() => {
       (replacement||disclosure)?.focus({preventScroll:true});
     }
   }
-  function refresh(snapshot) {
+  function refresh(snapshot, reopening=false) {
     if(!pane || !pane.isConnected || pane.parentElement.hidden) return;
     const source=snapshot||Economy.snapshot();
     const s=Object.create(source);
@@ -3471,7 +3634,7 @@ window.DuoResidents = (() => {
     Object.defineProperty(s,"research",{get(){return research||(research=source.research);}});
     if(balance)updateBalance(window.LiveCounters?.balance() ?? s.balance);
     let current;
-    if(section==="resources")current=updateResources(s);
+    if(section==="resources")current=updateResources(s,reopening);
     else if(section==="research")current=s.research.map(r=>(r.studied?3:r.canBuy?2:r.visible?1:0)).join("")+(s.clicks<25?"/hint":"");
     else {updateWorld(s);current="world";}
     if(section==="research" && current!==signature) {
@@ -3661,6 +3824,7 @@ window.DuoResidents = (() => {
       const count=Number(button.dataset.count);
       const success=action==="study"?Economy.study(key):count>0 && Economy.owned(key)===Number(button.dataset.owned) && Economy.buy(key,count);
       if(success) {
+        if(action==="buy" && Number(button.dataset.owned)===0)DuoWorldMap.warm();
         purchaseGain(before,Economy.hud(),button,e);
         window.dispatchEvent(new Event("duocounterview"));
         window.DuoAudio?.play("purchase");
@@ -3677,7 +3841,16 @@ window.DuoResidents = (() => {
     if(selected?.type==="residents")DuoResidents.disconnect();
     if(map)map.close();map=null;clearSeen();
     if(pane)pane.removeEventListener("click",handle);
-    selected=null;signature=null;detailSignature=null;pane=null;balance=null;resourceEntries=[];prestigeEntry=null;researchGroups=new Map();
+    if(pane && section==="resources"){
+      list.removeAttribute("inert");
+      list.remove();
+      resourceList=list;
+    }
+    if(pane && section==="research"){
+      list.querySelector('[data-page-action="research"][aria-pressed="true"]')?.setAttribute("aria-pressed","false");
+      list.remove();researchList=list;
+    }
+    selected=null;signature=null;detailSignature=null;pane=null;balance=null;
     if(!container || !["resources","research","world"].includes(name))return;
     section=name;
     const title={resources:"Ресурсы",research:"Улучшения",world:"Научный город"}[section];
@@ -3687,9 +3860,22 @@ window.DuoResidents = (() => {
       (name!=="world"?'<div class="pg-purchase-gains" aria-live="polite" aria-relevant="additions"></div>':'')+
       '<div class="pg-overlay" hidden></div></section>';
     pane=container.firstElementChild;list=pane.querySelector(".pg-list");details=pane.querySelector(".pg-overlay");balance=pane.querySelector(".pg-balance");
-    if(name==="resources")bindResourceTouches(pane);
+    if(name==="research" && researchList){
+      // Reuse the catalogue's SVGs and portraits. refresh() compares the groups
+      // with the current snapshot before the player can interact with the page.
+      list.replaceWith(researchList);list=researchList;
+      list.scrollTop=0;
+    }
+    if(name==="resources"){
+      if(resourceList){
+        list.replaceWith(resourceList);
+        list=resourceList;
+        list.scrollTop=0;
+      }
+      bindResourceTouches(pane);
+    }
     else pane.addEventListener("click",handle);
-    refresh(snapshot);
+    refresh(snapshot,name==="resources" && !!resourceList);
   }
   function leaveDistrictForQuest(){
     if (selected?.type!=="district") return null;
@@ -6266,9 +6452,16 @@ function watchPreview(c){
   previewObserver=new IntersectionObserver(entries=>{
     if(c!==preview)return;
     previewOnScreen=entries.some(entry=>entry.isIntersecting);
-    draw();
+    scheduleDraw();
   });
   previewObserver.observe(c);
+}
+function scheduleDraw(){
+  if(timer)return;
+  timer=requestAnimationFrame(()=>{
+    timer=0;
+    draw();
+  });
 }
 function draw(){
   if(timer){cancelAnimationFrame(timer);timer=0;}
@@ -6296,7 +6489,7 @@ function draw(){
   if(showScene && skin && visible(diskSurface)){paint(diskSurface,skin,t,true);animated=animated||!!skin.fx;}
   const previewExposed=preview&&(!overlay||overlay.hidden||overlay.contains(preview));
   if(previewExposed && previewOnScreen && previewLook && (previewLook.fx||previewDisk) && visible(preview)){paint(preview,previewLook,t,previewDisk);animated=animated||!!previewLook.fx;}
-  if(animated&&!motion.matches)timer=requestAnimationFrame(draw);
+  if(animated&&!motion.matches)scheduleDraw();
 }
 function canvas(parent, cls){
   const c=document.createElement('canvas');c.className=cls;c.setAttribute('aria-hidden','true');parent.prepend(c);return c;
@@ -6310,7 +6503,7 @@ function apply(){
   btn.dataset.skin=selected.skins;
   window.dispatchEvent(new Event('duoappearancechange'));
   diskSurface.hidden=selected.skins==='classic';
-  draw();
+  scheduleDraw();
 }
 function init(){
   if(ready)return;
@@ -6321,11 +6514,12 @@ function init(){
   surface=canvas(station,'ap-background');
   glowLayer=document.createElement('div');glowLayer.className='ap-glows';glowLayer.setAttribute('aria-hidden','true');glowLayer.hidden=true;surface.before(glowLayer);
   diskSurface=canvas(btn.querySelector('.integral-face'),'ap-diskart');
-  for(const name of ['resize','duonavigation','duoscrollstart','duoscrollend'])window.addEventListener(name,draw);
+  for(const name of ['resize','duonavigation','duoscrollend'])window.addEventListener(name,scheduleDraw);
+  window.addEventListener('duoscrollstart',draw);
   window.addEventListener('duopause',()=>{nativePaused=true;draw();});
-  window.addEventListener('duoresume',()=>{nativePaused=false;draw();});
+  window.addEventListener('duoresume',()=>{nativePaused=false;scheduleDraw();});
   window.addEventListener('duohonors',()=>refreshGallery?.());
-  document.addEventListener('visibilitychange',draw);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)draw();else scheduleDraw();});
   if(motion.addEventListener)motion.addEventListener('change',draw);else motion.addListener(draw);
   apply();
 }
@@ -6423,7 +6617,7 @@ function unmount(){
   stopThumbnails?.();stopThumbnails=null;
   thumbnailObserver?.disconnect();thumbnailObserver=null;
   galleryResize?.disconnect();galleryResize=null;
-  previewObserver?.disconnect();preview=null;previewLook=null;previewOnScreen=false;draw();
+  previewObserver?.disconnect();preview=null;previewLook=null;previewOnScreen=false;scheduleDraw();
 }
 function render(root,options={}){
   unmount();init();
@@ -6519,7 +6713,7 @@ function render(root,options={}){
     if(restoreFocus&&origin?.isConnected)origin.focus({preventScroll:true});
     origin=null;
     if(restoreFocus&&wide.matches&&detail.hidden)showEquipped();
-    draw();return true;
+    scheduleDraw();return true;
   }
   closeGalleryPreview=()=>frame.isConnected&&dismissPreview(true);
   frame.onkeydown=event=>{
@@ -6645,12 +6839,13 @@ function render(root,options={}){
       }
     }
     function inRange(margin){
-      const bounds=grid.getBoundingClientRect(),images=[];
+      const bounds=grid.getBoundingClientRect(),images=[],outside=[];
       for(const card of cards.values()){
         const r=card.getBoundingClientRect(),image=card.querySelector('.ap-thumb img');
         if(r.top<bounds.bottom+margin&&r.bottom>bounds.top-margin)images.push(image);
-        else if(margin)release(image);
+        else if(margin)outside.push(image);
       }
+      outside.forEach(release);
       upgrade(images);
     }
     const near=()=>inRange(480);
@@ -6674,8 +6869,13 @@ function render(root,options={}){
         if(!image)continue;
         const r=card.getBoundingClientRect();
         if(r.top>=bounds.bottom||r.bottom<=bounds.top)continue;
-        requested.delete(image);image.remove();previousThumbnails.set(image.dataset.path,image);
+        previousThumbnails.set(image.dataset.path,image);
         if(previousThumbnails.size>=24)break;
+      }
+      // Measure the visible rows before detaching any images. Interleaving
+      // removal and layout reads makes WebView lay out the grid for each card.
+      for(const image of previousThumbnails.values()){
+        requested.delete(image);image.remove();
       }
       timers.forEach(clearTimeout);requested.forEach((_,image)=>release(image));
     };
@@ -6757,7 +6957,7 @@ function render(root,options={}){
       action.textContent=placed?'Ярлык закреплён':'Закрепить ярлык игры';
       action.dataset.state='pin';action.disabled=placed;
     }
-    draw();
+    scheduleDraw();
     if(fromKeyboard){
       const next=action.disabled?(close.hidden?opener:close):action;
       next?.focus({preventScroll:true});

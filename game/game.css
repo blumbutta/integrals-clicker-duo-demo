@@ -2184,10 +2184,9 @@ body.duo-launching {background:#060f16}
 .pg-place-image {
   position:relative; overflow:hidden; flex:none; width:clamp(2.65rem,min(6.3vw,8.4vh),6rem);
   height:clamp(1.9875rem,min(4.725vw,6.3vh),4.5rem);
-  border-radius:.38rem; background:#1a3340;
+  border-radius:.38rem; background:#1a3340 var(--district-strip,none) var(--district-position,0%) center/var(--district-width,100%) 100% no-repeat;
 }
 .pg-place-empty {margin:.2rem 0 .9rem; color:var(--p-muted); font:500 1rem/1.45 var(--system)}
-.pg-place-image img {position:absolute; max-width:none; pointer-events:none}
 #station[data-landscape] .pg-overlay[data-kind=district] .pg-dialog {
   display:flex; flex-direction:column; align-items:stretch; width:100%; max-height:100%;
   gap:.65rem; padding:0 .85rem .85rem; overflow:auto; background:transparent; border:0; box-shadow:none;
