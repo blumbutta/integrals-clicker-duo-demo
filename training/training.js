@@ -139,7 +139,7 @@
         show("first-tap", tapButton, "Первый интеграл", "Добро пожаловать в лабораторию! Нажми на большой знак ∫.");
         return;
       case "score":
-        explain("score", "#balance", "Счёт пополнился", "Каждое нажатие приносит интегралы. Накопи 15 ∫, и сможешь купить первый ресурс.", "Начать копить", () => go("firstFunds"), {point: true});
+        explain("score", "#balance", "Счёт пополнился", "Нажатие на большой знак принесло 1 ∫. Сумму за одно касание видно под счётом. Накопи 15 ∫ на первый ресурс.", "Начать копить", () => go("firstFunds"), {point: true});
         return;
       case "firstFunds":
         if (Economy.hud().balance >= 15) return go("bit");
@@ -199,7 +199,7 @@
         if (navigate("research", "Улучшение доступно", "Открой «Улучшения». Покупка сделает каждое нажатие сильнее.")) return;
         const buy = control("study", upgrade.id);
         if (el(buy)) {
-          show("buy-upgrade", buy, upgrade.name, "Купи карандаш, чтобы усилить клик. Позже здесь откроется «Командная работа». Чем больше помощников одного вида в команде, тем выше доход всей лаборатории.", {point: true});
+          show("buy-upgrade", buy, upgrade.name, upgrade.target==="click" && upgrade.multiplier===2 ? "Это улучшение удвоит базовую награду за нажатие на ∫. Сравни суммы до и после покупки." : "Прочитай в карточке, какой доход изменится, и купи улучшение.", {point: true});
         } else {
           show("inspect-upgrade", control("research", upgrade.id), upgrade.name, "Открой карточку доступного улучшения.");
         }
@@ -208,11 +208,11 @@
       case "testUpgrade":
         if (screenHome("Проверим улучшение", "Вернись на главную и посмотри, сколько теперь приносит одно нажатие.")) return;
         if (Economy.hud().clicks > lesson.testClicks) return recordUpgradeTap(Economy.hud().clickPower);
-        show("upgraded-tap", tapButton, "Попробуй усиленный клик", "Нажми на ∫ один раз и посмотри, как изменится счёт.", {context: meter});
+        show("upgraded-tap", tapButton, "Проверь награду за нажатие", "Нажми на ∫ один раз и посмотри, как изменится счёт.", {context: meter});
         return;
       case "upgradeResult": {
         const gain = lesson.tapGain, after = lesson.tapBalance;
-        show("upgraded-result", meter, "Усиленный клик в действии",
+        show("upgraded-result", meter, "Вот сколько принесло нажатие",
           "На счёте было " + number(lesson.tapStart ?? after - gain) + " ∫, а теперь " + number(after) + " ∫.",
           {point: true, pointAt: "#balance", gainLabel: "+" + number(gain) + " ∫", lockTarget: true, actionLabel: "Продолжить",
            onAction: () => go(lesson.questDone ? "honors" : "earn")});
