@@ -346,7 +346,7 @@
       case "ranking":
         if (App.activeRoute !== "home" || App.sheet) App.route("home");
         explain("global-ranking", "#leaderboard", "Глобальный рейтинг",
-          "Здесь видны вселенная, престиж и интегралы, заработанные за всё время. Участвовать можно через Яндекс ID.",
+          "Здесь видны вселенная, эпоха и интегралы, заработанные за всё время. Участвовать можно через Яндекс ID.",
           "Дальше", () => go("complete", {rankingSeen: true}), {point: true});
         return;
       case "complete": {
