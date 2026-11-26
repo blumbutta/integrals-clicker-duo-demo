@@ -3050,6 +3050,7 @@ window.DuoResidents = (() => {
   "use strict";
   const {exact,rate}=window.IntegralNumbers;
   let observed=null, observer=null;
+  const shelfFits=new Map();
   const escape=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const number=(n,format=exact)=>escape(format(n));
   function symbol(name){
@@ -3111,26 +3112,58 @@ window.DuoResidents = (() => {
       '</div></div><div id="rs-body" class="rs-scroll" data-section="'+(lab?"lab":"team")+'" role="region" aria-label="'+(lab?"Лаборатория":"Сила команды")+'"><div class="rs-content">'+
       (lab?laboratory(s,portrait):team(s,portrait))+'</div></div></section>';
   }
+  function setBadge(row){
+    const hidden=row.shown===row.count;
+    if(row.badge.hidden!==hidden)row.badge.hidden=hidden;
+    if(!hidden){
+      const label="+"+exact(row.count-row.shown);
+      if(row.badge.textContent!==label)row.badge.textContent=label;
+    }
+  }
   function fitShelves(scope){
-    for(const shelf of scope.querySelectorAll(".rs-shelf")){
-      const figures=shelf.firstElementChild, source=figures.firstElementChild, badge=shelf.lastElementChild;
-      const width=shelf.clientWidth, image=source.getBoundingClientRect().width, step=parseFloat(getComputedStyle(figures).gridAutoColumns);
-      if(!width||!image||!step)continue;
-      const count=Number(shelf.dataset.count);
-      const capacity=available=>Math.max(1,Math.floor((available-Math.max(0,image-step))/step));
-      let shown=Math.min(count,capacity(width));
-      if(shown<count){
-        // Reserve the measured width of the suffix, including its Russian digit grouping.
-        badge.hidden=false;badge.textContent="+"+exact(count-shown);
-        const gap=parseFloat(getComputedStyle(shelf).columnGap)||0;
-        shown=Math.min(shown,capacity(width-Math.max(step*48/36,badge.offsetWidth+gap)));
-        badge.textContent="+"+exact(count-shown);
-        // Crossing 9 → 10 or 99 → 100 can widen the suffix by a digit.
-        shown=Math.min(shown,capacity(width-Math.max(step*48/36,badge.offsetWidth+gap)));
-        badge.textContent="+"+exact(count-shown);
-      }else badge.hidden=true;
-      while(figures.childElementCount<shown)figures.append(source.cloneNode(false));
+    const shelves=scope.querySelectorAll(".rs-shelf");
+    if(!shelves.length)return;
+    const sample=shelves[0], figures=sample.firstElementChild;
+    const image=figures.firstElementChild.getBoundingClientRect().width;
+    const step=parseFloat(getComputedStyle(figures).gridAutoColumns);
+    const gap=parseFloat(getComputedStyle(sample).columnGap)||0;
+    if(!image||!step)return;
+    const capacity=available=>Math.max(1,Math.floor((available-Math.max(0,image-step))/step));
+    const rows=[],overflow=[];
+    for(const shelf of shelves){
+      const width=shelf.clientWidth;
+      if(!width)continue;
+      const id=shelf.parentElement.dataset.resident,count=Number(shelf.dataset.count);
+      const fit=shelfFits.get(id);
+      const row={figures:shelf.firstElementChild,badge:shelf.lastElementChild,count,shown:0,width,id};
+      if(fit && fit.count===count && fit.width===width && fit.image===image && fit.step===step && fit.gap===gap){
+        row.shown=fit.shown;
+      }else{
+        row.shown=Math.min(count,capacity(width));
+        if(row.shown<count)overflow.push(row);
+      }
+      rows.push(row);
+    }
+    // Measure all suffixes together before touching any more DOM. A second pass
+    // handles a wider remainder when reserving the badge crosses e.g. 99 → 100.
+    let pending=overflow;
+    for(let pass=0;pass<2 && pending.length;pass++){
+      pending.forEach(setBadge);
+      pending=pending.filter(row=>{
+        const reserved=Math.max(step*48/36,row.badge.offsetWidth+gap);
+        const shown=Math.min(row.shown,capacity(row.width-reserved));
+        if(shown===row.shown)return false;
+        row.shown=shown;
+        return true;
+      });
+    }
+    for(const row of rows){
+      const {figures,shown}=row;
+      setBadge(row);
+      while(figures.childElementCount<shown)figures.append(figures.firstElementChild.cloneNode(false));
       while(figures.childElementCount>shown)figures.lastElementChild.remove();
+      // Keep only the last fit for each resource, without retaining dialog nodes.
+      shelfFits.set(row.id,{count:row.count,width:row.width,image,step,gap,shown});
     }
   }
   function sync(scope){
@@ -7481,8 +7514,8 @@ window.Guide = (() => {
   'use strict';
   const pages = [
     {title:'Сколько даёт нажатие',text:'В начале игры за нажатие на интеграл вы получаете 1 ∫ плюс 5% от дохода лаборатории за секунду. Например, при доходе 20 ∫/с одно нажатие принесёт 2 ∫. Сама лаборатория продолжает зарабатывать отдельно.',hint:'«Острый карандаш» удваивает базу с 1 до 2 ∫. «Прикладная мысль» увеличивает долю дохода с 5 до 6,5%.',art:'disc'},
-    {title:'Собирайте лабораторию',text:'Ресурсы приносят интегралы каждую секунду, пока приложение открыто. Чтобы купить следующий вид, сначала приобретите предыдущий и накопите нужную сумму.',hint:'Первый бит информации стоит 15 ∫.',art:'resources'},
-    {title:'Усиливайте команду',text:'Личные улучшения усиливают один ресурс, командные — всю лабораторию. Участники пары помогают друг другу. Например, школьник и преподаватель вместе увеличивают доход школы.',hint:'Откройте район на карте, чтобы увидеть его жителей.',art:'team'},
+    {title:'Купите первый ресурс',text:'Накопите 15 ∫, откройте «Ресурсы» и коснитесь карточки «Бит информации». Первый бит приносит 0,25 ∫ в секунду, пока игра открыта.',hint:'Каждый бит работает сам. Четыре бита вместе приносят 1 ∫ в секунду.',art:'resources'},
+    {title:'Удвойте доход от битов',text:'Соберите 10 битов. В разделе «Улучшения» станет доступен «Двоичный разряд» за 180 ∫. Купите его, и те же 10 битов будут приносить 5 ∫ в секунду вместо 2,5.',hint:'Усиление действует и на все биты, которые вы купите позже.',art:'upgrade'},
     {title:'Открывайте научный город',text:'В новых зданиях появляются задания. На каждый вопрос есть минута. Выберите ответ и подтвердите. Ответьте верно на все вопросы, чтобы забрать весь приз. Ошибка, выход или истечение времени стоят половины приза.',hint:'Разведите два пальца на карте, чтобы приблизить её и рассмотреть ресурсы.',art:'city'},
     {title:'Поймайте удачу',text:'На главном экране иногда появляется золотой интеграл. Коснитесь его, пока он летит, чтобы получить бонус.',hint:'На поимку есть пять секунд.',art:'gold'},
     {title:'Забирайте подарки',text:'Со второго календарного дня доступно одно вращение колеса в день. Чем больше сектор, тем выше шанс. Награды за достижения начисляются автоматически.',hint:'За достижения открываются темы фона и оформления интеграла.',art:'wheel'},
@@ -7492,21 +7525,66 @@ window.Guide = (() => {
     const n=document.createElement(name);if(cls)n.className=cls;if(copy!==undefined)n.textContent=copy;return n;
   }
   function button(cls,label,cb){const b=tag('button',cls,label);b.type='button';b.onclick=cb;return b;}
+  function image(filename,cls){
+    const img=tag('img',cls);img.alt='';img.draggable=false;img.src=window.duoArt('art/'+filename);return img;
+  }
+  function tapMark(){
+    return tag('span','gd-touch');
+  }
+  function clickScene(art){
+    const score=tag('strong','gd-score','0 ∫'),disc=tag('span','gd-glyph-disc');
+    const glyph=image('formula.svg'),look=window.Appearance?.visual('skins',Appearance.selection().skins);
+    if(look){disc.style.background=look.color;if(look.dark)glyph.className='ap-pale';}
+    disc.append(glyph,tapMark());
+    const press=tag('div','gd-press');press.append(disc,tag('b','gd-point','+1 ∫'));
+    art.append(score,press);
+    let total=0;
+    function addPoint(event){
+      if(event.target===disc && event.animationName==='gd-press')score.textContent=(++total).toLocaleString('ru-RU')+' ∫';
+    }
+    disc.addEventListener('animationstart',addPoint);
+    disc.addEventListener('animationiteration',addPoint);
+  }
+  // Both states occupy the same space throughout the purchase and when text scales.
+  function changing(before,after){
+    const pair=tag('span','gd-changing');pair.append(tag('span','gd-before',before),tag('span','gd-after',after));return pair;
+  }
+  function purchaseScene(art,upgrade){
+    const card=tag('div','gd-shop-card');
+    const item=tag('div','gd-shop-item');
+    const portrait=tag('span','gd-shop-icon');portrait.append(image('resource-00.webp'));
+    if(upgrade)portrait.append(tag('b','gd-multiplier','×2'));
+    const heading=tag('div','gd-shop-heading');
+    heading.append(tag('small','',upgrade?'Улучшения':'Ресурсы'),tag('strong','',upgrade?'Двоичный разряд':'Бит информации'));
+    item.append(portrait,heading);
+    const stats=tag('div','gd-shop-stats');
+    function stat(label,values){
+      const row=tag('div');row.append(tag('span','',label),values);stats.append(row);
+    }
+    stat('Баланс',changing(upgrade?'180 ∫':'15 ∫','0 ∫'));
+    stat('Битов в работе',upgrade?tag('b','','10'):changing('0','1'));
+    stat('Доход',changing(upgrade?'2,5 ∫/с':'0 ∫/с',upgrade?'5 ∫/с':'0,25 ∫/с'));
+    const buy=tag('div','gd-demo-buy');
+    buy.append(changing(upgrade?'Изучить за 180 ∫':'Купить за 15 ∫',upgrade?'Изучено ✓':'Куплено ✓'),tapMark());
+    card.append(item,stats,buy);art.append(card);
+  }
+  function cityScene(art){
+    const map=tag('div','gd-city-map');map.append(image('guide/city-school.webp'));
+    for(const name of ['schoolboy','teacher']){
+      const path=tag('span','gd-route gd-route-'+name),walker=tag('span','gd-walker');
+      walker.style.backgroundImage='url("'+window.duoArt('art/map/sprites-small/'+name+'-walk.webp')+'")';
+      path.append(walker);map.append(path);
+    }
+    art.append(map);
+  }
   function illustration(type) {
     const art=tag('div','gd-art');
     art.setAttribute('aria-hidden','true');
-    function add(filename) {const image=tag('img');image.alt='';image.draggable=false;image.src=window.duoArt('art/'+filename);art.append(image);return image;}
+    art.classList.add('gd-'+type);
     if(type==='disc'){
-      art.classList.add('gd-disc');
-      const image=add('formula.svg');
-      if(window.Appearance){
-        const v=Appearance.visual('skins',Appearance.selection().skins);
-        const plate=tag('span','gd-glyph-disc');plate.style.background=v.color;art.replaceChildren(plate);plate.append(image);
-        if(v.dark)image.className='ap-pale';
-      }
-    }else if(type==='resources'||type==='team'){
-      art.classList.add('gd-pair');(type==='resources'?['00','01','02']:['01','03']).forEach(i=>add('resource-'+i+'.webp'));
-    }else if(type==='city'){art.classList.add('gd-city');add('guide/city-school.webp');}
+      clickScene(art);
+    }else if(type==='resources'||type==='upgrade'){purchaseScene(art,type==='upgrade');}
+    else if(type==='city'){cityScene(art);}
     else if(type==='gold'){
       art.classList.add('gd-gold-screen');
       const picture=tag('picture');
@@ -7521,9 +7599,15 @@ window.Guide = (() => {
       const image=tag('img');image.alt='';image.draggable=false;
       picture.append(image);image.src=path('flight-landscape');art.append(picture);
     }else if(type==='wheel'){
-      art.classList.add('gd-reward-wheel');add('guide/daily-wheel.webp');
+      const wheel=tag('div','gd-instrument');
+      for(const cls of ['gd-case','gd-dial','gd-hub'])wheel.append(image('guide/daily-wheel.webp',cls));
+      art.append(wheel);
     }
-    else if(type==='hole')art.append(tag('span','gd-hole','I → II'));
+    else if(type==='hole'){
+      const sky=tag('div','gd-sky'),vortex=tag('span','gd-vortex');
+      const epoch=tag('div','gd-epoch');epoch.append(tag('small','','Эпоха'),changing('I','II'));
+      sky.append(vortex,epoch);art.append(sky);
+    }
     return art;
   }
   function render(container,onClose){
@@ -7550,8 +7634,7 @@ window.Guide = (() => {
       if(page>=0){
         slides[page].setAttribute('aria-hidden','true');
         dots.children[page].classList.remove('on');
-        // The flight is a five-second recording. Replay it on each visit.
-        if(pages[page].art==='gold')slides[page].querySelector('.gd-art').remove();
+        slides[page].querySelector('.gd-art').remove();
       }
       page=next;
       const slide=slides[page];
