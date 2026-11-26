@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#091824">
 <title>Integrals Clicker · Дуо Макс</title>
-<link rel="stylesheet" href="game.css?v=02f7e391243b">
+<link rel="stylesheet" href="game.css?v=aaaf5a80dab6">
+
 
 
 
@@ -23,7 +24,7 @@
 
 
 <script>if(window.DuoStartup?.isComplete?.())document.documentElement.classList.add("duo-warm");</script>
-<script defer src="display.js?v=a9b7dd39b8ad"></script><script defer src="assets-map.js?v=4f5c833ee62c"></script><script defer src="audio.js?v=5baadfc195ff"></script><script defer src="launch.js?v=3ae0c7d3687e"></script>
+<script defer src="display.js?v=a9b7dd39b8ad"></script><script defer src="assets-map.js?v=3bc17e5b4415"></script><script defer src="audio.js?v=5baadfc195ff"></script><script defer src="launch.js?v=3ae0c7d3687e"></script>
 </head>
 <body class="duo-launching">
 <div id="station" inert aria-hidden="true">
@@ -85,7 +86,7 @@
     <button id="exit-confirm" type="button">Выйти</button>
   </div>
 </dialog>
-<template id="game-modules"><script defer src="game.js?v=23212b621775"></script></template>
+<template id="game-modules"><script defer src="game.js?v=5de18657a1b6"></script></template>
 <script id="new-game-training">// Select modules before launch.js opens the ordinary game's inert template.
 (() => {
   "use strict";
@@ -163,7 +164,7 @@ if (!window.DuoTraining) return;
 
   const sheet = document.createElement("link");
   sheet.rel = "stylesheet"; sheet.href = "../training/training-view.css?v=271c95166a5f"; document.head.append(sheet);
-  const scripts = ["../training/game.js?v=7459261d09f1", "../training/training-view.js?v=74f57caa227b", "../training/training.js?v=df9b4e8891f4"].map(src => {
+  const scripts = ["../training/game.js?v=b90bc221d0df", "../training/training-view.js?v=74f57caa227b", "../training/training.js?v=df9b4e8891f4"].map(src => {
     const script = document.createElement("script");
     script.defer = true; script.src = src;
     return script;
