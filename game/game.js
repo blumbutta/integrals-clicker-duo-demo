@@ -147,21 +147,6 @@ window.IntegralNumbers = (() => {
 })();
 
 ;
-// The standalone preview uses the same keys with embedded images.
-window.duoArt = path => path;
-
-(() => {
-  const original = window.duoArt;
-  window.duoArt = path => {
-    const url = original(path);
-    if (url === path && path === 'art/fonts/LICENSE.txt' && '5e2e94eb3bc8')
-      return url + '?v=5e2e94eb3bc8';
-    return url === path && (path.startsWith('art/appearance/') || path.startsWith('art/launcher/'))
-      ? url + '?v=fff90b6de047' : url;
-  };
-})();
-
-;
 // BlackHoleEmblem and BlackHoleAccretion share these textures and paths with the world scene.
 window.BlackHoleArt = (() => {
   'use strict';
@@ -377,245 +362,6 @@ window.BlackHoleArt = (() => {
   if(motion.addEventListener)motion.addEventListener('change',wake);
   else motion.addListener(wake);
   return Object.freeze({base,corona,load,paint,center});
-})();
-
-;
-// The original 16-second recording loops at the same level as on iPhone.
-// WAV effects use the note scores and envelopes in Services/Audio/GameAudio.swift.
-window.DuoAudio = (() => {
-  'use strict';
-  const musicName='integrals-soundtrack';
-  const known=new Set(['click','purchase','golden','tick','reward','miss','correct','loss','achievement','prestigeOpen',
-    'world-charge','world-infall','world-launch','world-birth']);
-  const notices=new Set(['golden','reward','miss','correct','loss','achievement','prestigeOpen']);
-  const vibration={click:8,purchase:16,golden:[18,38,30],correct:15,loss:35,reward:[12,40,22],achievement:[12,40,22],'world-birth':32};
-  const prefs={sound:true,haptics:true};
-  for(const key of Object.keys(prefs)) {
-    try { prefs[key]=localStorage.getItem('integrals.duo.'+key)!=='off'; } catch (_) {}
-  }
-  let context=null,music=null,gain=null,started=false,foreground=true,calledResume=null,priority=null;
-  let transportGeneration=0,noticeSequence=0,voiceSequence=0;
-  const decoded=new Map(), voices=[];
-  let ambientRequested=false,ambient=null,holeLoop=null,worldActive=false,cue=null;
-  function active(){return started && foreground && !document.hidden && prefs.sound;}
-  function enabled(key){return !!prefs[key];}
-  function load(name){
-    if(decoded.has(name))return decoded.get(name);
-    const url=window.duoArt('art/audio/'+name+'.wav');
-    const result=fetch(url).then(response=>{
-      if(!response.ok)throw Error('audio '+response.status);
-      return response.arrayBuffer();
-    }).then(bytes=>context.decodeAudioData(bytes)).catch(()=>{decoded.delete(name);return null});
-    decoded.set(name,result);return result;
-  }
-  function ensureContext(){
-    if(!context){
-      const Audio=window.AudioContext||window.webkitAudioContext;
-      if(!Audio)return false;
-      try{context=new Audio();}catch(_){return false;}
-    }
-    return true;
-  }
-  // Opening the device for the first AudioContext can stall the input thread.
-  // Prepare it during an idle interval; resume and playback stay gesture-gated.
-  const prepareContext=()=>{
-    if(!context && prefs.sound && foreground && !document.hidden)ensureContext();
-  };
-  if(window.requestIdleCallback)window.requestIdleCallback(prepareContext);
-  else setTimeout(prepareContext,0);
-  function stopNode(node){
-    if(!node)return;
-    try{node.stop()}catch(_){}
-    node.disconnect();
-  }
-  function musicVolume(){return worldActive ? 0 : ambientRequested ? .14 : .32;}
-  function mixMusic(fade=false){
-    if(!gain)return;
-    const volume=gain.gain,target=musicVolume(),now=context.currentTime;
-    volume.cancelScheduledValues(now);
-    if(fade && active()){
-      volume.setValueAtTime(volume.value,now);
-      volume.linearRampToValueAtTime(target,now+.9);
-    }else volume.setValueAtTime(target,now);
-  }
-  // The four-second drone in GameAudio.makeBlackHoleLoop, at its native sample rate.
-  function prestigeLoop(){
-    if(holeLoop)return holeLoop;
-    const rate=22050,duration=4,tau=2*Math.PI;
-    holeLoop=context.createBuffer(1,duration*rate,rate);
-    const samples=holeLoop.getChannelData(0);
-    for(let i=0;i<samples.length;i++){
-      const t=i/rate,cycle=tau*t/duration;
-      const bass=Math.sin(tau*64*t)*.075;
-      const halo=Math.sin(tau*96*t+.6*Math.sin(cycle))*.038;
-      const dust=Math.sin(tau*192*t)*.012+Math.sin(tau*320*t)*.006;
-      samples[i]=(bass+halo+dust)*(.7+.3*Math.cos(cycle));
-    }
-    return holeLoop;
-  }
-  function updateAmbience(){
-    if(!active() || !ambientRequested || worldActive){
-      stopNode(ambient);ambient=null;return;
-    }
-    if(ambient||!context)return;
-    const level=context.createGain();level.gain.value=.42;level.connect(context.destination);
-    const node=context.createBufferSource();node.buffer=prestigeLoop();node.loop=true;node.connect(level);
-    node.onended=()=>level.disconnect();
-    ambient=node;node.start();
-  }
-  function updatePrestigeSheet(){
-    const visible=window.App?.sheet==='prestige';
-    if(visible===ambientRequested)return;
-    ambientRequested=visible;
-    if(visible)begin();
-    mixMusic();updateAmbience();
-    if(visible && context && active()){
-      load('world-charge');load('world-birth');worldBuffer('world-launch');
-    }
-  }
-  function worldBuffer(name){
-    if(name!=='world-launch')return load(name);
-    if(decoded.has('beam-infall'))return decoded.get('beam-infall');
-    const result=Promise.all([load('world-launch'),load('world-infall')]).then(([launch,infall])=>{
-      if(!launch||!infall)throw Error('incomplete transition sound');
-      // A single source preserves launch, the quiet interval and then the pull across frames.
-      const delay=Math.round(1.38*launch.sampleRate);
-      const combined=context.createBuffer(1,Math.max(launch.length,delay+infall.length),launch.sampleRate);
-      const samples=combined.getChannelData(0),pull=infall.getChannelData(0);
-      samples.set(launch.getChannelData(0));
-      for(let i=0;i<pull.length;i++)samples[delay+i]+=pull[i];
-      return combined;
-    }).catch(()=>{decoded.delete('beam-infall');return null;});
-    decoded.set('beam-infall',result);
-    return result;
-  }
-  function stopCue(){
-    if(cue?.node){cue.node.onended=null;stopNode(cue.node);}
-    cue=null;
-  }
-  function stopWorldTransition(){
-    stopCue();
-    if(!worldActive)return;
-    worldActive=false;mixMusic(true);updateAmbience();
-  }
-  function scheduleCue(){
-    const current=cue;
-    if(!current||current.node||!active()||!context)return;
-    worldBuffer(current.name).then(buffer=>{
-      if(cue!==current||current.node||!active())return;
-      const offset=Math.max(0,context.currentTime-current.start);
-      if(!buffer||offset>=buffer.duration){
-        if(current.name==='world-birth')stopWorldTransition();else cue=null;
-        return;
-      }
-      const node=context.createBufferSource();current.node=node;
-      node.buffer=buffer;node.connect(context.destination);
-      node.onended=()=>{
-        node.disconnect();
-        if(cue!==current)return;
-        cue=null;
-        if(current.name==='world-birth')stopWorldTransition();
-      };
-      node.start(0,offset);
-    });
-  }
-  function playCue(name){
-    if(name==='world-infall'&&cue?.name==='world-launch')return;
-    stopCue();worldActive=true;updateAmbience();mixMusic();
-    cue={name,start:context.currentTime,node:null};
-    scheduleCue();
-  }
-  function muteNow(){
-    transportGeneration++;
-    while(voices.length)stopNode(voices.pop());
-    stopNode(priority);priority=null;
-    updateAmbience();
-    if(!prefs.sound)stopWorldTransition();
-    if(context && context.state!=='suspended')context.suspend().catch(()=>{});
-    // Suspending the context holds the loop's playhead; reuse its source on return.
-  }
-  function transport(userGesture=false){
-    if(!active()){muteNow();return;}
-    if(!ensureContext())return;
-    if(context.state!=='running' && (!calledResume || userGesture===true)){
-      // A browser may keep an earlier resume pending until a real touch ends.
-      // Retry inside that gesture; an older completion must not clear the new request.
-      const pending=context.resume().catch(()=>{});
-      calledResume=pending;
-      pending.then(()=>{
-        if(calledResume===pending)calledResume=null;
-        if(!active())muteNow();
-      });
-    }
-    updateAmbience();scheduleCue();
-    if(!music){
-      const gen=transportGeneration;
-      load(musicName).then(buffer=>{
-        if(!buffer||!active()||gen!==transportGeneration||music)return;
-        gain=context.createGain();gain.gain.value=musicVolume();gain.connect(context.destination);
-        music=context.createBufferSource();music.buffer=buffer;music.loop=true;music.connect(gain);music.start();
-      });
-    }
-  }
-  function begin(userGesture=false){
-    if(!started){
-      if(!userGesture && navigator.userActivation?.hasBeenActive===false)return;
-      started=true;transport(userGesture);
-    } else if(active() && (!context||context.state!=='running'))transport(userGesture);
-  }
-  function unlock(event){
-    if(event?.isTrusted===false)return;
-    if(event?.type==='pointerdown' && event.pointerType!=='mouse')return;
-    if(event?.type==='pointerup' && event.pointerType==='mouse')return;
-    begin(true);
-  }
-  function setEnabled(key,value){
-    if(!(key in prefs))return;
-    prefs[key]=Boolean(value);
-    try{localStorage.setItem('integrals.duo.'+key,prefs[key]?'on':'off');}catch(_){}
-    if(key==='sound'){if(value)started=true;transport();}
-    else if(!value && navigator.vibrate)navigator.vibrate(0);
-  }
-  function play(name){
-    if(!known.has(name)||!foreground||document.hidden)return;
-    if(prefs.haptics && navigator.vibrate && vibration[name]){
-      try{navigator.vibrate(vibration[name]);}catch(_){}
-    }
-    begin();
-    if(!active()||!context)return;
-    if(name.startsWith('world-')){playCue(name);return;}
-    const gen=transportGeneration,notice=notices.has(name);
-    const sequence=notice?++noticeSequence:++voiceSequence;
-    const requested=performance.now();
-    load(name).then(buffer=>{
-      if(!buffer || !active() || gen!==transportGeneration)return;
-      if(notice?sequence!==noticeSequence:sequence<voiceSequence-5)return;
-      // An interaction that passed while a device was stalled should never replay later.
-      if(name==='click' && performance.now()-requested>250)return;
-      if(notice){stopNode(priority);priority=null;}
-      else if(voices.length>=6)stopNode(voices.shift());
-      const node=context.createBufferSource();node.buffer=buffer;node.connect(context.destination);
-      if(notice)priority=node;else voices.push(node);
-      node.onended=()=>{
-        if(priority===node)priority=null;
-        const idx=voices.indexOf(node);if(idx>=0)voices.splice(idx,1);
-        node.disconnect();
-      };
-      node.start();
-    });
-  }
-  window.addEventListener('duotap',()=>play('click'));
-  window.addEventListener('duonavigation',updatePrestigeSheet);
-  document.addEventListener('pointerdown',unlock,{capture:true,passive:true});
-  document.addEventListener('pointerup',unlock,{capture:true,passive:true});
-  document.addEventListener('click',unlock,{capture:true,passive:true});
-  document.addEventListener('keydown',unlock,{capture:true});
-  document.addEventListener('visibilitychange',transport);
-  window.addEventListener('duopause',()=>{foreground=false;transport()});
-  window.addEventListener('duoresume',()=>{foreground=true;transport()});
-  window.addEventListener('pagehide',()=>{foreground=false;transport()});
-  window.addEventListener('pageshow',()=>{foreground=true;transport()});
-  return Object.freeze({play,enabled,setEnabled,stopWorldTransition});
 })();
 
 ;
@@ -4058,10 +3804,10 @@ window.DuoResidents = (() => {
       const count=Number(button.dataset.count);
       const success=action==="study"?Economy.study(key):count>0 && Economy.owned(key)===Number(button.dataset.owned) && Economy.buy(key,count);
       if(success) {
+        window.DuoAudio?.play("purchase");
         if(action==="buy" && Number(button.dataset.owned)===0)DuoWorldMap.warm();
         purchaseGain(before,Economy.hud(),button,e);
         window.dispatchEvent(new Event("duocounterview"));
-        window.DuoAudio?.play("purchase");
         if(selected)close();
       }
     }else{
@@ -6621,9 +6367,8 @@ function paint(canvas,look,t,disk,rainActivity=0,fixedSize=false){
   if(!canvas||(!fixedSize&&!canvas.isConnected))return;
   const w=fixedSize?canvas.width:canvas.clientWidth,h=fixedSize?canvas.height:canvas.clientHeight;
   if(!w||!h)return;
-  // Only the decoration underneath the medals uses a smaller buffer. The
-  // labels, medal artwork and detail preview are laid out at display resolution.
-  const pixels=canvas===surface && window.App?.sheet==='honors'?960*600:1920*1200;
+  // Only the background behind these scrollable sheets uses a smaller buffer.
+  const pixels=canvas===surface && scrollingSheets.has(window.App?.sheet)?960*600:1920*1200;
   const scale=fixedSize?1:Math.min(window.devicePixelRatio||1,Math.sqrt(pixels/(w*h)));
   const bw=Math.max(1,Math.round(w*scale)),bh=Math.max(1,Math.round(h*scale));
   const stillKey=!look.fx || motion.matches || canvas===surface && look.fx==='nebula' ? look.id+':'+[w,h,bw,bh].join('x') : '';
@@ -6700,6 +6445,7 @@ function paint(canvas,look,t,disk,rainActivity=0,fixedSize=false){
   c.restore();
 }
 let surface,diskSurface,preview,previewLook,previewDisk=false,timer=0,ready=false;
+const scrollingSheets=new Set(['honors','profile','settings']);
 const motion=matchMedia('(prefers-reduced-motion: reduce)');
 let backdrop,skin,nativePaused=false;
 const visible = c => !!(c && c.isConnected && c.clientWidth && c.clientHeight);
@@ -6730,7 +6476,7 @@ function draw(){
   const showPage=unobstructed||station.classList.contains('themed-sheet');
   const showScene=unobstructed&&!document.getElementById('home')?.hidden;
   const pageLook=backdrop?.fx ? backdrop : null;
-  const stopped=document.hidden||nativePaused||window.WorldRebirth?.covering||(window.App?.scrolling && window.App.sheet!=='honors');
+  const stopped=document.hidden||nativePaused||window.WorldRebirth?.covering||(window.App?.scrolling && !scrollingSheets.has(window.App.sheet));
   window.ClickFX?.pageEquations(station,showPage&&!showScene&&!pageLook&&!motion.matches,stopped);
   if(stopped)return;
   if(surface && surface.hidden===Boolean(pageLook))surface.hidden=!pageLook;
@@ -6774,8 +6520,7 @@ function init(){
   diskSurface=canvas(btn.querySelector('.integral-face'),'ap-diskart');
   for(const name of ['resize','duonavigation','duoscrollend'])window.addEventListener(name,scheduleDraw);
   window.addEventListener('duoscrollstart',()=>{
-    // The background stays visible behind the medal gallery throughout a swipe.
-    if(window.App?.sheet!=='honors')draw();
+    if(!scrollingSheets.has(window.App?.sheet))draw();
   });
   window.addEventListener('duopause',()=>{nativePaused=true;draw();});
   window.addEventListener('duoresume',()=>{nativePaused=false;scheduleDraw();});
@@ -10082,6 +9827,7 @@ window.HonorNotices=(()=>{
     if(document.hidden||nativePaused||sheet||active!=='home'||button.disabled||button.closest('[inert]'))return;
     const earned=Economy.tap();
     if(!(earned>0))return;
+    window.DuoAudio?.play('click');
     const hud=Economy.hud?Economy.hud():Economy.snapshot();
     showHUD(hud);
     window.ClickFX.tap(e,earned,hud);
