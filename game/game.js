@@ -8543,26 +8543,88 @@ window.Leaderboard=(()=>{
   function listOK(data){
     return Array.isArray(data.entries) && data.entries.length<=50 && data.entries.every(rowOK) && (data.me===null||ownOK(data.me));
   }
-  function entry(record,own=false){
-    const item=el('li','lb-row'+(own?' lb-mine':'')),avatar=el('span',''),player=el('span','lb-player');
-    PlayerAvatar.render(avatar,record.avatar,record.prestige);
-    player.append(el('strong','lb-name',record.name),el('small','lb-prestige','Престиж '+roman[record.prestige]+(record.cosmicAscensions?' · Вселенная '+pretty(String(BigInt(record.cosmicAscensions)+1n)) :'')));
-    const score=el('strong','lb-score',pretty(record.score)+' ∫');
+  const universeNumber=r=>pretty(String(BigInt(r.cosmicAscensions)+1n));
+  function playerCell(r,own=false){
+    const player=el('div','lb-player'),avatar=el('span',''),identity=el('div','lb-identity');
+    PlayerAvatar.render(avatar,r.avatar,r.prestige);
+    const name=el('strong','lb-name',r.name);
+    name.setAttribute('dir','auto');
+    identity.append(name);
+    if(own)identity.append(el('span','lb-you','Вы'));
+    identity.append(el('small','lb-progress','Вселенная '+universeNumber(r)+' · Престиж '+roman[r.prestige]));
+    player.append(avatar,identity);
+    return player;
+  }
+  const compactNumber=new Intl.NumberFormat('ru-RU',{notation:'compact',maximumSignificantDigits:3});
+  const scientificNumber=new Intl.NumberFormat('ru-RU',{notation:'scientific',maximumFractionDigits:2});
+  function total(r,personal=false){
+    const exact=pretty(r.score).replace(/\u202f/g,'\u2009')+'\u00a0∫';
+    const score=el('strong','lb-score',exact);
     score.title='Заработано за всё время';
-    item.append(el('span','lb-rank',String(record.rank)),avatar,player,score);return item;
+    if(r.score.length<10)return score;
+    const value=BigInt(r.score),wrapper=el('div','lb-amount'),detail=el('details','lb-value'),summary=el('summary','lb-short');
+    if(r.score.length<=15){
+      wrapper.className+=' lb-fits-wide';
+      summary.textContent=compactNumber.format(value)+' ∫';
+    }else{
+      const parts=scientificNumber.formatToParts(value);
+      const exponent=parts.find(part=>part.type==='exponentInteger').value;
+      const mantissa=parts.filter(part=>['integer','decimal','fraction'].includes(part.type)).map(part=>part.value).join('');
+      summary.append(el('span','',mantissa+' × 10'),el('sup','',exponent),el('span','',' ∫'));
+    }
+    summary.title='Точное число интегралов';
+    const exactValue=el('span','lb-exact',exact);
+    detail.setAttribute('data-score-key',personal?'personal':JSON.stringify([r.rank,r.name,r.avatar]));
+    detail.append(summary,exactValue);
+    if(r.score.length<=15)wrapper.append(score);
+    wrapper.append(detail);
+    return wrapper;
+  }
+  function personalCard(r){
+    const card=el('section','lb-personal'),place=el('div','lb-place'),sum=el('div','lb-personal-total');
+    place.append(el('h3','','Ваше место'),el('strong','lb-place-number','№ '+pretty(String(r.rank))));
+    sum.append(el('span','lb-caption','Интегралов за всё время'),total(r,true));
+    card.append(place,playerCell(r),sum);
+    return card;
+  }
+  function standings(records,own){
+    const table=el('table','lb-table'),head=el('thead',''),labels=el('tr',''),body=el('tbody','');
+    table.setAttribute('aria-label','Топ игроков');
+    for(const [key,label] of [['rank','Место'],['player','Игрок'],['universe','Вселенная'],['prestige','Престиж'],['total','Интегралы']]){
+      const th=el('th','lb-col-'+key,label);
+      th.setAttribute('scope','col');
+      labels.append(th);
+    }
+    head.append(labels);
+    for(const r of records){
+      const mine=r.rank===own?.rank;
+      const row=el('tr',mine?'lb-row lb-mine':'lb-row');
+      const rank=el('td','lb-col-rank'),player=el('th','lb-col-player'),score=el('td','lb-col-total');
+      const badge=el('span','lb-rank',pretty(String(r.rank)));
+      if(r.rank<=3)badge.className+=' lb-medal-'+r.rank;
+      rank.append(badge);
+      player.setAttribute('scope','row');
+      player.append(playerCell(r,mine));
+      score.append(total(r));
+      row.append(rank,player,el('td','lb-col-universe',universeNumber(r)),el('td','lb-col-prestige',roman[r.prestige]),score);
+      body.append(row);
+    }
+    table.append(head,body);
+    return table;
   }
   function info(root,copy){const p=el('p','lb-notice',copy);p.setAttribute('role','status');root.append(p);}
   function guest(root){
     const content=el('section','lb-connect'),intro=el('div','lb-intro');
-    intro.append(el('h3','','Подключите Яндекс ID'),el('p','','Для общего рейтинга нужен интернет. Во время игры изменения отправляются автоматически, примерно раз в 10 секунд.'),
-      el('p','lb-privacy','Из Яндекс ID игра использует имя и уникальный для приложения ID. Игроки увидят ваше имя, игровой значок, вселенную, престиж и сумму интегралов, заработанных за всё время. ID нужен для привязки аккаунта.'));
+    intro.append(el('h3','','Ваше место среди игроков'),
+      el('p','','Подключите Яндекс ID, чтобы участвовать в рейтинге. Во время игры результат обновляется примерно раз в 10 секунд, если есть интернет.'));
+    const privacy=el('p','lb-privacy','Яндекс передаёт игре ваше имя и ID для привязки аккаунта. Другие игроки увидят имя, игровой значок, вселенную, престиж и сумму заработанных интегралов.');
     content.append(intro);
     if(message)info(content,message);
-    if(!flow){content.append(button('Подключить Яндекс ID',begin,'lb-primary'));root.append(content);return;}
+    if(!flow){content.append(button('Подключить Яндекс ID',begin,'lb-primary'),privacy);root.append(content);return;}
     const card=el('div','lb-device');
     if(!flow.ticket){
       info(card,'Получаем код входа…');
-      card.append(button('Отменить',cancelLogin));content.append(card);root.append(content);return;
+      card.append(button('Отменить',cancelLogin));content.append(card,privacy);root.append(content);return;
     }
     const qr=el('img','lb-qr'),instructions=el('div','lb-instructions'),actions=el('div','lb-device-actions');
     qr.src=window.duoArt('art/guide/yandex-device-'+(flow.url.includes('.ru/')?'ru':'com')+'.png');
@@ -8574,26 +8636,37 @@ window.Leaderboard=(()=>{
     else{const a=el('a','lb-button lb-primary','Открыть Яндекс');a.href=flow.url;a.target='_blank';a.rel='noopener noreferrer';actions.append(a);}
     actions.append(button('Отменить вход',cancelLogin));instructions.append(actions);
     if(flow.externalError)info(instructions,'Браузер Станции недоступен. Откройте страницу на телефоне.');
-    card.append(qr,instructions);content.append(card);root.append(content);
+    card.append(qr,instructions);content.append(card,privacy);root.append(content);
   }
   function paint(){
     if(!host)return;
     const root=el('section','lb-page');
     if(!session)guest(root);
     else{
-      if(me){const personal=el('section','lb-personal'),list=el('ol','');personal.append(el('h3','','Ваше место'));list.append(entry(me,true));personal.append(list);root.append(personal);}
+      if(me)root.append(personalCard(me));
       if(entries){
-        const top=el('section','lb-top'),list=el('ol','');top.append(el('h3','','Топ игроков'));
-        if(entries.length)info(top,'При одной вселенной и престиже место определяют интегралы, заработанные за всё время.');
-        for(const r of entries)list.append(entry(r,me?.rank===r.rank));
-        if(entries.length)top.append(list);else top.append(el('p','','В рейтинге пока нет результатов.'));
+        const top=el('section','lb-top');
+        top.append(el('h3','','Топ игроков'));
+        if(entries.length){
+          top.append(el('p','lb-order','Сначала сравниваются номера вселенных, затем престиж и сумма интегралов за всё время.'),standings(entries,me));
+        }else top.append(el('p','lb-empty','В рейтинге пока нет результатов.'));
         root.append(top);
       }
       if(message)info(root,message);
       else if(!entries)info(root,'Загружаем рейтинг…');
       if(message && !busy)root.append(button('Попробовать снова',()=>refresh()));
     }
+    // Keep an exact score open while the server refreshes the table.
+    const previous=host.firstElementChild?Array.from(host.querySelectorAll('.lb-value')):[];
+    const expanded=new Set(previous.filter(detail=>detail.open).map(detail=>detail.dataset.scoreKey));
+    const focused=previous.find(detail=>detail.contains(document.activeElement))?.dataset.scoreKey;
     host.replaceChildren(root);
+    if(expanded.size || focused){
+      for(const detail of root.querySelectorAll('.lb-value')){
+        detail.open=expanded.has(detail.dataset.scoreKey);
+        if(detail.dataset.scoreKey===focused)detail.firstElementChild.focus({preventScroll:true});
+      }
+    }
   }
   function consentRequired(){persist(null);entries=null;me=null;message='Для участия подтвердите вход в Яндекс ID.';}
   const configurationError=e=>['oauth_client_configuration','oauth_configuration'].includes(e.data?.error);
