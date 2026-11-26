@@ -127,7 +127,18 @@ window.IntegralNumbers = (() => {
     if(typeof value==="bigint")return formatter.format(value>0n ? value : 0n);
     return Number.isFinite(value) ? formatter.format(Math.max(0,value)) : "∞";
   }
+  // Input is an ungrouped integer or a localized counter as displayed in the profile.
+  // Retain its first 25 integer digits verbatim, even when the next digit is 9.
+  function scientificParts(formatted) {
+    const visibleDigits=25;
+    if(formatted.length<=visibleDigits)return null;
+    const whole=formatted.split(",",1)[0].replace(/\s/g,"").replace(/^0+(?=\d)/,"");
+    if(whole.length<=visibleDigits || !/^\d+$/.test(whole))return null;
+    const prefix=whole.slice(0,visibleDigits);
+    return {mantissa:prefix.replace(/\B(?=(\d{3})+(?!\d))/g," "),exponent:String(whole.length-visibleDigits)};
+  }
   return Object.freeze({
+    scientificParts,
     exact:value=>unsigned(value,exactFormat),
     catalog:value=>unsigned(value,priceFormat),
     rate:value=>Number.isFinite(value)?rateFormat.format(value):"∞",
@@ -8589,30 +8600,24 @@ window.Leaderboard=(()=>{
     player.append(avatar,identity);
     return player;
   }
-  const compactNumber=new Intl.NumberFormat('ru-RU',{notation:'compact',maximumSignificantDigits:3});
-  const scientificNumber=new Intl.NumberFormat('ru-RU',{notation:'scientific',maximumFractionDigits:2});
+  const scoreDigits=digits=>pretty(digits).replace(/\u202f/g,'\u2009');
   function total(r,personal=false){
-    const exact=pretty(r.score).replace(/\u202f/g,'\u2009')+'\u00a0∫';
-    const score=el('strong','lb-score',exact);
-    score.title='Заработано за всё время';
-    if(r.score.length<10)return score;
-    const value=BigInt(r.score),wrapper=el('div','lb-amount'),detail=el('details','lb-value'),summary=el('summary','lb-short');
-    if(r.score.length<=15){
-      wrapper.className+=' lb-fits-wide';
-      summary.textContent=compactNumber.format(value)+' ∫';
-    }else{
-      const parts=scientificNumber.formatToParts(value);
-      const exponent=parts.find(part=>part.type==='exponentInteger').value;
-      const mantissa=parts.filter(part=>['integer','decimal','fraction'].includes(part.type)).map(part=>part.value).join('');
-      summary.append(el('span','',mantissa+' × 10'),el('sup','',exponent),el('span','',' ∫'));
+    const exact=scoreDigits(r.score)+'\u00a0∫';
+    const parts=IntegralNumbers.scientificParts(r.score);
+    if(!parts){
+      const score=el('strong','lb-score',exact);
+      score.title='Заработано за всё время';
+      return score;
     }
+    const detail=el('details','lb-value'),summary=el('summary','lb-short');
+    const coefficient=el('span','',parts.mantissa.replace(/ /g,'\u2009')+' ');
+    const power=el('span','lb-power','× 10');
+    power.append(el('sup','',parts.exponent),el('span','',' ∫'));
+    summary.append(coefficient,power);
     summary.title='Точное число интегралов';
-    const exactValue=el('span','lb-exact',exact);
     detail.setAttribute('data-score-key',personal?'personal':JSON.stringify([r.rank,r.name,r.avatar]));
-    detail.append(summary,exactValue);
-    if(r.score.length<=15)wrapper.append(score);
-    wrapper.append(detail);
-    return wrapper;
+    detail.append(summary,el('span','lb-exact',exact));
+    return detail;
   }
   function personalCard(r){
     const card=el('section','lb-personal'),place=el('div','lb-place'),sum=el('div','lb-personal-total');
@@ -9033,11 +9038,43 @@ window.Extras = (() => {
   let panel=null, screen='',sub='stats',confirm=false,spinning=false,spinTimer;
   let statsFields=null;
   const labels=['За всё время','Баланс','В этой эпохе','В секунду','Нажатий','Помощников','Эпоха','Исследований','Достижений','Решено заданий','Ошибок','Золотых интегралов','Новых вселенных'];
+  function expandStatFormat(field){
+    const power=document.createElement('small');
+    power.className='ex-stat-power';
+    field.exponent=document.createElement('sup');
+    power.append('× 10',field.exponent);field.number.append(' ',power);
+
+    const details=document.createElement('details'),summary=document.createElement('summary'),full=document.createElement('p');
+    details.className='ex-stat-exact';summary.textContent='Показать полностью';
+    details.ontoggle=()=>{
+      if(details.open)full.textContent=field.value;
+      summary.textContent=details.open?'Полное число на момент открытия':'Показать полностью';
+    };
+    details.append(summary,full);field.number.after(details);field.details=details;
+  }
   function writeStat(index,value){
-    const node=statsFields[index];
-    const text=node.firstChild;
-    if(!text)node.textContent=value;
-    else if(text.data!==value)text.data=value;
+    const field=statsFields[index];
+    if(field.value===value)return;
+    field.value=value;
+    const parts=IntegralNumbers.scientificParts(value);
+    if(index>=3){
+      const wide=value.length>=17;
+      if(field.wide!==wide){
+        field.number.parentElement.classList.toggle('ex-stat-wide',wide);
+        field.wide=wide;
+      }
+    }
+    if(parts){
+      if(!field.exponent)expandStatFormat(field);
+      if(field.digits.data!==parts.mantissa)field.digits.data=parts.mantissa;
+      if(field.exponent.textContent!==parts.exponent)field.exponent.textContent=parts.exponent;
+    }else{
+      if(field.exponent){
+        field.details.remove();field.number.replaceChildren(field.digits);
+        field.details=null;field.exponent=null;
+      }
+      field.digits.data=value;
+    }
   }
   function updateLiveStats(now){
     if(!statsFields)return;
@@ -9135,7 +9172,11 @@ window.Extras = (() => {
         card.innerHTML='<span>'+label+'</span><b data-stat="'+i+'"></b>';
         inner.querySelector(i<3?'.ex-totals':'.ex-grid').append(card);
       });
-      statsFields=Array.from(inner.querySelectorAll('[data-stat]'));
+      statsFields=Array.from(inner.querySelectorAll('[data-stat]'),number=>{
+        const digits=document.createTextNode('');
+        number.append(digits);
+        return {number,digits,value:null,wide:false,details:null,exponent:null};
+      });
       stats(Economy.snapshot());
       window.dispatchEvent(new Event('duocounterview'));
       return;

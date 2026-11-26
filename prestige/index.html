@@ -13,7 +13,7 @@ button[aria-pressed=true]{background:#e5bf77;color:#12232d;font-weight:650}butto
 main{position:relative;flex:1;min-height:0;overflow:hidden}iframe{border:0;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) scale(var(--scale,0));background:#091824}
 @media(max-width:630px){header{padding:7px 10px;gap:6px 12px}.info{text-align:center}h1{font-size:18px}p{font-size:13px}button{font-size:13px;padding:5px 7px}}
 .back{color:#edcf94;padding:7px 9px;text-decoration:none}.back:hover{text-decoration:underline}</style></head>
-<body><header><div class="info"><h1>Переход в эпоху I</h1><p id="hint" role="status">В тестовой игре нажми «Чёрная дыра».</p></div><nav aria-label="Демонстрация"><a class="back" href="../?v=0.3.33">Игра</a><div class="modes"><button type="button" data-mode="portrait">Вертикально</button><button type="button" data-mode="landscape">Горизонтально</button></div><button id="again" type="button">Сначала</button><a class="back" href="duo.mp4?v=eca099ef6297">Посмотреть переход</a><a class="back" href="../iphone/prestige.mp4">Сравнить с iPhone</a></nav></header>
+<body><header><div class="info"><h1>Переход в эпоху I</h1><p id="hint" role="status">В тестовой игре нажми «Чёрная дыра».</p></div><nav aria-label="Демонстрация"><a class="back" href="../?v=0.3.34">Игра</a><div class="modes"><button type="button" data-mode="portrait">Вертикально</button><button type="button" data-mode="landscape">Горизонтально</button></div><button id="again" type="button">Сначала</button><a class="back" href="duo.mp4?v=eca099ef6297">Посмотреть переход</a><a class="back" href="../iphone/prestige.mp4">Сравнить с iPhone</a></nav></header>
 <main id="view"><iframe title="Тестовая игра на Дуо Макс" allow="autoplay"></iframe></main>
 
 <script>
@@ -38,7 +38,7 @@ window.addEventListener('hashchange',orient);
 new ResizeObserver(fit).observe(stage);
 function replay() {
   hint.textContent = 'В тестовой игре нажми «Чёрная дыра».';
-  frame.src = 'entry.html?v=a8be8264587a';
+  frame.src = 'entry.html?v=d991fc50193b';
 }
 window.addEventListener('message', event => {
   if(event.source === frame.contentWindow && event.data === 'prestige-demo-complete') {

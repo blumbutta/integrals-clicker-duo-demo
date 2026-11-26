@@ -1248,6 +1248,18 @@ i[data-icon] svg { display:block; width:100%; height:100% }
   font:700 max(24px,1.55rem)/1.16 var(--serif);font-variant-numeric:lining-nums tabular-nums;
 }
 .ex-profile-page .ex-totals .ex-stat:first-child b {color:#f1cb85}
+.ex-profile-page .ex-stat-wide {grid-column:1/-1}
+.ex-profile-page .ex-stat-power {white-space:nowrap;font:inherit}
+.ex-profile-page .ex-stat-power sup {font-size:.68em;line-height:0}
+.ex-profile-page .ex-stat-exact {margin-top:.35rem;color:var(--muted)}
+.ex-profile-page .ex-stat-exact summary {
+  width:fit-content;max-width:100%;padding:.35rem 0;cursor:pointer;
+  font:500 max(14px,.9rem)/1.3 var(--system);
+}
+#station .ex-profile-page .ex-stat-exact p {
+  margin:.2rem 0 0;overflow-wrap:anywhere;font:500 max(16px,1rem)/1.45 var(--system);
+  font-variant-numeric:tabular-nums;-webkit-user-select:text;user-select:text;
+}
 .ex-profile-page .ex-switches label,.ex-profile-page .ex-card>strong,.ex-profile-page .ex-avatar-summary {
   font:700 max(17px,1.08rem)/1.28 var(--serif);
 }
@@ -1661,8 +1673,8 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 .lb-table tbody tr.lb-mine {background:#273b3c}
 .lb-table .lb-mine>:first-child {box-shadow:inset 3px 0 0 var(--gold)}
 .lb-table .lb-col-rank {width:9%; text-align:center}
-.lb-table .lb-col-player {width:32%; text-align:start}
-.lb-table .lb-col-universe,.lb-table .lb-col-prestige {width:12%; text-align:center}
+.lb-table .lb-col-player {width:28%; text-align:start}
+.lb-table .lb-col-universe,.lb-table .lb-col-prestige {width:11%; text-align:center}
 .lb-table td.lb-col-universe,.lb-table td.lb-col-prestige {color:#d5e1e2; font:500 clamp(15px,1rem,28px)/1.3 var(--system); font-variant-numeric:tabular-nums; overflow-wrap:anywhere}
 .lb-table .lb-col-total {text-align:right; padding-right:clamp(10px,1.12rem,33px)}
 .lb-table .lb-progress {display:none}
@@ -1701,7 +1713,7 @@ i[data-icon] svg { display:block; width:100%; height:100% }
   .lb-table .lb-col-universe,.lb-table .lb-col-prestige {display:none}
   .lb-table .lb-progress {display:block}
   .lb-table .lb-col-rank {width:15%}
-  .lb-table .lb-col-player {width:50%}
+  .lb-table .lb-col-player {width:43%}
   .lb-personal {grid-template-columns:fit-content(38%) minmax(0,1fr); gap:.85rem 1rem}
   .lb-personal-total {grid-column:1/-1; grid-template-columns:auto minmax(0,1fr); align-items:baseline; text-align:right; border-top:1px solid var(--lb-rule); padding-top:.65rem}
   .lb-personal-total .lb-caption {text-align:left}
@@ -1709,26 +1721,22 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 @media(max-width:620px) {
   .lb-device {grid-template-columns:minmax(0,1fr)}
   .lb-table .lb-col-rank {width:14%}
-  .lb-table .lb-col-player {width:47%}
+  .lb-table .lb-col-player {width:37%}
   .lb-table th,.lb-table td {padding:.75rem .2rem}
 }
-.lb-amount {min-width:0}
+.lb-value {min-width:0}
 .lb-short {padding:.45rem 0; list-style:none; cursor:pointer; color:var(--cream); font:650 clamp(15px,1.1rem,31px)/1.35 var(--figures); font-variant-numeric:tabular-nums; overflow-wrap:anywhere}
 .lb-short::-webkit-details-marker {display:none}
-.lb-short::after {
+.lb-power {white-space:nowrap}
+.lb-power::after {
   content:''; display:inline-block; width:.32em; height:.32em; margin:0 .1em .2em .4em;
   border:solid var(--lb-soft); border-width:0 1.5px 1.5px 0; transform:rotate(45deg);
 }
-.lb-value[open]>.lb-short::after {transform:rotate(225deg); margin-bottom:0}
+.lb-value[open] > .lb-short .lb-power::after {transform:rotate(225deg); margin-bottom:0}
 .lb-short:focus-visible {outline:2px solid var(--gold); outline-offset:2px; border-radius:2px}
 .lb-short sup {font:600 .7em/0 var(--system)}
 .lb-exact {display:block; margin-top:.4rem; color:var(--lb-soft); font:500 clamp(14px,.94rem,25px)/1.45 var(--system); font-variant-numeric:tabular-nums; overflow-wrap:anywhere}
 .lb-personal-total .lb-short {color:var(--gold)}
-.lb-fits-wide>.lb-value {display:none}
-@media(max-width:780px),(orientation:portrait) {
-  .lb-table .lb-fits-wide>.lb-score {display:none}
-  .lb-table .lb-fits-wide>.lb-value {display:block}
-}
 @media(max-width:620px) {
   .lb-personal-total {grid-template-columns:minmax(0,1fr); text-align:left; gap:.2rem}
   .lb-table thead .lb-col-rank {font-size:12px}
