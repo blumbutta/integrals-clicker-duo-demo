@@ -421,7 +421,6 @@ i[data-icon] svg { display:block; width:100%; height:100% }
 .pg-research .pg-study-panel-heading>.pg-tile {width:3.625rem}
 .pg-study-panel-heading h3 {flex:1; min-width:0; margin:0; color:var(--cream); overflow-wrap:anywhere; font:italic 700 1.5rem/1.2 var(--serif)}
 .pg-research .pg-study-panel-heading .pg-close {display:grid; place-items:center; width:2.75rem; height:2.75rem; padding:0; background:none; border:0; color:var(--muted)}
-.pg-study-panel .pg-close svg {width:1.25rem; height:1.25rem}
 .pg-study-panel p {margin:.5rem 0 0; color:var(--cream); font:400 1.18rem/1.3 var(--system); overflow-wrap:anywhere}
 .pg-study-panel p.pg-study-requirement {font-size:1.075rem; color:var(--muted)}
 .pg-research .pg-study-action {

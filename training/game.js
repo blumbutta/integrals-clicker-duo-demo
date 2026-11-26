@@ -3614,6 +3614,10 @@ window.DuoResidents = (() => {
         '<button '+idAttr("expand",key)+' aria-expanded="'+open+'">'+heading+icon("chevron","pg-chevron")+'</button>')+'</div>'+contents+'</section>';
     }).join("");
   }
+  function closeButton(label="Закрыть"){
+    const symbol=document.querySelector("#close-sheet .sheet-close-symbol").outerHTML;
+    return '<button type="button" class="pg-close nav-control" data-page-action="close" aria-label="'+esc(label)+'">'+symbol+'</button>';
+  }
   function mapIcon(path){
     return '<svg class="pg-map-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="'+path+'"/></svg>';
   }
@@ -3686,7 +3690,7 @@ window.DuoResidents = (() => {
       }
     }
     return '<section class="pg-study-panel" data-state="'+group+'" aria-labelledby="pg-dialog-title"><div class="pg-study-body"><div class="pg-study-panel-heading">'+tile(s,item,group)+
-      '<h3 id="pg-dialog-title">'+esc(item.name)+'</h3><button class="pg-close nav-control" data-page-action="close" aria-label="Закрыть описание улучшения">×</button></div>'+
+      '<h3 id="pg-dialog-title">'+esc(item.name)+'</h3>'+closeButton("Закрыть описание улучшения")+'</div>'+
       '<p>'+esc(item.description)+'</p>'+(payout?'<p>'+esc(payout)+'</p>':'')+(need?'<p class="pg-study-requirement">'+esc(need)+'</p>':'')+'</div>'+
       '<button class="pg-study-action" '+idAttr("study",item.id)+(item.canBuy?'':' disabled')+'><span>'+action+'</span>'+
       (item.studied?'':'<strong>'+esc(catalog(item.price))+' ∫</strong>')+'</button></section>';
@@ -3754,9 +3758,8 @@ window.DuoResidents = (() => {
         return '<button class="pg-challenge" '+idAttr("quests",q.id)+'>'+resourceImage(s,r)+'<span><strong>'+esc(q.title)+'</strong><small>'+esc(q.subtitle)+'</small><b class="pg-challenge-status"></b></span></button>';
       }).join(""):'<p>Пока нет доступных заданий.</p>';
     }
-    const closeGlyph=type==="district"?mapIcon('M5 5 19 19M19 5 5 19'):'×';
     return '<div class="pg-dialog" role="dialog" aria-modal="true" aria-labelledby="pg-dialog-title"><div class="pg-dialog-header"><h3 id="pg-dialog-title">'+esc(title)+'</h3>'+
-      '<button class="pg-close nav-control" data-page-action="close" aria-label="Закрыть">'+closeGlyph+'</button></div>'+body+'</div>';
+      closeButton()+'</div>'+body+'</div>';
   }
   const researchGroups=new Map();
   let researchList=null;
